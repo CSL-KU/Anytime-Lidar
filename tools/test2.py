@@ -5,10 +5,10 @@
 
 
 import os
-os.environ["DATASET_PERIOD"] = "50"
+#os.environ["DATASET_PERIOD"] = "500"
 #os.environ["PMODE"] = "pmode_0003" # same as jetson orin
-os.environ["CALIBRATION"] = "0"
-os.environ["PCDET_PATH"] = os.environ["HOME"] + "/shared/Anytime-Lidar"
+#os.environ["CALIBRATION"] = "1"
+#os.environ["PCDET_PATH"] = os.environ["HOME"] + "/shared/Anytime-Lidar"
 
 import _init_path
 import sys
@@ -285,29 +285,43 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             pickle.dump(eval_d, f)
     return result_str
 
+LOADED_NUSC = None
 def load_dataset():
-    dataset_version = 'v1.0-trainval'
-    root_path = "../data/nuscenes/" + dataset_version
-    return NuScenes(version=dataset_version, dataroot=root_path, verbose=True)
+    global LOADED_NUSC
+    if LOADED_NUSC is None:
+        dataset_version = 'v1.0-trainval'
+        root_path = "../data/nuscenes/" + dataset_version
+        LOADED_NUSC = NuScenes(version=dataset_version, dataroot=root_path, verbose=True)
+    return LOADED_NUSC
 
 if __name__ == "__main__":
-    loaded_nusc = load_dataset()
-
     chosen_method = sys.argv[1]
     default_deadline_sec = sys.argv[2] if len(sys.argv) > 2 else 100.0
+    mode = sys.argv[3] if len(sys.argv) > 3 else "streaming"
+    forecasting = sys.argv[4] if len(sys.argv) > 4 else "noforecast"
+    streaming = (mode == "streaming") # otherwise offline
+    forecasting = (forecasting == "forecast")
 
-    if chosen_method == 'Pillarnet01':
-        #Baseline Pillarnet 01
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet01.yaml"
-        ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
-        num_res = 1
-    elif chosen_method == 'VALO':
-        # VALO Pillarnet 01
+    num_res = 1
+    if chosen_method == 'Pillarnet010':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet010.yaml"
+        ckpt_file = "../models/pillarnet010_epoch20.pth"
+    elif chosen_method == 'Pillarnet015':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet015.yaml"
+        ckpt_file = "../models/pillarnet015_epoch20.pth"
+    elif chosen_method == 'Pillarnet020':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet020.yaml"
+        ckpt_file = "../models/pillarnet020_epoch20.pth"
+    elif chosen_method == 'Pillarnet024':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet024.yaml"
+        ckpt_file = "../models/pillarnet024_epoch20.pth"
+    elif chosen_method == 'Pillarnet030':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet030.yaml"
+        ckpt_file = "../models/pillarnet030_epoch20.pth"
+    elif chosen_method == 'VALO': # VALO Pillarnet 01
         cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
         ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
-        num_res = 1
-    elif chosen_method == 'VALOR':
-        # VALOR Pillarnet 5 res
+    elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
         ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
         num_res = 5
@@ -316,11 +330,7 @@ if __name__ == "__main__":
         sys.exit()
 
     sim_exec_time = False # Only VALOR supports it
-
-    streaming = True
-    offline = not streaming
     skip_eval = False
-    forecasting = False # ignored if offline
 
     results = []
     current_date_time = datetime.datetime.today()
@@ -335,12 +345,13 @@ if __name__ == "__main__":
                                                                         forecasting=forecasting,
                                                                         simulate_exec_time=sim_exec_time)
             for outf in (fw, sys.stdout):
-                print(f'Method:           {chosen_method}', file=outf)
-                print(f'Power mode:       {os.environ["PMODE"]}', file=outf)
-                print(f'Streaming:        {streaming}', file=outf)
-                print(f'Forecasting:      {forecasting}', file=outf)
-                print(f'Resolution stats: {resolution_stats}', file=outf)
-                print(f'Latency stats:', file=outf)
+                print(f'Method:           {chosen_method}\n'
+                      f'Default deadline: {default_deadline_sec} seconds\n'
+                      f'Power mode:       {os.environ["PMODE"]}\n'
+                      f'Streaming:        {streaming}\n'
+                      f'Forecasting:      {forecasting}\n'
+                      f'Resolution stats: {resolution_stats}\n'
+                      f'Latency stats:', file=outf)
                 model.print_time_stats(outfile=outf)
 
             if not skip_eval:
@@ -351,12 +362,14 @@ if __name__ == "__main__":
 
                 dataset = model.dataset
                 del model
+                loaded_nusc = load_dataset()
                 result_str = do_eval(sampled_objects, resolution_idx, dataset, streaming,
                                      exec_times_musec=exec_times_musec,
                                      dump_eval_dict=False, loaded_nusc=loaded_nusc)
 
                 for outf in (fw, sys.stdout):
-                    print(result_str + '\n\n', file=outf)
+                    print(result_str, file=outf)
 
+            #model.dump_eval_dict(ret_dict) # not necessary
             t2 = time.time()
             print('Time passed (seconds):', t2-t1)

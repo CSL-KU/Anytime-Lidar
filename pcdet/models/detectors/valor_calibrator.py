@@ -281,7 +281,7 @@ class ValorCalibrator():
                     bb3d_ms_arr[sample_idx, 0] = self.model._time_dict['Backbone3D'][-1]
 
             dense_ops_ms = float(self.model._time_dict['DenseOps'][-1])
-            x_min, x_max = lbd['x_lims']
+            x_min, x_max = lbd['tensor_slice_inds']
             tensor_width = int(x_max - x_min)
             if tensor_width in dense_ops_ms_dict:
                 dense_ops_ms_dict[tensor_width].append(dense_ops_ms)

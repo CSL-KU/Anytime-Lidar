@@ -68,7 +68,7 @@ MODEL:
     BACKBONE_2D:
         NAME: BaseBEVBackboneV1
 
-        USE_DUMMY_LAYER: True
+        USE_DUMMY_LAYER: False
         LAYER_NUMS: [ 5, 5 ]
         LAYER_STRIDES: [ 1, 2 ]
         NUM_FILTERS: [ 256, 256 ]
