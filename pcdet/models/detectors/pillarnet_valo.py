@@ -263,7 +263,6 @@ class PillarNetVALO(AnytimeTemplateV2):
                         self.trt_outputs[self.res_idx])
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
             else:
-                #set_bn_resolution(self.opt_dense_convs, resdiv, self.res_idx) # needed?
                 outputs = self.opt_dense_convs(x_conv4)
                 out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
@@ -275,7 +274,8 @@ class PillarNetVALO(AnytimeTemplateV2):
                 batch_dict['bb2d_time_events'] = [e3, e4]
 
             self.measure_time_start('CenterHead-GenBox')
-            topk_outputs = fix_topk_outputs(self.out_tile_wsize, batch_dict['tile_mapping'], topk_outputs)
+            topk_outputs = fix_topk_outputs(self.out_tile_wsize // resdiv,
+                    batch_dict['tile_mapping'], topk_outputs)
 
             if self.calc_ult_heatmap:
                 ult_heatmap = torch.zeros((1, 1, self.target_hw[0], self.target_hw[1]),
@@ -310,7 +310,6 @@ class PillarNetVALO(AnytimeTemplateV2):
         if self.opt_dense_convs is None:
             self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)
             self.opt_dense_convs.eval()
-        #set_bn_resolution(self.opt_dense_convs, resdiv, self.res_idx) # not needed I think
 
         input_names = ['x_conv4']
         print('Resolution idx:', self.res_idx, 'Input:', input_names[0], fwd_data.size())
