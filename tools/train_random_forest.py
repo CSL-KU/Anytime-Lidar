@@ -6,7 +6,16 @@ from alive_progress import alive_bar
 import concurrent.futures
 import time
 
+numres = 5
+num_calibs_scenes = 75
+#merge_evals=True
+merge_evals=False
+NUM_BINS=10
+
 def read_data(pth):
+    global NUM_BINS
+    MAX_CAR_VEL = 15
+    MAX_REL_VEL = 2*MAX_CAR_VEL
     with open(pth, 'rb') as f:
         eval_d = pickle.load(f)
 
@@ -28,9 +37,14 @@ def read_data(pth):
     egovel_inds = [i for i, ev in enumerate(egovels) if ev is not None]
     data_tuples = []
 
-    # start from 5 since first 5 sample are calibration
-    for idx in range(5, len(egovel_inds)-1):
+    for idx in range(1, len(egovel_inds)-1):
+        etime = exec_times_ms[egovel_inds[idx]]
+        if etime is None:
+            continue
+
         ev = egovels[egovel_inds[idx]]
+        if np.isnan(ev).any():
+            continue
         pred_dict = det_objects[egovel_inds[idx+1]] #[0]
         if pred_dict is None:
             continue
@@ -40,23 +54,21 @@ def read_data(pth):
             continue
         
         obj_velos = boxes[:, 7:9].numpy()
+        mask = np.logical_not(np.isnan(obj_velos).any(1))
+        obj_velos[mask]
         rel_velos = obj_velos - ev
         obj_velos = np.linalg.norm(obj_velos, axis=1)
         rel_velos = np.linalg.norm(rel_velos, axis=1)
 
-        vel_10p, vel_90p, vel_99p = np.percentile(obj_velos, [10, 90, 99])
-        vel_mean = np.mean(obj_velos)
+        objvel_dist = np.bincount((obj_velos/MAX_CAR_VEL*NUM_BINS).astype(int),
+                                  minlength=NUM_BINS)[:NUM_BINS]
+        relvel_dist = np.bincount((rel_velos/MAX_REL_VEL*NUM_BINS).astype(int),
+                                  minlength=NUM_BINS)[:NUM_BINS]
 
-        rvel_10p, rvel_90p, rvel_99p = np.percentile(rel_velos, [10, 90, 99])
-        rvel_mean = np.mean(rel_velos)
-
-        vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p, vel_99p,
-                rvel_10p, rvel_mean, rvel_90p, rvel_99p])
+        vel_data = np.concatenate(([np.linalg.norm(ev)], objvel_dist, relvel_dist))
         labels = pred_dict['pred_labels']
         num_objs_dist = np.bincount(labels.numpy()-1, minlength=num_class)
-        etime = exec_times_ms[egovel_inds[idx]]
-        assert etime is not None
-        data_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum(), etime]))
+        data_tuple = np.concatenate((vel_data, num_objs_dist, [etime]))
         data_tuples.append(data_tuple)
 
     data_tuples = np.array(data_tuples)
@@ -67,9 +79,6 @@ def get_best_res(evals, metric='mAP'):
     max_idx = np.argmax(accs)
     return max_idx, accs[max_idx]
     
-numres = 5
-num_calibs_scenes = 80
-merge_evals=True
 
 def mask_files(path_list, num_calibs_scenes):
     mask = [False] * len(path_list)
@@ -115,10 +124,14 @@ mAP_stats = np.zeros(numres)
 all_train_inputs, all_train_labels = [], []
 all_test_inputs, all_test_labels = [], []
 window_length=1
+skipped_scenes = 0
 for evals in all_evals:
     best_res, mAP = get_best_res(evals)
+    best_res2, NDS = get_best_res(evals, 'NDS')
+    if best_res != best_res2:
+        skipped_scenes += 1
+        continue
     mAP_stats[best_res] += 1
-    #best_res, NDS = get_best_res(evals, 'NDS')
     tuples = evals[global_best_res]['tuples']
 
     if window_length > 1:
@@ -134,8 +147,7 @@ for evals in all_evals:
         all_train_inputs.append(tuples)
         all_train_labels.append(np.full(tuples.shape[0], best_res))
 
-    mAP_stats[best_res] += 1
-
+print(f'Skipped {skipped_scenes} scenes')
 print('Best resolution stats:')
 print(mAP_stats)
 
@@ -153,31 +165,38 @@ X_test = X_test[mask]
 y_test = y_test[mask]
 
 # Using relvel 90th percentile, num cars, num peds, num barriers, num tcones works ok!
-feature_names = ['ev', 'ov10p', 'ovmean', 'ov90p', 'ov99p',
-                 'rv10p', 'rvmean', 'rv90p', 'rv99p',
+objveldist = [f'objvel_bin{i}' for i in range(NUM_BINS)]
+relveldist = [f'relvel_bin{i}' for i in range(NUM_BINS)]
+
+feature_names = ['ev', *objveldist, *relveldist,
+                 #'ov10p', 'ovmean', 'ov90p', 'ov99p', 'ovsum',
+                 #'rv10p', 'rvmean', 'rv90p', 'rv99p', 'rvsum',
                  'car','truck', 'construction_vehicle', 'bus', 'trailer',
                  'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
-                 'num_all_objs', 'exec_time_ms']
+                 'exec_time_ms']
+
+ci = feature_names.index('car')
+X_train = np.concatenate((X_train, X_train[:,ci:ci+10].sum(1, keepdims=True)),axis=1)
+X_test = np.concatenate((X_test, X_test[:,ci:ci+10].sum(1, keepdims=True)),axis=1)
+feature_names.append('num_obj')
 
 do_masking = True
 if do_masking:
-    features_to_keep = ['rv99p', 'car', 'pedestrian', 'num_all_objs', 'exec_time_ms']
+    features_to_keep = [*objveldist, *relveldist, 'exec_time_ms']
     mask = np.array([feature_names.index(f) for f in features_to_keep])
     mask = np.concatenate([mask+i*len(feature_names) for i in range(window_length)])
     print('mask:', mask)
     X_train = X_train[:, mask]
     X_test = X_test[:, mask]
+    features_names = features_to_keep
 
-#    newfeat1 = np.expand_dims(X_train[:, 1] / X_train[:, 3], 1)
-#    X_train = np.concatenate((X_train, newfeat1), axis=1)
-#    newfeat1 = np.expand_dims(X_test[:, 1] / X_test[:, 3], 1)
-#    X_test = np.concatenate((X_test, newfeat1), axis=1)
-
+print('Chosen feature names:')
+print(feature_names)
 
 print('Train data shapes and labels distribution:')
 print(X_train.shape, y_train.shape, np.bincount(y_train))
-print('Test data:')
-print(X_test.shape, y_test.shape)
+print('Test data shapes and labels distribution:')
+print(X_test.shape, y_test.shape, np.bincount(y_test))
 
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -228,8 +247,8 @@ else:
         n_estimators=64,  # number of trees
         max_depth=10,    # maximum depth of trees
         max_features='sqrt',
-        min_samples_split=10,
-        min_samples_leaf=2,
+        min_samples_split=2,
+        min_samples_leaf=1,
         random_state=40
     )
 
@@ -280,3 +299,101 @@ else:
 #cv_scores = cross_val_score(rf_classifier, X, y, cv=5)
 #print("\nCross-validation scores:", cv_scores)
 #print(f"Average CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+import sys
+sys.exit()
+
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+import numpy as np
+
+# Normalize using training data statistics
+mean = X_train.mean(axis=0)
+std = X_train.std(axis=0)
+X_train_normalized = (X_train - mean) / (std + 1e-7)
+X_test_normalized = (X_test - mean) / (std + 1e-7)  # normalize test data with training stats
+
+# Convert to PyTorch tensors
+X_train_tensor = torch.FloatTensor(X_train_normalized)
+y_train_tensor = torch.LongTensor(y_train)
+X_test_tensor = torch.FloatTensor(X_test_normalized)
+y_test_tensor = torch.LongTensor(y_test)
+
+# Create dataset and dataloader for training
+train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+class SimpleClassifier(nn.Module):
+    def __init__(self, input_size):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(32, 3)  # 3 classes
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
+# Initialize model, loss, and optimizer
+model = SimpleClassifier(input_size=X_train.shape[1])
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Training loop
+num_epochs = 100
+for epoch in range(num_epochs):
+    model.train()
+    train_loss = 0
+    train_correct = 0
+    train_total = 0
+
+    for inputs, labels in train_loader:
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.item()
+        _, predicted = torch.max(outputs, 1)
+        train_total += labels.size(0)
+        train_correct += (predicted == labels).sum().item()
+
+    # Evaluate on test set
+    if (epoch + 1) % 10 == 0:
+        model.eval()
+        with torch.no_grad():
+            test_outputs = model(X_test_tensor)
+            test_loss = criterion(test_outputs, y_test_tensor)
+            _, test_predicted = torch.max(test_outputs, 1)
+            test_accuracy = (test_predicted == y_test_tensor).sum().item() / len(y_test_tensor)
+
+            train_accuracy = train_correct / train_total
+            avg_train_loss = train_loss / len(train_loader)
+
+            print(f'Epoch [{epoch+1}/{num_epochs}]')
+            print(f'Train Loss: {avg_train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}')
+            print(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}')
+
+# Final evaluation
+model.eval()
+with torch.no_grad():
+    test_outputs = model(X_test_tensor)
+    _, test_predicted = torch.max(test_outputs, 1)
+    final_accuracy = (test_predicted == y_test_tensor).sum().item() / len(y_test_tensor)
+    print(f'\nFinal Test Accuracy: {final_accuracy:.4f}')
+
+# Function for making new predictions
+def predict(x_new):
+    x_normalized = (x_new - mean) / (std + 1e-7)
+    x_tensor = torch.FloatTensor(x_normalized)
+    model.eval()
+    with torch.no_grad():
+        outputs = model(x_tensor)
+        _, predicted = torch.max(outputs, 1)
+    return predicted.numpy()
