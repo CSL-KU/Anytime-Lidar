@@ -3,7 +3,7 @@ CLASS_NAMES: ['car', 'truck', 'bus', 'pedestrian']
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-    POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+    POINT_CLOUD_RANGE: [-76.8, -76.8, -5.0, 76.8, 76.8, 3.0]
 
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
@@ -63,8 +63,7 @@ MODEL:
     NAME: MURAL
     DETECTOR_TYPE: PillarNet
     NAME_POSTFIX: p0100_0128_0200_awsim
-    # pillar sizes: 0.100 0.128 0.200
-    RESOLUTION_DIV: [1.0, 1.28, 2.0]
+    RESOLUTION_DIV: [1.0, 1.297297297, 2.0]
     INF_RES_INDEX: 0
     BACKWARD_IN_MODEL_FORWARD: False
 
@@ -135,8 +134,8 @@ MODEL:
 
         POST_PROCESSING:
             SCORE_THRESH: 0.3
-            POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 192
+            POST_CENTER_LIMIT_RANGE: [-80.0, -80.0, -10.0, 80.0, 80.0, 10.0]
+            MAX_OBJ_PER_SAMPLE: 500
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2

@@ -326,7 +326,7 @@ class MURALCalibrator():
 
             preprocess_ms_arr[sample_idx] =  self.model._time_dict['PreProcess'][-1]
             if 'Sched' in self.model._time_dict:
-                pp_ms += self.model._time_dict['Sched'][-1]
+                preprocess_ms_arr[sample_idx] += self.model._time_dict['Sched'][-1]
 
             num_points_arr[sample_idx] = lbd['points'].size(0)
             vfe_ms_arr[sample_idx] = self.model._time_dict['VFE'][-1]
@@ -367,7 +367,7 @@ class MURALCalibrator():
             #print(sorted(list(dense_ops_ms_dict.keys())))
             slc_sz = self.dense_inp_slice_sz
             min_inp_width = slc_sz * 2
-            for target_width in range(min_inp_width, max_width+1, slc_sz):
+            for target_width in range(max_width, min_inp_width-1, -slc_sz):
                 if str(target_width) not in dense_ops_ms_dict:
                     dense_ops_ms_dict[str(target_width)] = []
                     print('Calibrating dense ops for missing slice width:', target_width)
