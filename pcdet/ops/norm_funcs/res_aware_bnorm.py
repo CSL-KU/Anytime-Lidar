@@ -3,14 +3,14 @@ import torch
 class AbstractResAwareBatchNorm(torch.nn.Module):
     def __init__(self):
         super(AbstractResAwareBatchNorm, self).__init__()
-        self.cur_res_idx = 0
         self.layers = torch.nn.ModuleList()
+        self.cur_layer = None
 
     def forward(self, x):
-        return self.layers[self.cur_res_idx](x)
+        return self.cur_layer(x)
 
     def setResIndex(self, idx):
-        self.cur_res_idx = idx
+        self.cur_layer = self.layers[idx]
 
 class ResAwareBatchNorm1d(AbstractResAwareBatchNorm):
     def __init__(self, num_channels, num_resolutions, eps, momentum):

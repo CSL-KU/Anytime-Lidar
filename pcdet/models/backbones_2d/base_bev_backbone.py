@@ -39,20 +39,22 @@ class BaseBEVBackbone(nn.Module):
         res_divs = model_cfg.get('RESOLUTION_DIV', [1])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         norm_fn = get_norm_func(norm_method, res_divs)
+        put_dummy_layer = model_cfg.get('USE_DUMMY_LAYER', True) # this is to make model weights load
 
         num_levels = len(layer_nums)
         c_in_list = [input_channels, *num_filters[:-1]]
         self.blocks = nn.ModuleList()
         self.deblocks = nn.ModuleList()
         for idx in range(num_levels):
-            cur_layers = [
+            cur_layers = [nn.Identity()] if put_dummy_layer else []
+            cur_layers.extend([
                 nn.Conv2d(
                     c_in_list[idx], num_filters[idx], kernel_size=3,
                     stride=layer_strides[idx], padding=1, bias=False
                 ),
                 norm_fn(num_filters[idx]),
                 nn.ReLU()
-            ]
+            ])
             for k in range(layer_nums[idx]):
                 cur_layers.extend([
                     nn.Conv2d(num_filters[idx], num_filters[idx], kernel_size=3, padding=1, bias=False),
@@ -137,19 +139,21 @@ class BaseBEVBackboneV1(nn.Module):
         res_divs = model_cfg.get('RESOLUTION_DIV', [1])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         norm_fn = get_norm_func(norm_method, res_divs)
+        put_dummy_layer = model_cfg.get('USE_DUMMY_LAYER', True) # this is to make model weights load
 
         num_levels = len(layer_nums)
         self.blocks = nn.ModuleList()
         self.deblocks = nn.ModuleList()
         for idx in range(num_levels):
-            cur_layers = [
+            cur_layers = [nn.Identity()] if put_dummy_layer else []
+            cur_layers.extend([
                 nn.Conv2d(
                     num_filters[idx], num_filters[idx], kernel_size=3,
                     stride=1, padding=1, bias=False
                 ),
                 norm_fn(num_filters[idx]),
                 nn.ReLU()
-            ]
+            ])
             for k in range(layer_nums[idx]):
                 cur_layers.extend([
                     nn.Conv2d(num_filters[idx], num_filters[idx], kernel_size=3, padding=1, bias=False),

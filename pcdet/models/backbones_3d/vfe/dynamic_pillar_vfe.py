@@ -200,39 +200,35 @@ class DynamicPillarVFESimple2D(VFETemplate):
             )
         self.pfn_layers = nn.ModuleList(pfn_layers)
 
-        self.init_voxel_size = voxel_size.copy()
-        self.voxel_x = voxel_size[0]
-        self.voxel_y = voxel_size[1]
-        self.voxel_z = voxel_size[2]
-        self.x_offset = self.voxel_x / 2 + point_cloud_range[0]
-        self.y_offset = self.voxel_y / 2 + point_cloud_range[1]
-        self.z_offset = self.voxel_z / 2 + point_cloud_range[2]
+        self.voxel_params = []
+        for resdiv in res_divs:
+            voxel_size_tmp = [vs * resdiv for vs in voxel_size[:2]]
+            grid_size_tmp = [gs // resdiv for gs in grid_size]
+            self.voxel_params.append((
+                    voxel_size_tmp[0], #voxel_x
+                    voxel_size_tmp[1], #voxel_y
+                    voxel_size[2], #voxel_z
+                    voxel_size_tmp[0] / 2 + point_cloud_range[0], #x_offset
+                    voxel_size_tmp[1] / 2 + point_cloud_range[1], #y_offset
+                    voxel_size[2] / 2 + point_cloud_range[2], #z_offset
+                    grid_size_tmp[0] * grid_size_tmp[1], #scale_xy
+                    grid_size_tmp[1], #scale_y
+                    torch.tensor(grid_size_tmp).cuda(), # grid_size
+                    torch.tensor(voxel_size_tmp + [voxel_size[2]]).cuda()
+            ))
 
-        self.init_grid_size = grid_size.copy()
-        self.scale_xy = grid_size[0] * grid_size[1]
-        self.scale_y = grid_size[1]
-
-        self.grid_size = torch.tensor(grid_size[:2]).cuda()
-        self.voxel_size = torch.tensor(voxel_size).cuda()
-        self.point_cloud_range_cpu = point_cloud_range.copy()
+        self.set_params(0)
         self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
 
-    def change_voxel_size(self, resdiv):
-        voxel_size = [vs * resdiv for vs in self.init_voxel_size]
-        self.voxel_x = voxel_size[0]
-        self.voxel_y = voxel_size[1]
-        # dont change voxel_z
-        self.x_offset = self.voxel_x / 2 + self.point_cloud_range_cpu[0]
-        self.y_offset = self.voxel_y / 2 + self.point_cloud_range_cpu[1]
-        #self.z_offset = self.voxel_z / 2 + self.point_cloud_range_cpu[2]
+    # Allows switching between different pillar sizes
+    def set_params(self, idx):
+        self.voxel_x, self.voxel_y, self.voxel_z, \
+                self.x_offset, self.y_offset, self.z_offset,  \
+                self.scale_xy, self.scale_y, \
+                self.grid_size, self.voxel_size = self.voxel_params[idx]
 
-        grid_size = [gs // resdiv for gs in self.init_grid_size]
-        self.scale_xy = grid_size[0] * grid_size[1]
-        self.scale_y = grid_size[1]
-
-        self.grid_size = torch.tensor(grid_size[:2]).cuda()
-        self.voxel_size = torch.tensor(voxel_size).cuda()
-        #self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
+    def adjust_voxel_size_wrt_resolution(self, res_idx):
+        self.set_params(res_idx)
 
     def get_output_feature_dim(self):
         return self.num_filters[-1]

@@ -131,6 +131,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #self.move_indscalc_to_init = True
         ##########################################
 
+        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1])
+        self.num_res = len(self.resolution_dividers)
+        self.res_idx = 0
+
     def clear_add_dict(self):
         self.add_dict['vfe_layer_times'] = []
         self.add_dict['vfe_point_nums'] = []
@@ -390,7 +394,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
         # of all detection heads, preventing to skip any of them
         self.calibration_on()
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = 0.0001
-        super().calibrate(1)
+        for i in range(self.num_res):
+            print(f'Calibrating resolution {i}')
+            self.res_idx = i # Select resolution
+            super().calibrate(1)
+        self.res_idx = 0
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
 
         self.enable_forecasting = (not self.keep_forecasting_disabled)

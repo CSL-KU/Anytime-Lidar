@@ -55,8 +55,13 @@ class SeparateHead(nn.Module):
 
     def instancenorm_mode(self):
         for bn in self.refs_to_bns:
-            bn.momentum = 0.
-            bn.track_running_stats = False
+            if isinstance(bn, ResAwareBatchNorm2d):
+                for i in range(len(bn.layers)):
+                    bn.layers[i].momentum = 0.
+                    bn.layers[i].track_running_stats = False
+            else:
+                bn.momentum = 0.
+                bn.track_running_stats = False
 
     def pd_to_list(self, pd : Dict[str,torch.Tensor]) -> List[torch.Tensor]:
         lst = []
