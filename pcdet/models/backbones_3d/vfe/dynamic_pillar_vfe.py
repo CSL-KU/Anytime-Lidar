@@ -234,12 +234,14 @@ class DynamicPillarVFESimple2D(VFETemplate):
         return self.num_filters[-1]
 
     @torch.no_grad()
-    def range_filter(self, batch_dict):
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, t)
+    def range_filter(self, batch_dict, point_cloud_range=None):
+        if  point_cloud_range is None:
+            point_cloud_range = self.point_cloud_range
 
+        points = batch_dict['points'] # (batch_idx, x, y, z, i, t)
         points_xyz = points[:, 1:4]
-        mask_min = points_xyz > self.point_cloud_range[:3]
-        mask_max = points_xyz < self.point_cloud_range[3:]
+        mask_min = points_xyz > point_cloud_range[:3]
+        mask_max = points_xyz < point_cloud_range[3:]
 
         mask = (mask_min & mask_max).all(dim=1)
 

@@ -277,13 +277,6 @@ class PillarRes18BackBone8x(nn.Module):
         # Grouped with respect to having same input size
         self.num_layer_groups = 4
 
-#        if 2 in self.res_divs:
-#            self.maxpool2 = spconv.SparseMaxPool2d(2, stride=2)
-#        if 3 in self.res_divs:
-#            self.maxpool3 = spconv.SparseMaxPool2d(3, stride=3)
-#        if 4 in self.res_divs:
-#            self.maxpool4 = spconv.SparseMaxPool2d(4, stride=4)
-
     def get_inds_dividers(self, tile_size_voxels):
         # numbers here are determined with respect to strides
         return [tile_size_voxels / float(s) for s in (2,4,8)]
@@ -305,7 +298,7 @@ class PillarRes18BackBone8x(nn.Module):
             events=[torch.cuda.Event(enable_timing=True)]
             events[-1].record()
         if record_vcounts:
-            num_voxels=[voxel_coords.size(0)]
+            num_voxels=[pillar_coords.size(0)]
         if record_int_vcoords:
             vcoords = []
             tile_size_voxels = batch_dict['tile_size_voxels']
@@ -321,13 +314,6 @@ class PillarRes18BackBone8x(nn.Module):
             spatial_shape=sparse_shape,
             batch_size=batch_size
         )
-
-        #if res_div == 2:
-        #    input_sp_tensor = self.maxpool2(input_sp_tensor)
-        #elif res_div == 3:
-        #    input_sp_tensor = self.maxpool3(input_sp_tensor)
-        #elif res_div == 4:
-        #    input_sp_tensor = self.maxpool4(input_sp_tensor)
 
         #x_conv1 = self.conv1(input_sp_tensor)
         #x_conv2 = self.conv2(x_conv1)

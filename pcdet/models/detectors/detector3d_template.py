@@ -96,17 +96,12 @@ def post_forward_hook(module, inp_args, outp_args):
     module.finish_time = time.time()
     module.measure_time_end('End-to-end')
 
-    if 'vfe_layer_time_events' in batch_dict and \
-            'vfe_layer_times' in module.add_dict:
-        events = batch_dict['vfe_layer_time_events']
-        times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
-        module.add_dict['vfe_layer_times'].append(times)
-
-    if 'bb3d_layer_time_events' in batch_dict and \
-            'bb3d_layer_times' in module.add_dict:
+    if 'bb3d_layer_time_events' in batch_dict:
         events = batch_dict['bb3d_layer_time_events']
         times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
-        module.add_dict['bb3d_layer_times'].append(times)
+        batch_dict['bb3d_layer_times'] = times
+        if 'bb3d_layer_times' in module.add_dict:
+            module.add_dict['bb3d_layer_times'].append(times)
 
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
@@ -145,6 +140,7 @@ def post_forward_hook(module, inp_args, outp_args):
     torch.cuda.synchronize()
     module.calc_elapsed_times()
     module.last_elapsed_time_musec = int(module._time_dict['End-to-end'][-1] * 1000)
+
     module.latest_batch_dict = batch_dict
 
     return pred_dicts, recall_dict

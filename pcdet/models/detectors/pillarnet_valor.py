@@ -1,6 +1,7 @@
 from .detector3d_template import Detector3DTemplate
 #from ..dense_heads.center_head_inf import scatter_sliced_tensors
 #from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
+from .valor_calibrator import ValorCalibrator
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 #from .forecaster import Forecaster
 import torch
@@ -96,11 +97,13 @@ class PillarNetVALOR(Detector3DTemplate):
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
 
+        self.model_name = self.model_cfg.NAME + '_' + self.model_cfg.NAME_POSTFIX
+
         self.update_time_dict({
             'Sched' : [],
             'VFE' : [],
             'Backbone3D': [],
-            'FusedOps':[],
+            'DenseOps':[],
             'CenterHead-GenBox': [],
         })
 
@@ -130,6 +133,8 @@ class PillarNetVALOR(Detector3DTemplate):
         #            self.dense_head.cls_id_to_det_head_idx_map))
 
         self.dense_head_scrpt = None
+        self.calibrators = [None] * self.num_res
+        self.calib_pc_range = torch.tensor(self.dataset.point_cloud_range).cuda()
 
     def forward(self, batch_dict):
         if self.training:
@@ -168,11 +173,15 @@ class PillarNetVALOR(Detector3DTemplate):
 
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
-            batch_dict = self.vfe.range_filter(batch_dict)
+            # The time before this is measured as preprocess
 
             self.measure_time_start('Sched')
+            batch_dict = self.vfe.range_filter(batch_dict, self.calib_pc_range \
+                    if self.is_calibrating() else None)
             # NOTE use neural network based resolution prediction
-            # self.res_idx = 
+            #if not self.is_calibrating(): # maintain res_idx if calibrating
+            #    pass
+            #    # self.res_idx = 
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -187,6 +196,9 @@ class PillarNetVALOR(Detector3DTemplate):
             self.measure_time_end('VFE')
 
             self.measure_time_start('Backbone3D')
+            if self.is_calibrating():
+                batch_dict['record_time'] = True # returns bb3d_layer_time_events
+            batch_dict['record_int_vcounts'] = True # returns bb3d_num_voxels, no overhead
             batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
             x_conv4 = batch_dict['x_conv4_out']
             self.measure_time_end('Backbone3D')
@@ -194,10 +206,11 @@ class PillarNetVALOR(Detector3DTemplate):
             if not self.optimization_done[self.res_idx]:
                 self.optimize(x_conv4)
 
+            self.measure_time_start('DenseOps')
             x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
                     batch_dict['pillar_coords'], x_conv4)
+            batch_dict['x_lims'] = [x_min, x_max]
 
-            self.measure_time_start('FusedOps')
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
                         {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
@@ -206,12 +219,12 @@ class PillarNetVALOR(Detector3DTemplate):
                 outputs = self.opt_dense_convs(x_conv4)
                 out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
-            self.measure_time_end('FusedOps')
+            self.measure_time_end('DenseOps')
 
             self.measure_time_start('CenterHead-GenBox')
 
             for i, topk_out in enumerate(topk_outputs):
-                topk_out[-1] += x_min  # NOTE assume the resolution is same
+                topk_out[-1] += x_min  # NOTE assume the tensor resolution is same
 
             forecasted_dets = None
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
@@ -249,8 +262,7 @@ class PillarNetVALOR(Detector3DTemplate):
         self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
         print('Fused operations output names:', self.opt_outp_names)
 
-        #generated_onnx=False
-        # Currently, create a onnx and tensorrt file for each resolution
+        # Create a onnx and tensorrt file for each resolution
         onnx_path = self.model_cfg.ONNX_PATH + f'_res{self.res_idx}.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
@@ -269,15 +281,10 @@ class PillarNetVALOR(Detector3DTemplate):
                     opset_version=17,
                     custom_opsets={"cuda_slicer": 17}
             )
-            #generated_onnx=True
 
         power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
         if power_mode == 'UNKNOWN_POWER_MODE':
             print('WARNING! Power mode is unknown. Please export PMODE.')
-
-        #if generated_onnx:
-        #    print('ONNX files created, please run again after creating TensorRT engines.')
-        #    sys.exit(0)
 
         fname = onnx_path.split('/')[-1].split('.')[0]
         trt_path = f'./deploy_files/trt_engines/{power_mode}/{fname}.engine'
@@ -346,6 +353,31 @@ class PillarNetVALOR(Detector3DTemplate):
         return final_pred_dict, recall_dict
 
     def calibrate(self, batch_size=1):
-        ret = super().calibrate(1)
-        self.res_idx = 1
-        return ret
+        if self.training:
+            super().calibrate(1)
+            self.res_idx = 0
+            return None
+
+        collect_calib_data = [False] * self.num_res
+        calib_fnames = [""] * self.num_res
+        for res_idx in range(self.num_res):
+            self.res_idx = res_idx
+            self.calibrators[res_idx] = ValorCalibrator(self)
+            power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+            calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_res{res_idx}.json"
+            try:
+                self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])
+            except OSError:
+                collect_calib_data[res_idx] = True
+
+            self.calibration_on()
+            print(f'Calibrating resolution {res_idx}')
+            super().calibrate(1)
+
+            if collect_calib_data[res_idx]:
+                self.calibrators[res_idx].collect_data(calib_fnames[res_idx])
+                # After this, the calibration data should be processed with dynamic deadline
+            self.calibration_off()
+
+        self.res_idx = 0
+        return None
