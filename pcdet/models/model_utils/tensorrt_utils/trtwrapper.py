@@ -3,9 +3,43 @@ from typing import Any, Dict, Optional, Sequence, Union
 
 import tensorrt as trt
 import torch
+import subprocess
 
 from .utils import load_trt_engine, torch_device_from_trt, torch_dtype_from_trt
 
+def create_trt_engine(onnx_path, outp_engine_path, inp_name, min_shape, opt_shape, max_shape):
+    #env = {
+    #    "LD_LIBRARY_PATH": f"{trt_path}/lib/aarch64-linux-gnu:" + os.environ.get("LD_LIBRARY_PATH", "")
+    #}
+    plugin_path = "../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so"
+
+    min_shape = "x".join([str(s) for s in min_shape])
+    opt_shape = "x".join([str(s) for s in opt_shape])
+    max_shape = "x".join([str(s) for s in max_shape])
+    # Define the command with required parameters
+    command = [
+        f"trtexec",
+        f"--onnx={onnx_path}",
+        f"--saveEngine={outp_engine_path}",
+        "--noTF32",
+        f"--minShapes={inp_name}:{min_shape}",
+        f"--optShapes={inp_name}:{opt_shape}",
+        f"--maxShapes={inp_name}:{max_shape}",
+        f"--staticPlugins={plugin_path}"
+    ]
+    print('Running command:')
+    for cmd in command:
+        print(cmd)
+
+    # Run the command
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if result.returncode != 0:
+        print("Error creating TensorRT engine:")
+        print(result.stderr.decode())
+    else:
+        print("TensorRT engine created successfully!")
+        print(result.stdout.decode())
 
 class TRTWrapper(torch.nn.Module):
     """TensorRT engine wrapper for inference.

@@ -450,8 +450,10 @@ class CenterHeadInf(nn.Module):
 
     @torch.jit.export
     def adjust_voxel_size_wrt_resolution(self, res_div : float):
-        self.voxel_size[0] = round(self.initial_voxel_size[0]*res_div, 3)
-        self.voxel_size[1] = round(self.initial_voxel_size[1]*res_div, 3)
+        voxel_sz = torch.tensor([vs*res_div for vs in self.initial_voxel_size[:2]], dtype=torch.float)
+        voxel_sz = torch.round(voxel_sz, decimals=3)
+        self.voxel_size[0] = voxel_sz[0].item()
+        self.voxel_size[1] = voxel_sz[1].item()
 
 @torch.jit.script
 def scatter_sliced_tensors(chosen_tile_coords : List[int],

@@ -50,6 +50,8 @@ class AnytimeCalibrator():
             #self.num_det_heads = len(model.dense_head.class_names_each_head)
             self.num_tiles = model.model_cfg.TILE_COUNT
 
+        self.res_idx = model.res_idx
+
         # only use baseline predictor for this one
         self.sched_vfe = model.sched_vfe
         self.sched_bb3d = model.sched_bb3d
@@ -252,7 +254,8 @@ class AnytimeCalibrator():
                     axis=-1) +  self.time_reg_intercepts
             axes[1].scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
         plt.legend()
-        plt.savefig(f'../../latest_exp_plots/vfe_and_bb3d_time.pdf')
+        plt.savefig(f'../../latest_exp_plots/{self.model.model_name}_vfe_and_bb3d_time'
+                f'_res{self.res_idx}.pdf')
         plt.clf()
 
         if self.sched_bb3d and not self.use_baseline_bb3d_predictor:

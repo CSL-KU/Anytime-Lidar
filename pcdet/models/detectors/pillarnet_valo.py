@@ -1,7 +1,7 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
-from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 from .forecaster import Forecaster
 import torch
 import time
@@ -359,7 +359,15 @@ class PillarNetVALO(AnytimeTemplateV2):
         try:
             self.fused_convs_trt[self.res_idx] = TRTWrapper(trt_path, input_names, self.opt_outp_names)
         except:
-            print('TensorRT wrapper for fused_convs throwed exception, using eager mode')
+            print('TensorRT wrapper for fused_convs throwed exception, building the engine')
+            N, C, H, W = (int(s) for s in fwd_data.shape)
+            # NOTE assumes the point cloud range is a square H == max W
+            max_W = H
+            min_shape = (N, C, H, max_W // self.tcount)
+            opt_shape = (N, C, H, max_W // self.tcount * (self.tcount - 2))
+            max_shape = (N, C, H, max_W)
+            create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            self.fused_convs_trt[self.res_idx] = TRTWrapper(trt_path, input_names, self.opt_outp_names)
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
@@ -413,5 +421,5 @@ class PillarNetVALO(AnytimeTemplateV2):
 
     def calibrate(self, batch_size=1):
         ret = super().calibrate(1)
-        self.res_idx = 1
+        self.res_idx = 0
         return ret

@@ -134,6 +134,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1.0])
         self.num_res = len(self.resolution_dividers)
         self.res_idx = 0
+        self.calibrators = [None] * self.num_res
 
     def clear_add_dict(self):
         self.add_dict['vfe_layer_times'] = []
@@ -163,6 +164,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         return deadline_sec_override, reset
 
     def schedule1(self, batch_dict):
+        calibrator = self.calibrators[self.res_idx]
         resdiv = batch_dict['resolution_divider']
         cur_tile_size_voxels = self.tile_size_voxels / resdiv
         if self.training or self.sched_disabled:
@@ -212,12 +214,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.latest_batch_dict is not None and \
                 'bb3d_intermediary_vinds' in self.latest_batch_dict:
             voxel_dists = torch.jit.wait(self.fut)
-            self.calibrator.commit_bb3d_updates(self.latest_batch_dict['chosen_tile_coords'], \
-                voxel_dists.numpy())
+            calibrator.commit_bb3d_updates(
+                    self.latest_batch_dict['chosen_tile_coords'],
+                    voxel_dists.numpy())
 
         vfe_times, bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = \
-                self.calibrator.pred_req_times_ms(pcount_area, vcount_area, \
-                tiles_queue, num_tiles)
+                calibrator.pred_req_times_ms(pcount_area, \
+                vcount_area, tiles_queue, num_tiles)
         batch_dict['post_bb3d_times'] = copy.deepcopy(post_bb3d_times)
         tpreds = post_bb3d_times
         if bb3d_times_layerwise is not None:
@@ -246,14 +249,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # when reset, process all ignoring deadline
         choose_all = (not self.is_calibrating() and diffs[-1]) or \
-                (self.is_calibrating() and len(netc) <= self.calibrator.get_chosen_tile_num())
+                (self.is_calibrating() and len(netc) <= calibrator.get_chosen_tile_num())
         if choose_all:
             # choose all
             chosen_tile_coords = netc
             tiles_idx=0
         else:
             if self.is_calibrating():
-                tiles_idx = self.calibrator.get_chosen_tile_num()
+                tiles_idx = calibrator.get_chosen_tile_num()
                 if tiles_idx >= len(diffs):
                     tiles_idx = len(diffs)
             else:
@@ -380,60 +383,56 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.reset_ts = None
 
     def calibrate(self, batch_size=1):
-        self.calibrator = AnytimeCalibrator(self)
-
-        self.collect_calib_data = False
-
-        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-        self.calib_fname = f"calibdata_{power_mode}_{self.model_name}_r{self.tcount}.json"
-        try:
-            self.calibrator.read_calib_data(self.calib_fname)
-        except OSError:
-            self.collect_calib_data = True
-
-        score_threshold = self.score_thresh
-        # this temporary threshold will allow us to do calibrate cudnn benchmarking
-        # of all detection heads, preventing to skip any of them
-        self.calibration_on()
-        self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = 0.0001
-        for i in range(self.num_res):
-            print(f'Calibrating resolution {i}')
-            self.res_idx = i # Select resolution
-            super().calibrate(1)
-        self.res_idx = 0
-        self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
-
-        self.enable_forecasting = (not self.keep_forecasting_disabled)
-        print('Forecasting', 'enabled' if self.enable_forecasting else 'disabled')
-        self.last_tile_coord = self.init_tile_coord
-        self.sched_reset()
         if self.training:
+            super().calibrate(1)
             return None
 
-        if self.collect_calib_data:
-            self.calibrator.collect_data_v2(self.sched_algo, self.calib_fname)
-            # After this, the calibration data should be processed with dynamic deadline
-        self.clear_stats()
-        self.clear_add_dict()
-        self.calibration_off()
+        self.collect_calib_data = [False] * self.num_res
+        self.calib_fnames = [""] * self.num_res
+        for res_idx in range(self.num_res):
+            self.res_idx = res_idx
+            self.calibrators[res_idx] = AnytimeCalibrator(self)
+            power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+            self.calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_res{res_idx}.json"
+            try:
+                self.calibrators[res_idx].read_calib_data(self.calib_fnames[res_idx])
+            except OSError:
+                self.collect_calib_data[res_idx] = True
+
+            self.calibration_on()
+            self.enable_forecasting = False
+            print(f'Calibrating resolution {res_idx}')
+            super().calibrate(1)
+            self.enable_forecasting = (not self.keep_forecasting_disabled)
+            print('Forecasting', 'enabled' if self.enable_forecasting else 'disabled')
+            self.last_tile_coord = self.init_tile_coord
+            self.sched_reset()
+
+            if self.collect_calib_data[res_idx]:
+                self.calibrators[res_idx].collect_data_v2(self.sched_algo, self.calib_fnames[res_idx])
+                # After this, the calibration data should be processed with dynamic deadline
+            self.clear_stats()
+            self.clear_add_dict()
+            self.calibration_off()
 
         return None
 
     def post_eval(self):
-        if self.collect_calib_data:
+        if self.collect_calib_data[self.res_idx]:
+            #NOTE it only works for the latest resolution calibrated
             # We need to put bb3d time prediction data in the calibration file
-            with open(self.calib_fname, 'r') as handle:
+            with open(self.calib_fnames[self.res_idx], 'r') as handle:
                 calib_dict = json.load(handle)
                 if self.sched_bb3d:
                     calib_dict['bb3d_preds'] = self.add_dict['bb3d_preds']
                 if self.sched_vfe:
                     calib_dict['vfe_preds'] = self.add_dict['vfe_preds']
                 calib_dict['exec_times'] = self.get_time_dict()
-            with open(self.calib_fname, 'w') as handle:
+            with open(self.calib_fnames[self.res_idx], 'w') as handle:
                 json.dump(calib_dict, handle, indent=4)
 
         self.add_dict['tcount'] = self.tcount
-        self.add_dict['bb3d_pred_shift_ms'] = self.calibrator.expected_bb3d_err
+        self.add_dict['bb3d_pred_shift_ms'] = self.calibrators[self.res_idx].expected_bb3d_err
         print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")
 
         self.plot_post_eval_data()
@@ -442,7 +441,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         import matplotlib.pyplot as plt
         from datetime import datetime
         from pathlib import Path
-        root_path = str(Path.home()) + '/shared/latest_exp_plots/'
+        root_path = '../../latest_exp_plots/'
         os.makedirs(root_path, exist_ok=True)
         timedata = datetime.now().strftime("%m_%d_%H_%M")
 
@@ -521,11 +520,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 print('Num voxel to exec time plot saved.')
 
                 # plot 3d backbone fitted equations
-                coeffs_calib, intercepts_calib = self.calibrator.time_reg_coeffs, \
-                        self.calibrator.time_reg_intercepts
-                coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
+                calibrator = self.calibrators[self.res_idx]
+                coeffs_calib, intercepts_calib = calibrator.time_reg_coeffs, \
+                        calibrator.time_reg_intercepts
+                coeffs_new, intercepts_new = calibrator.fit_voxel_time_data(vactual, \
                         layer_times_actual)
-                calib_voxels, calib_times, _, _ = self.calibrator.get_calib_data_arranged()
+                calib_voxels, calib_times, _, _ = calibrator.get_calib_data_arranged()
                 fig, axes = plt.subplots(len(coeffs_calib)//2+1, 2, \
                         figsize=(6, (len(coeffs_calib)-1)*2),
                         sharex=True,
@@ -537,7 +537,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     xlims = [min(vlayer), max(vlayer)]
                     x = np.arange(xlims[0], xlims[1], (xlims[1]-xlims[0])//100)
 
-                    num_voxels_ = np.expand_dims(x, -1) / self.calibrator.num_voxels_normalizer
+                    num_voxels_ = np.expand_dims(x, -1) / calibrator.num_voxels_normalizer
                     num_voxels_ = np.concatenate((num_voxels_, np.square(num_voxels_)), axis=-1)
                     bb3d_time_calib = np.sum(num_voxels_ * coeffs_calib[i], axis=-1) + \
                             intercepts_calib[i]
