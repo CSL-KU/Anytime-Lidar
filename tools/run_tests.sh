@@ -48,14 +48,13 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CKPT_FILE="../models/cbgs_pillar0075_res2d_centerpoint.pth"
 
     # PillarNet 0.1
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valor_train.yaml"
-    #CKPT_FILE="../output/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valor_train/default/ckpt/checkpoint_epoch_30.pth"
-
+    #CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_valor_v5.yaml"
+    #CKPT_FILE="../models/pillar01_015_02_valor_v5_epoch30.pth"
+    CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
+    CKPT_FILE="../models/pillar01_015_02_024_03_valor_epoch30.pth"
     # PillarNet 0.2
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
-    CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
+    #CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
 
     # DSVT - CenterHead
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"
@@ -116,7 +115,10 @@ CMD="python test.py --cfg_file=$CFG_FILE \
 set -x
 if [ $1 == 'ros2' ]; then
     chrt -r 90 python inference_ros2.py --cfg_file=$CFG_FILE \
-            --ckpt $CKPT_FILE --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
+            --ckpt $CKPT_FILE --set "MODEL.METHOD" 0 "MODEL.DEADLINE_SEC" 10.0
+elif [ $1 == 'str_ros2' ]; then
+    chrt -r 90 python strinf_ros2.py --cfg_file=$CFG_FILE \
+            --ckpt $CKPT_FILE --set "MODEL.METHOD" 0 "MODEL.DEADLINE_SEC" 10.0
 elif [ $1 == 'ros2_nsys' ]; then
     chrt -r 90 $PROF_CMD python inference_ros2.py --cfg_file=$CFG_FILE \
             --ckpt $CKPT_FILE --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
