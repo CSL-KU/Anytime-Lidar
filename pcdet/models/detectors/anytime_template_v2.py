@@ -281,11 +281,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
         tidx = -1 if choose_all else tiles_idx-1
         if self.sched_vfe:
             predicted_vfe_time  = float(vfe_times[tidx])
+            calibrator.last_pred[1] = predicted_vfe_time
 
         if self.sched_bb3d:
             predicted_bb3d_time = float(bb3d_times[tidx])
             predicted_bb3d_time_layerwise = bb3d_times_layerwise[tidx]
             predicted_voxels = num_voxel_preds[tidx].astype(int).flatten()
+            calibrator.last_pred[2] = predicted_bb3d_time
 
         if self.sched_vfe:
             self.add_dict['vfe_preds'].append(predicted_vfe_time)

@@ -131,7 +131,7 @@ class MultiPillarCounter(torch.nn.Module):
         grid_sz = self.grid_sizes[res_idx]
         point_coords = torch.floor(points_xy_s / self.pillar_sizes[res_idx]).long()
         grid = torch.zeros([1, 1, grid_sz[0], grid_sz[1]], device=points_xy_s.device)
-        grid[:, :, point_coords[:, 0], point_coords[:, 1]] = 1.
+        grid[:, :, point_coords[:, 1], point_coords[:, 0]] = 1.
         pillar_counts = PillarRes18BackBone8x_pillar_calc(grid, self.num_slices[res_idx])
 
         #return the nonzero slice inds
@@ -166,8 +166,14 @@ class MultiPillarCounter(torch.nn.Module):
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+
+        self.deadline_based_selection = True
+        if self.deadline_based_selection:
+            print('Deadline scheduling is enabled!')
+
         self.enable_data_sched = False
-        self.deadline_based_selection = False
+        if self.enable_data_sched:
+            print('Data scheduling is enabled!')
 
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
@@ -236,6 +242,7 @@ class PillarNetVALOR(Detector3DTemplate):
             pass
         self.sched_step = 0
         self.sched_time_point_ms = 0
+        self.enable_forecasting_to_fut = False # makes it worse on hard dl
 
     def forward(self, batch_dict):
         if self.training:
@@ -290,24 +297,26 @@ class PillarNetVALOR(Detector3DTemplate):
             for i in range(self.num_res):
                 x_minmax[i, 0] = 0
                 x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
+
             if fixed_res_idx > -1:
                 self.res_idx = fixed_res_idx
             elif self.deadline_based_selection:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
                 num_points = points_xy.size(0)
-                start_time = batch_dict['start_time_sec']
-                deadline_ms = batch_dict['deadline_sec'] * 1e3
+                abs_dl_sec = batch_dict['abs_deadline_sec']
+                #start_time = batch_dict['start_time_sec']
+                #deadline_ms = batch_dict['deadline_sec'] * 1e3
                 # This is needed in case we did not start when input arrived
-                deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
+                #deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
                 all_pillar_counts = self.mpc_script(points_xy).int().cpu()
                 all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
                 for i in range(self.num_res):
                     pillar_counts = all_pillar_counts[i]
                     nz_slice_inds = pillar_counts[0].nonzero()
-                    time_passed_ms = (time.time() - start_time) * 1e3
-
-                    time_left = deadline_ms - time_passed_ms
+                    #time_passed_ms = (time.time() - start_time) * 1e3
+                    #time_left = deadline_ms - time_passed_ms
+                    time_left = (abs_dl_sec - time.time()) * 1000
                     xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
                     x_minmax[i, 0] = xmin
                     x_minmax[i, 1] = xmax
@@ -384,7 +393,7 @@ class PillarNetVALOR(Detector3DTemplate):
             if self.sched_step > 0:
                 self.sched_time_point_ms = self.sim_cur_time_ms
 
-
+            self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = x_minmax[self.res_idx] # must do this!
 
             resdiv = self.resolution_dividers[self.res_idx]
@@ -436,7 +445,7 @@ class PillarNetVALOR(Detector3DTemplate):
                     topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
 
             forecasted_dets = None
-            if self.enable_forecasting:
+            if self.enable_forecasting_to_fut:
                 forecasted_dets = self.sampled_dets[self.dataset_indexes[0]]
                 if forecasted_dets is not None:
                     # filter those which were forecasted already
@@ -624,6 +633,7 @@ class PillarNetVALOR(Detector3DTemplate):
             self.calibration_off()
             self.sched_step = 0
             self.sched_time_point_ms = 0
+        self.clear_stats()
         self.res_idx = cur_res_idx
         #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
         return None

@@ -4,8 +4,8 @@ import numpy as np
 class SchedAlgo:
     # methods 0 1 2 are the CP baselines with different voxel sizes
     # method 3 is VN baseline
-    RoundRobin = 4 # Unless a number is used, 18 tiles are the default
-    RoundRobin_BLTP = 5  # Same as RoundRobin, time prediction of 3D BB is based on quadratic order equation
+    RoundRobin = 5 # Unless a number is used, 18 tiles are the default
+    RoundRobin_BLTP = 4  # Same as RoundRobin, time prediction of 3D BB is based on quadratic order equation
     RoundRobin_VN = 6  # VoxelNeXt
     RoundRobin_VN_BLTP = 7
     RoundRobin_NoProj = 8

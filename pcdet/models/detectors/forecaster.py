@@ -230,7 +230,7 @@ class Forecaster(torch.nn.Module):
 
         # This op can make nms faster
         if self.num_det_heads > 1:
-            forecasted_dets = self.split_dets(
+            forecasted_dets = split_dets(
                     self.cls_id_to_det_head_idx_map,
                     self.num_det_heads,
                     forc_dict['pred_boxes'],

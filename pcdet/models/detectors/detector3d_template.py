@@ -20,6 +20,7 @@ from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
 from ...utils.res_pred_utils import get_2d_egovel
+from .valor_calibrator import get_stats
 
 from typing import Dict, Final
 
@@ -114,37 +115,34 @@ def post_forward_hook(module, inp_args, outp_args):
             arg_arr[0].cpu()
 
     if module.simulate_exec_time:
+        #assert not module.is_calibrating()
         num_points = batch_dict['points'].size(0)
         num_voxels = np.array(batch_dict['bb3d_num_voxels'])
         xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
         exec_time_ms = module.calibrators[module.res_idx].pred_exec_time_ms(
                 num_points, num_voxels, xlen, consider_prep_time=True)
         finish_time = batch_dict['start_time_sec'] + (exec_time_ms / 1000)
+        # simulated time includes ~2ms forecasting overhead, which is why we substract
+        forecast_time_point = module.sim_cur_time_ms + exec_time_ms - 2
     else:
         finish_time = time.time()
         exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
+        forecast_time_point = module.sim_cur_time_ms + exec_time_ms
 
     forecast_time_ms = 500 # I can play with this to reduce overhead
-    module.sim_cur_time_ms += exec_time_ms
     num_to_forecast = forecast_time_ms // module.data_period_ms
-    future_sample_inds = [(module.sim_cur_time_ms + (i*module.data_period_ms)) // module.data_period_ms \
+    future_sample_inds = [(forecast_time_point + \
+            (i*module.data_period_ms)) // module.data_period_ms \
             for i in range(1,num_to_forecast+1)]
     future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
             if ind < len(module.dataset)]).int()
 
-    if module.enable_forecasting:
+    forc_bboxes_all = None
+    if module.enable_forecasting_to_fut:
         egovel = module.sampled_egovels[module.dataset_indexes[0]]
-        frc_latency_ms = module.forecast(egovel, future_sample_inds, exec_time_ms, batch_dict)
-        module.sim_cur_time_ms += frc_latency_ms
-    else:
-        # Needed for streaming eval
-        for sample_ind_f in future_sample_inds.tolist():
-            module.sampled_dets[sample_ind_f] = batch_dict['final_box_dicts']
-        frc_latency_ms = 0
-
-    #torch.cuda.synchronize() # the .cpu() calls sync anyway
-    module.measure_time_end('PostProcess')
-    module.measure_time_end('End-to-end')
+        inp_arrival_ms = module.sim_cur_time_ms
+        forc_bboxes_all = module.forecast(egovel, future_sample_inds, inp_arrival_ms,
+                                          batch_dict['final_box_dicts'][0])
 
     if module.is_calibrating() and 'bb2d_time_events' in batch_dict:
         e = torch.cuda.Event(enable_timing=True)
@@ -152,28 +150,48 @@ def post_forward_hook(module, inp_args, outp_args):
         e_prev = batch_dict['bb2d_time_events'][1]
         batch_dict['detheadpost_time_events'] = [e_prev, e]
 
-    if 'bb3d_layer_time_events' in batch_dict:
-        events = batch_dict['bb3d_layer_time_events']
-        times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
-        batch_dict['bb3d_layer_times'] = times
-        if 'bb3d_layer_times' in module.add_dict:
-            module.add_dict['bb3d_layer_times'].append(times)
+    if module.simulate_exec_time:
+        finish_time = time.time()
+        exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
 
+    module.measure_time_end('PostProcess')
+    module.measure_time_end('End-to-end')
+
+    ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
+    if ignore_dl_miss: # nonperiodic
+        module.sim_cur_time_ms += exec_time_ms
+    else: # periodic execution
+        module.sim_cur_time_ms += module.data_period_ms
+
+    #torch.cuda.synchronize() # the .cpu() calls sync anyway
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
     tdiff = round(finish_time - batch_dict['abs_deadline_sec'], 3)
     module._eval_dict['deadline_diffs'].append(tdiff)
 
     dl_missed = (tdiff > 0)
+    if ignore_dl_miss or not dl_missed:
+        if module.enable_forecasting_to_fut:
+            # assign forecasting result
+            for forc_bboxes, sample_ind_f in zip(forc_bboxes_all, future_sample_inds.tolist()):
+                forecasted_pd = {k : pred_dicts[0][k] for k in ('pred_scores', 'pred_labels')}
+                forecasted_pd['pred_boxes'] = forc_bboxes
+                module.sampled_dets[sample_ind_f] = [forecasted_pd]
+        else:
+            # Needed for streaming eval
+            for sample_ind_f in future_sample_inds.tolist():
+                # dont do this on counted deadline miss!
+                module.sampled_dets[sample_ind_f] = batch_dict['final_box_dicts']
 
    # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
     ignore_dl_miss = module.is_calibrating() or (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
     if not ignore_dl_miss and not module.do_streaming_eval:
+        #PERIODIC
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
             module.dl_miss_streak += 1
-            print('Deadline (ms)', round(batch_dict['deadline_sec'] * 1000.0, 1), ' missed,',
-                    tdiff * 1000.0, 'ms late. Total missed:',
+            print('Deadline (ms)', round(batch_dict['deadline_sec'] * 1000.0, 1),
+                    ' missed,', tdiff * 1000.0, 'ms late. Total missed:',
                     module._eval_dict['deadlines_missed'])
 
             # Assume the program will abort the process when it misses the deadline
@@ -197,8 +215,24 @@ def post_forward_hook(module, inp_args, outp_args):
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
-    module.last_elapsed_time_musec = int(exec_time_ms + frc_latency_ms) * 1000
+    module.last_elapsed_time_musec = int(exec_time_ms * 1000)
     module.latest_batch_dict = batch_dict
+
+    if 'vfe_layer_times' in module.add_dict:
+        vfe_ms = module._time_dict['VFE'][-1]
+        module.add_dict['vfe_layer_times'].append([vfe_ms])
+
+    if 'bb3d_layer_time_events' in batch_dict:
+        events = batch_dict['bb3d_layer_time_events']
+        times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
+        batch_dict['bb3d_layer_times'] = times
+        if 'bb3d_layer_times' in module.add_dict:
+            module.add_dict['bb3d_layer_times'].append(times)
+
+    if hasattr(module, 'calibrators'): # valor model
+        predicted = module.calibrators[module.res_idx].last_pred
+        err = module.get_tpred_err(predicted)
+        module._eval_dict['time_pred_errs'].append(err.tolist())
 
     return pred_dicts, recall_dict
 
@@ -261,6 +295,8 @@ class Detector3DTemplate(nn.Module):
 
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
+        self._eval_dict['resolution_selections'] = [0] * 5
+        self._eval_dict['time_pred_errs'] = []
 
         self.do_streaming_eval = self.model_cfg.get('STREAMING_EVAL', False)
         if self.do_streaming_eval:
@@ -285,9 +321,7 @@ class Detector3DTemplate(nn.Module):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
         self.pc_range = torch.tensor(self.dataset.point_cloud_range)
 
-        #self.forecasting_coeff = float(self.model_cfg.get('PROJECTION_COEFF', 1.0))
         self.forecasting_coeff = float(self.model_cfg.get('FORECASTING_COEFF', 2.0))
-        #print('Projection coefficient is', self.forecasting_coeff)
 
         # tile count
         self.tcount = self.model_cfg.get('TILE_COUNT', 18)
@@ -295,6 +329,7 @@ class Detector3DTemplate(nn.Module):
             self.tcount_cuda = torch.tensor(self.tcount).long().cuda()
 
         self.enable_forecasting = False
+        self.enable_forecasting_to_fut = False
 
         dh_cfg = self.model_cfg.get('DENSE_HEAD', None)
         if dh_cfg is None:
@@ -307,21 +342,43 @@ class Detector3DTemplate(nn.Module):
         self.sampled_egovels= [None] * len(self.dataset)
         self.simulate_exec_time = False
 
-    def forecast(self, egovel, future_sample_inds, last_exec_time_ms, batch_dict):
-        t1 = time.monotonic()
-        pred_dicts = batch_dict['final_box_dicts']
-        time_diffs_sec = (future_sample_inds * self.data_period_ms - \
-                (self.sim_cur_time_ms - last_exec_time_ms)) * 1e-3
-        outp_bboxes_all = move_bounding_boxes(pred_dicts[0]['pred_boxes'], \
-                torch.from_numpy(egovel), time_diffs_sec)
-        for outp_bboxes, sample_ind_f in zip(outp_bboxes_all, future_sample_inds.tolist()):
-            forecasted_pd = {k : pred_dicts[0][k] for k in ('pred_scores', 'pred_labels')}
-            forecasted_pd['pred_boxes'] = outp_bboxes
-            self.sampled_dets[sample_ind_f] = [forecasted_pd]
-        t2 = time.monotonic()
-        forecasting_overhead_ms = (t2 - t1) * 1e3 # 1-2 ms
+    def get_tpred_err(self, predicted_ms_arr):
+        err = np.empty(5)
 
-        return forecasting_overhead_ms
+        pp_ms = self._time_dict['PreProcess'][-1]
+
+        if 'Sched' in self._time_dict:
+            sched_ms =  self._time_dict['Sched'][-1]
+        elif 'Sched1' in self._time_dict:
+            sched_ms =  self._time_dict['Sched1'][-1]
+        else:
+            sched_ms = 0
+        preprocess_ms = pp_ms + sched_ms
+        err[0] = predicted_ms_arr[0] - preprocess_ms
+
+        vfe_ms = self._time_dict['VFE'][-1]
+        err[1] = predicted_ms_arr[1] - vfe_ms
+
+        bb3d_ms = self._time_dict['Backbone3D'][-1]
+        err[2] = predicted_ms_arr[2] - bb3d_ms
+
+        dense_ops_ms = float(self._time_dict['DenseOps'][-1])
+        err[3] = predicted_ms_arr[3] - dense_ops_ms
+
+        genbox_ms =  self._time_dict['CenterHead-GenBox'][-1]
+        postp_ms =  self._time_dict['PostProcess'][-1]
+        postprocess_ms = postp_ms + genbox_ms
+        err[4] = predicted_ms_arr[4] - postprocess_ms
+
+        return err
+
+    def forecast(self, egovel, future_sample_inds, inp_arrival_ms, pred_dict):
+        time_diffs_sec = (future_sample_inds * self.data_period_ms - \
+                inp_arrival_ms) * 1e-3
+        outp_bboxes_all = move_bounding_boxes(pred_dict['pred_boxes'], \
+                torch.from_numpy(egovel), time_diffs_sec)
+
+        return outp_bboxes_all
 
     def get_model_size_MB(self):
         size_model = 0
@@ -783,6 +840,8 @@ class Detector3DTemplate(nn.Module):
         # deadline
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'].clear()
+        self._eval_dict['resolution_selections'] = [0] * 5
+        self._eval_dict['time_pred_errs'] = []
 
     def get_time_dict_stats(self):
         ret={}
@@ -863,6 +922,18 @@ class Detector3DTemplate(nn.Module):
         if self.model_cfg.get('METHOD', None) is not None:
             self._eval_dict['method'] = self.model_cfg.METHOD
 
+        if len(self._eval_dict['time_pred_errs']) > 0:
+            tpred_diffs = np.array(self._eval_dict['time_pred_errs'])
+
+            e2e_diffs = tpred_diffs[:, 1:].sum(1)
+            print('Positive time prediction error indicate finishing earlier.')
+            print('E2E execution time prediction error:')
+            get_stats(e2e_diffs)
+            components = ['Preprocess', 'VFE', 'Backbone3D', 'DenseOps', 'Postprocess']
+            for i in range(tpred_diffs.shape[1]):
+                print(f'{components[i]} time prediction error:')
+                get_stats(tpred_diffs[:, i])
+
         print('Dumping evaluation dictionary file')
         current_date_time = datetime.datetime.today()
         dt_string = current_date_time.strftime('%d-%m-%y-%I-%M-%p')
@@ -934,6 +1005,7 @@ class Detector3DTemplate(nn.Module):
         self.prev_scene_token = '' 
         self.sim_cur_time_ms = 0.
         self.latest_batch_dict = None
+        self.latest_valid_dets = None
 
         if isinstance(pred_dicts, list):
             det = pred_dicts[0]
@@ -949,4 +1021,5 @@ class Detector3DTemplate(nn.Module):
         self.calibration_off()
         print('Detector3D calibration done')
         self.sim_cur_time_ms = 0.
+        self.sampled_dets = [None] * len(self.dataset)
         return None

@@ -93,6 +93,7 @@ class AnytimeCalibrator():
         self.num_voxels_normalizer = 100000.
         self.num_points_normalizer = 1000000.
         self.chosen_tiles_calib = self.num_tiles
+        self.last_pred = np.zeros(5)
 
     # voxel dists should be [self.bb3d_num_l_groups, num_tiles]
     def commit_bb3d_updates(self, ctc, voxel_dists):

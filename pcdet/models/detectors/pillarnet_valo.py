@@ -103,7 +103,7 @@ class PillarNetVALO(AnytimeTemplateV2):
             'VFE' : [],
             'Sched2' : [],
             'Backbone3D': [],
-            'FusedOps':[],
+            'DenseOps':[],
             'CenterHead-GenBox': [],
         })
 
@@ -143,7 +143,7 @@ class PillarNetVALO(AnytimeTemplateV2):
             if self.do_dyn_dilation:
                 set_dilation_and_padding(self, resdiv, self.num_res)
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
-            set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
+            #set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
 
             #batch_dict = self.vfe.calc_points_coords(batch_dict)
             points = batch_dict['points']
@@ -185,17 +185,12 @@ class PillarNetVALO(AnytimeTemplateV2):
                 set_dilation_and_padding(self, resdiv, self.num_res)
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
 
-            #NOTE this op takes 0.77 ms on jetson orin!
-            set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
+            #set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
 
             batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
             self.measure_time_start('Sched1')
             batch_dict = self.schedule1(batch_dict)
             self.measure_time_end('Sched1')
-
-            if self.is_calibrating():
-                e1 = torch.cuda.Event(enable_timing=True)
-                e1.record()
 
             self.measure_time_start('VFE')
             points = batch_dict['points']
@@ -203,11 +198,6 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
             self.measure_time_end('VFE')
-
-            if self.is_calibrating():
-                e2 = torch.cuda.Event(enable_timing=True)
-                e2.record()
-                batch_dict['vfe_layer_time_events'] = [e1, e2]
 
             if batch_dict['pillar_coords'].size(0) == 1:
                 # Can't infer anything out of this, use random data to prevent instancenorm error
@@ -260,7 +250,7 @@ class PillarNetVALO(AnytimeTemplateV2):
             x_conv4 = batch_dict['spatial_features'] # sliced
             self.measure_time_end('Sched2')
 
-            self.measure_time_start('FusedOps')
+            self.measure_time_start('DenseOps')
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
                         {'x_conv4': x_conv4},
@@ -270,7 +260,7 @@ class PillarNetVALO(AnytimeTemplateV2):
                 outputs = self.opt_dense_convs(x_conv4)
                 out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
-            self.measure_time_end('FusedOps')
+            self.measure_time_end('DenseOps')
 
             if self.is_calibrating():
                 e4 = torch.cuda.Event(enable_timing=True)
