@@ -44,6 +44,7 @@ class PillarNetOpt(Detector3DTemplate):
 
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
         self.inf_stream = torch.cuda.Stream()
+        self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
 
     def forward(self, batch_dict):
@@ -57,7 +58,8 @@ class PillarNetOpt(Detector3DTemplate):
             self.measure_time_end('VFE')
 
             self.measure_time_start('Backbone3D')
-            x_conv4 = self.backbone_3d.forward_up_to_dense(batch_dict)
+            batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
+            x_conv4 = batch_dict['x_conv4_out']
             self.measure_time_end('Backbone3D')
 
             if not self.optimization1_done:
@@ -67,19 +69,20 @@ class PillarNetOpt(Detector3DTemplate):
             self.measure_time_start('DenseConvsPipeline')
 
             if self.dense_convs_trt is not None:
-                outputs = self.dense_convs_trt({'x_conv4': x_conv4})
-                outputs = [outputs[nm] for nm in self.opt_dense_convs_output_names]
+                #outputs = self.dense_convs_trt({'x_conv4': x_conv4})
+                self.trt_outputs = self.dense_convs_trt({'x_conv4': x_conv4}, self.trt_outputs)
+                outputs = [self.trt_outputs[nm] for nm in self.opt_dense_convs_output_names]
             else:
                 outputs = self.opt_dense_convs(sf)
-            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
+            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('DenseConvsPipeline')
 
             self.measure_time_start('CenterHead-Topk')
             topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])
             self.measure_time_end('CenterHead-Topk')
             self.measure_time_start('CenterHead-GenBox')
-            batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(batch_dict['batch_size'], batch_dict["pred_dicts"],
-                    topk_outputs, None)
+            batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
+                    batch_dict['batch_size'], batch_dict["pred_dicts"], topk_outputs, None)
             self.measure_time_end('CenterHead-GenBox')
 
             if self.training:
@@ -106,7 +109,7 @@ class PillarNetOpt(Detector3DTemplate):
         self.opt_dense_convs.eval()
 
         generated_onnx=False
-        onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             torch.onnx.export(
                     self.opt_dense_convs,
@@ -118,12 +121,21 @@ class PillarNetOpt(Detector3DTemplate):
             )
             generated_onnx=True
 
-        sf = fwd_data 
-        trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        if power_mode == 'UNKNOWN_POWER_MODE':
+            print('WARNING! Power mode is unknown. Please export PMODE.')
+
+        if generated_onnx:
+            print('ONNX files created, please run again after creating TensorRT engines.')
+            sys.exit(0)
+
+        tokens = self.model_cfg.ONNX_PATH.split('/')
+        trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
+        print('Trying to load trt engine at', trt_path)
         try:
             self.dense_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
         except:
-            print('TensorRT wrapper for fused_ops2 throwed exception, using eager mode')
+            print('TensorRT wrapper for fused_ops throwed exception, using eager mode')
             eager_outputs = self.opt_dense_convs(fwd_data) # for calibration
             self.dense_convs_trt = None
 
