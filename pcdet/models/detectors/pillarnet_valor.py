@@ -1,8 +1,8 @@
-from .anytime_template_v2 import AnytimeTemplateV2
-from ..dense_heads.center_head_inf import scatter_sliced_tensors
-from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
+from .detector3d_template import Detector3DTemplate
+#from ..dense_heads.center_head_inf import scatter_sliced_tensors
+#from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
-from .forecaster import Forecaster
+#from .forecaster import Forecaster
 import torch
 import time
 import onnx
@@ -10,9 +10,8 @@ import os
 import sys
 import numpy as np
 import platform
-from typing import List
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
-from ...utils.spconv_utils import spconv
+from typing import List, Tuple
 
 import ctypes
 ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so",
@@ -29,16 +28,27 @@ def get_all_resawarebn(model):
             resawarebns.append(module)
     return resawarebns
 
-def set_dilation_and_padding(model, resdiv, num_res):
-    x = (num_res - resdiv + 1) # supports resdivs 1 and 2
-    for module in model.modules():
-        #NOTE: I think we don't have to apply those to inverse and transpose convs
-        if isinstance(module, torch.nn.Conv2d) or \
-                isinstance(module, spconv.SubMConv2d) or \
-                isinstance(module, spconv.SparseConv2d): # or \
-            if module.kernel_size[0] > 1 and module.kernel_size[1] > 1:
-                module.dilation = (x, x)
-                module.padding = (x, x)
+@torch.jit.script
+def slice_tensor(down_scale_factor : int, pillar_coords : torch.Tensor, inp : torch.Tensor) \
+        -> Tuple[torch.Tensor, int, int]:
+    dsf = down_scale_factor
+    x_min, x_max = torch.aminmax(pillar_coords[:, 2])
+    x_min, x_max = x_min.cpu() // dsf, x_max.cpu() // dsf + 1
+    denom = 4 # denom is dependent on strides within the dense covs
+    rng = (x_max - x_min)
+    pad = denom - (rng % denom)
+    maxsz = inp.size(3)
+    if pad == denom:
+        inp = inp[..., x_min:x_max]
+    elif x_min >= pad: # pad from left
+        x_min -= pad
+        inp = inp[..., x_min:x_max]
+    elif (inp.size(3) - x_max) >= pad: # pad from right
+        x_max += pad
+        inp = inp[..., x_min:x_max]
+    else: # don't slice
+        return inp.contiguous(), 0, inp.size(3)
+    return inp.contiguous(), x_min.item(), x_max.item()
 
 # This will be used to generate the onnx
 class DenseConvsPipeline(torch.nn.Module):
@@ -69,18 +79,7 @@ class DenseConvsPipeline(torch.nn.Module):
 
         return outputs
 
-# correct the topk xs, this can be faster if xs's are catted
-@torch.jit.script
-def fix_topk_outputs(out_tile_wsize: int, mapping : torch.Tensor,
-        topk_outputs : List[List[torch.Tensor]]) -> List[List[torch.Tensor]]:
-    tile_sz = out_tile_wsize
-    for i, topk_out in enumerate(topk_outputs):
-        xs = topk_out[-1].int()
-        xs_tile_inds = torch.div(xs, tile_sz, rounding_mode='trunc')
-        topk_out[-1] = xs + tile_sz * (mapping[xs_tile_inds] - xs_tile_inds)
-    return topk_outputs
-
-class PillarNetVALO(AnytimeTemplateV2):
+class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         torch.backends.cudnn.benchmark = True
@@ -98,9 +97,8 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.module_list = self.build_networks()
 
         self.update_time_dict({
-            'Sched1' : [],
+            'Sched' : [],
             'VFE' : [],
-            'Sched2' : [],
             'Backbone3D': [],
             'FusedOps':[],
             'CenterHead-GenBox': [],
@@ -108,10 +106,11 @@ class PillarNetVALO(AnytimeTemplateV2):
 
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
 
-        # training with multiple resolution
+        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1.0])
+        self.num_res = len(self.resolution_dividers)
         self.latest_losses = [0.] * self.num_res
-        self.do_dyn_dilation = self.model_cfg.get('DYNAMIC_DILATION', False)
         self.res_aware_batch_norms = get_all_resawarebn(self)
+        self.res_idx = 0
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization_done = [False] * self.num_res
@@ -120,17 +119,16 @@ class PillarNetVALO(AnytimeTemplateV2):
 
         fms = self.model_cfg.DENSE_HEAD.TARGET_ASSIGNER_CONFIG.FEATURE_MAP_STRIDE
         self.target_hw = [sz // fms for sz in self.dataset.grid_size[:2]]
-        self.out_tile_wsize = self.target_hw[-1] // self.tcount
         self.opt_dense_convs = None
 
+        #NOTE later, integrate periodic forecasting
         # Force forecasting to be disabled
-        self.keep_forecasting_disabled = False
-        if not self.keep_forecasting_disabled:
-            self.forecaster = torch.jit.script(Forecaster(tuple(self.dataset.point_cloud_range.tolist()), 
-                    self.tcount, self.score_thresh, self.forecasting_coeff, self.dense_head.num_det_heads,
-                    self.dense_head.cls_id_to_det_head_idx_map))
-        
-        self.calc_ult_heatmap = False
+        #self.keep_forecasting_disabled = False
+        #if not self.keep_forecasting_disabled:
+        #    self.forecaster = torch.jit.script(Forecaster(tuple(self.dataset.point_cloud_range.tolist()), 
+        #            self.tcount, self.score_thresh, self.forecasting_coeff, self.dense_head.num_det_heads,
+        #            self.dense_head.cls_id_to_det_head_idx_map))
+
         self.dense_head_scrpt = None
 
     def forward(self, batch_dict):
@@ -138,17 +136,11 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict = self.vfe.range_filter(batch_dict)
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
-            if self.do_dyn_dilation:
-                set_dilation_and_padding(self, resdiv, self.num_res)
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
             set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
 
-            #batch_dict = self.vfe.calc_points_coords(batch_dict)
             points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
-            batch_dict['pillar_features'] = batch_dict['voxel_features']
-            batch_dict['pillar_coords'] = batch_dict['voxel_coords']
-
+            batch_dict['pillar_coords'], batch_dict['pillar_features'] = self.vfe(points)
             batch_dict = self.backbone_3d(batch_dict)
             batch_dict = self.backbone_2d(batch_dict)
 
@@ -177,92 +169,38 @@ class PillarNetVALO(AnytimeTemplateV2):
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             batch_dict = self.vfe.range_filter(batch_dict)
+
+            self.measure_time_start('Sched')
+            # NOTE use neural network based resolution prediction
+            # self.res_idx = 
+
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
-            if self.do_dyn_dilation:
-                set_dilation_and_padding(self, resdiv, self.num_res)
+
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
-
-            #NOTE this op takes 0.77 ms on jetson orin!
             set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
-
-            batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
-            self.measure_time_start('Sched1')
-            batch_dict = self.schedule1(batch_dict)
-            self.measure_time_end('Sched1')
-
-            if self.is_calibrating():
-                e1 = torch.cuda.Event(enable_timing=True)
-                e1.record()
+            self.measure_time_end('Sched')
 
             self.measure_time_start('VFE')
             points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
-            batch_dict['pillar_features'] = batch_dict['voxel_features']
-            batch_dict['pillar_coords'] = batch_dict['voxel_coords']
+            batch_dict['pillar_coords'], batch_dict['pillar_features'] = self.vfe(points)
             self.measure_time_end('VFE')
-
-            if self.is_calibrating():
-                e2 = torch.cuda.Event(enable_timing=True)
-                e2.record()
-                batch_dict['vfe_layer_time_events'] = [e1, e2]
-
-            if batch_dict['pillar_coords'].size(0) == 1:
-                # Can't infer anything out of this, use random data to prevent instancenorm error
-                pc = batch_dict['pillar_coords']
-                pf = batch_dict['pillar_features']
-
-                num_rand_pillars = 64
-                xlim, ylim, _ = self.dataset.grid_size
-                pc = torch.randint(0, min(xlim, ylim), (num_rand_pillars, pc.size(1)),
-                        dtype=pc.dtype, device=pc.device)
-                pc[:, 0] = 0 # batch size 1
-                batch_dict['pillar_coords'] = pc
-                pf = pf.repeat(num_rand_pillars, 1)
-                batch_dict['pillar_features'] = pf
 
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
             x_conv4 = batch_dict['x_conv4_out']
             self.measure_time_end('Backbone3D')
 
-            if self.is_calibrating():
-                e3 = torch.cuda.Event(enable_timing=True)
-                e3.record()
-
-            self.measure_time_start('Sched2')
-            batch_dict = self.schedule2(batch_dict)
-            lbd = self.latest_batch_dict
-            if self.enable_forecasting and lbd is not None:
-                # Takes 1.2 ms, fully on cpu
-                last_pred_dict = lbd['final_box_dicts'][0]
-                last_ctc = torch.from_numpy(lbd['chosen_tile_coords']).long()
-                last_token = lbd['metadata'][0]['token']
-                last_pose = self.token_to_pose[last_token]
-                last_ts = self.token_to_ts[last_token] - self.scene_init_ts
-                cur_token = batch_dict['metadata'][0]['token']
-                cur_pose = self.token_to_pose[cur_token]
-                cur_ts = self.token_to_ts[cur_token] - self.scene_init_ts
-
-                fcdets_fut = self.forecaster.fork_forward(last_pred_dict, last_ctc,
-                        last_pose, last_ts, cur_pose, cur_ts, batch_dict['scene_reset'])
-            else:
-                fcdets_fut = None
-
             if not self.optimization_done[self.res_idx]:
                 self.optimize(x_conv4)
 
-            batch_dict['spatial_features'] = x_conv4
-            batch_dict['tcount'] = self.tcount
-            batch_dict = prune_spatial_features(batch_dict)
-            x_conv4 = batch_dict['spatial_features'] # sliced
-            self.measure_time_end('Sched2')
+            x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
+                    batch_dict['pillar_coords'], x_conv4)
 
             self.measure_time_start('FusedOps')
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
-                        {'x_conv4': x_conv4},
-                        self.trt_outputs[self.res_idx])
+                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
             else:
                 outputs = self.opt_dense_convs(x_conv4)
@@ -270,34 +208,17 @@ class PillarNetVALO(AnytimeTemplateV2):
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
             self.measure_time_end('FusedOps')
 
-            if self.is_calibrating():
-                e4 = torch.cuda.Event(enable_timing=True)
-                e4.record()
-                batch_dict['bb2d_time_events'] = [e3, e4]
-
             self.measure_time_start('CenterHead-GenBox')
-            topk_outputs = fix_topk_outputs(int(self.out_tile_wsize / resdiv),
-                    batch_dict['tile_mapping'], topk_outputs)
 
-            if self.calc_ult_heatmap:
-                target_hw  = [int(sz/resdiv) for sz in self.target_hw]
-                ult_heatmap = torch.zeros((1, 1, target_hw[0], target_hw[1]),
-                        dtype=topk_outputs[0][0].dtype,
-                        device=topk_outputs[0][0].device)
-                all_scores = torch.cat([t[0] for t in topk_outputs])
-                all_ys = torch.cat([t[2] for t in topk_outputs]).long()
-                all_xs = torch.cat([t[3] for t in topk_outputs]).long()
-                # NOTE, better is to do scatter_max, but its ok
-                ult_heatmap[:, :, all_ys, all_xs] = all_scores
-                batch_dict['ult_heatmap'] = ult_heatmap
+            for i, topk_out in enumerate(topk_outputs):
+                topk_out[-1] += x_min  # NOTE assume the resolution is same
 
-            forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
-            if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
-                forecasted_dets = None # NOTE this appears to be a bug, but dont know how to fix it
+            forecasted_dets = None
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
+
             self.measure_time_end('CenterHead-GenBox')
 
             return batch_dict
@@ -308,6 +229,9 @@ class PillarNetVALO(AnytimeTemplateV2):
         if self.dense_head_scrpt is None:
             self.dense_head.instancenorm_mode()
             self.dense_head_scrpt = torch.jit.script(self.dense_head)
+
+        # Not necessary but its ok
+        self.dense_head.adjust_voxel_size_wrt_resolution(self.resolution_dividers[self.res_idx]) 
 
         if self.opt_dense_convs is None:
             self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)
@@ -365,8 +289,8 @@ class PillarNetVALO(AnytimeTemplateV2):
             N, C, H, W = (int(s) for s in fwd_data.shape)
             # NOTE assumes the point cloud range is a square H == max W
             max_W = H
-            min_shape = (N, C, H, max_W // self.tcount)
-            opt_shape = (N, C, H, max_W // self.tcount * (self.tcount - 2))
+            min_shape = (N, C, H, 16)
+            opt_shape = (N, C, H, max_W  - 16)
             max_shape = (N, C, H, max_W)
             create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
             self.fused_convs_trt[self.res_idx] = TRTWrapper(trt_path, input_names, self.opt_outp_names)
@@ -423,5 +347,5 @@ class PillarNetVALO(AnytimeTemplateV2):
 
     def calibrate(self, batch_size=1):
         ret = super().calibrate(1)
-        self.res_idx = 0
+        self.res_idx = 1
         return ret

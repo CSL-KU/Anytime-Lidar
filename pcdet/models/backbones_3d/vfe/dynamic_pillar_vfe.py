@@ -234,24 +234,29 @@ class DynamicPillarVFESimple2D(VFETemplate):
         return self.num_filters[-1]
 
     @torch.no_grad()
-    def range_filter(self, batch_dict, filter_z=True):
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
+    def range_filter(self, batch_dict):
+        points = batch_dict['points'] # (batch_idx, x, y, z, i, t)
 
-        if filter_z:
-            points_z = points[:, 3]
-            mask = torch.logical_and(points_z > self.point_cloud_range[2], points_z < self.point_cloud_range[5])
-            points = points[mask]
+        points_xyz = points[:, 1:4]
+        mask_min = points_xyz > self.point_cloud_range[:3]
+        mask_max = points_xyz < self.point_cloud_range[3:]
 
-        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
-        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
-        batch_dict['points'] = points[mask]
-        batch_dict['points_coords'] = points_coords[mask]
+        mask = (mask_min & mask_max).all(dim=1)
+
+        points = points[mask]
+        batch_dict['points'] = points
+        return batch_dict
+
+    @torch.no_grad()
+    def calc_points_coords(self, batch_dict):
+        points = batch_dict['points']
+        batch_dict['points_coords'] = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]])
+                / self.voxel_size[[0,1]]).int()
         return batch_dict
 
     @torch.no_grad()
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
         points_xyz = points[:, [1, 2, 3]].contiguous()
 

@@ -288,6 +288,9 @@ class PillarRes18BackBone8x(nn.Module):
         # numbers here are determined with respect to strides
         return [tile_size_voxels / float(s) for s in (2,4,8)]
 
+    def sparse_outp_downscale_factor(self):
+        return 8 # 3 convs with stride of 2
+
     def forward_up_to_dense(self, batch_dict):
         pillar_features, pillar_coords = batch_dict['pillar_features'], batch_dict['pillar_coords']
         batch_size = batch_dict['batch_size']
@@ -404,6 +407,25 @@ class PillarRes18BackBone8x(nn.Module):
             batch_dict['bb3d_intermediary_vcoords'] = vcoords
 
         return batch_dict
+
+    # this function emulates the sparse convolutions and calculates the
+    # number of voxels for each stage
+    # takes ~1 ms on gpu
+    def sparse_convs_num_voxels_calc(self, batch_dict):
+        pillar_coords = batch_dict['pillar_coords']
+
+        resdiv = batch_dict.get('resolution_divider', 1)
+        sparse_shape = [int(s/resdiv) for s in self.sparse_shape]
+        bev_img = torch.zeros((1, 1, *sparse_shape), device=pillar_coords.device)
+        bev_img[:, :, pillar_coords[:, 1], pillar_coords[:, 2]] = 1.
+
+        x1 = torch.nn.functional.max_pool2d(bev_img, kernel_size=3, stride=2, padding=1)
+        x2 = torch.nn.functional.max_pool2d(x1, kernel_size=3, stride=2, padding=1)
+        x3 = torch.nn.functional.max_pool2d(x2, kernel_size=3, stride=2, padding=1)
+        n1 = x1.sum()
+        n2 = x2.sum()
+        n3 = x3.sum()
+        return [pillar_coords.size(0), n1.item(), n2.item(), n3.item()]
 
     def forward_dense(self, x_conv4):
         return self.conv5(x_conv4)

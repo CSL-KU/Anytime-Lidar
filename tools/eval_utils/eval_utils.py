@@ -210,7 +210,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
             points = batch_dict['points']
 
-            pub_heatmap = True
+            pub_heatmap = False
             ma = None
             if pub_heatmap:
                 ult_heatmap = None
@@ -259,8 +259,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             points = points[points[:,-1] == 0.] # only one scan
             points = points[:, 1:-1].cpu().contiguous().numpy()
 
-            vis_node.publish_vis_data(det_pred_dict, gt_pred_dict, points,
-                    tstamp=None, heatmap_ma=ma)
+            if det_pred_dict['pred_boxes'].size(0) > 0:
+                vis_node.publish_vis_data(det_pred_dict, gt_pred_dict, points,
+                        tstamp=None, heatmap_ma=ma)
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
         bd = {k:batch_dict[k] for k in ('frame_id', 'metadata')}
