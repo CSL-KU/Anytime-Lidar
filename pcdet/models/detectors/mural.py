@@ -58,19 +58,22 @@ class MURAL(Detector3DTemplate):
                     vsize_calc.interpolate_pillar_sizes(self.max_grid_l, rd, pc_range_l,
                     step=grid_slice_sz)
             #Additional resolution lower than lowest trained resolution
-            area_l_cm = int((pc_range_l[3] - pc_range_l[0]) * 1000)
-            area_min_l_cm = area_l_cm - 1500
-            area_max_l_cm = area_l_cm + 1500
+            area_l_mm = int((pc_range_l[3] - pc_range_l[0]) * 1000)
+            area_min_l_mm = area_l_mm - 1500000
+            area_max_l_mm = area_l_mm + 1500000
             min_grid_len = all_grid_lens[-1]
-
-            diffs = (32, 64, 96) if self.dettype == 'PointPillarsCP' else (128,)
-            for diff in diffs:
-                opt = vsize_calc.calc_area_and_pillar_sz(min_grid_len-diff, area_min_l_cm, area_max_l_cm)
-                new_pc_range, new_psize, new_grid_l = vsize_calc.option_to_params(opt, pc_range_l, pillar_h=0.2)
-                all_pc_ranges.append(new_pc_range)
-                all_pillar_sizes.append(new_psize)
-                all_grid_lens.append(new_grid_l)
-                resdiv_mask.append(False)
+            if model_cfg.get('EXTRAPOLATE_RES', True):
+                diffs = (32, 64, 96) if self.dettype == 'PointPillarsCP' else (128,)
+                for diff in diffs:
+                    opt = vsize_calc.calc_area_and_pillar_sz(min_grid_len-diff, area_min_l_mm,
+                                                             area_max_l_mm)
+                    new_pc_range, new_psize, new_grid_l = vsize_calc.option_to_params(opt,
+                                                                                      pc_range_l,
+                                                                                      pillar_h=0.2)
+                    all_pc_ranges.append(new_pc_range)
+                    all_pillar_sizes.append(new_psize)
+                    all_grid_lens.append(new_grid_l)
+                    resdiv_mask.append(False)
             new_resdivs = [all_grid_lens[0]/gl for gl in all_grid_lens]
             rd = new_resdivs
             all_pillar_sizes = torch.tensor(all_pillar_sizes)

@@ -2,19 +2,19 @@ import math
 #import numba
 
 #@numba.jit(nopython=True)
-def calc_area_and_pillar_sz(desired_grid_l : int, area_min_l_cm : int, area_max_l_cm : int):
-    if area_min_l_cm % desired_grid_l == 0:
-        pillar_size = area_min_l_cm // desired_grid_l
+def calc_area_and_pillar_sz(desired_grid_l : int, area_min_l_mm : int, area_max_l_mm : int):
+    if area_min_l_mm % desired_grid_l == 0:
+        pillar_size = area_min_l_mm // desired_grid_l
     else:
-        pillar_size = area_min_l_cm // desired_grid_l + 1
+        pillar_size = area_min_l_mm // desired_grid_l + 1
 
     area_tmp_l = pillar_size * desired_grid_l
 
     found = False
-    while area_tmp_l >= area_min_l_cm and area_tmp_l <= area_max_l_cm:
+    while area_tmp_l >= area_min_l_mm and area_tmp_l <= area_max_l_mm:
         # Before printing, make it meters
-        area_l_half = area_tmp_l / 2000.0
-        pillar_size_f = pillar_size / 1000.0
+        area_l_half = area_tmp_l / 2000000.0
+        pillar_size_f = pillar_size / 1000000.0
 
         # Make sure the floating point error does not affect grid size
         calc_grid_l = int((area_l_half - (-area_l_half)) / pillar_size_f)
@@ -31,20 +31,20 @@ def calc_area_and_pillar_sz(desired_grid_l : int, area_min_l_cm : int, area_max_
     else:
         return 0., 0., 0.
 
-def get_middle_option(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step):
+def get_middle_option(max_grid_l, min_grid_l, area_max_l_mm, area_min_l_mm, step):
     options = []
     cur_grid_l = min_grid_l + step
     while cur_grid_l < max_grid_l:
-        x = calc_area_and_pillar_sz(cur_grid_l, area_min_l_cm, area_max_l_cm)
+        x = calc_area_and_pillar_sz(cur_grid_l, area_min_l_mm, area_max_l_mm)
         options.append(x)
         cur_grid_l += step
     return options[len(options)//2]
 
-def get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step):
+def get_all_options(max_grid_l, min_grid_l, area_max_l_mm, area_min_l_mm, step):
     options = []
     cur_grid_l = min_grid_l + step
     while cur_grid_l <= max_grid_l:
-        x = calc_area_and_pillar_sz(cur_grid_l, area_min_l_cm, area_max_l_cm)
+        x = calc_area_and_pillar_sz(cur_grid_l, area_min_l_mm, area_max_l_mm)
         if x[0] != 0.:
             options.append(x)
         cur_grid_l += step
@@ -60,9 +60,9 @@ def option_to_params(opt, pc_range, pillar_h=0.2):
 
 def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32, pillar_h=0.2):
     grid_lens = [int(max_grid_l / rd) for rd in res_divs]
-    area_l_cm = int((pc_range[3] - pc_range[0]) * 1000)
-    area_min_l_cm = area_l_cm - 1500 #(area_l_cm % 1000)
-    area_max_l_cm = area_l_cm + 1500
+    area_l_mm = int((pc_range[3] - pc_range[0]) * 1000000)
+    area_min_l_mm = area_l_mm - 1500000
+    area_max_l_mm = area_l_mm + 1500000
 
     all_pc_ranges = []
     all_pillar_sizes = []
@@ -73,13 +73,13 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32, pillar_h=0
         resdiv_mask.append(True)
 
         all_pc_ranges.append(pc_range)
-        psize = (area_l_cm // grid_lens[i]) / 1000
+        psize = (area_l_mm // grid_lens[i]) / 1000000
         # The 0.2 can be any number since it is ignored
         psize = [psize, psize, pillar_h]
         all_pillar_sizes.append(psize)
 
         area_left_lim, area_right_lim, new_pillar_size = get_middle_option(
-                *grid_lens[i:i+2], area_max_l_cm, area_min_l_cm, step)
+                *grid_lens[i:i+2], area_max_l_mm, area_min_l_mm, step)
         if area_left_lim == 0.:
             print('Couldn\'t find middle pillar size!')
             continue
@@ -96,7 +96,7 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32, pillar_h=0
     all_grid_lens.append(grid_lens[-1])
     resdiv_mask.append(True)
     all_pc_ranges.append(pc_range)
-    psize = (area_l_cm // grid_lens[-1]) / 1000
+    psize = (area_l_mm // grid_lens[-1]) / 1000000
     psize = [psize, psize, pillar_h]
     all_pillar_sizes.append(psize)
 
@@ -106,9 +106,9 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32, pillar_h=0
 
 if __name__ == "__main__":
     max_grid_l, min_grid_l = 512, 128
-    area_max_l_cm, area_min_l_cm = 102400, 102400
+    area_max_l_mm, area_min_l_mm = 102400000, 102400000
     step = 32
-    options = get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step)
+    options = get_all_options(max_grid_l, min_grid_l, area_max_l_mm, area_min_l_mm, step)
     grid_sizes = []
     for opt in options:
         gs = (opt[1] - opt[0]) / opt[2]
