@@ -76,6 +76,30 @@ class InferenceNode(Node):
                                                self.pc_callback, 10)
         self.sample_counter = 0
 
+        # Define the transformation matrix from
+        # velodyne_top frame to base_link frame
+        self.vt_to_bl_tf = torch.tensor([
+			[  0.032, -0.999,  0.015,  0.901],
+			[  0.999,  0.032,  0.000,  0.000],
+			[ -0.001,  0.015,  1.000,  2.066],
+			[  0.000,  0.000,  0.000,  1.000]
+        ], dtype=torch.float32)
+
+    def tranform_to_base_link(self, objects):
+        # Extract translation and orientation components
+        translations = objects[:, :3]  # [x, y, z]
+
+        # Apply transformation to translations
+        translations_h = torch.cat([translations, torch.ones(translations.shape[0], 1)], dim=1)
+        transformed_translations_h = torch.mm(self.vt_to_bl_tf, translations_h.T)
+        objects[:, :3] = transformed_translations_h[:3, :].T  # Extract x, y, z
+
+        # Update yaw based on rotation
+        yaw_rotation_angle = torch.atan2(self.vt_to_bl_tf[1, 0], self.vt_to_bl_tf[0, 0])  # Extract yaw rotation
+        objects[:, 6] += yaw_rotation_angle
+
+        return objects
+
     def init_model(self, args):
         cfg_from_yaml_file(args.cfg_file, cfg)
         if args.set_cfgs is not None:
@@ -128,10 +152,14 @@ class InferenceNode(Node):
             with torch.no_grad():
                 model.res_idx = 3
 
+                tensor = f32_multi_arr_to_tensor(multi_arr).cuda()
+                # the reference frame of awsim is baselink, so we need to change that to
+                # lidar by decreasing z
+                batch_id = torch.zeros(tensor.size(0), dtype=tensor.dtype,  device=tensor.device)
+
                 batch_dict = {
-                    'points': f32_multi_arr_to_tensor(multi_arr)
+                    'points': torch.cat((batch_id.unsqueeze(-1), tensor), dim=1)
                 }
-                batch_dict['points'] = batch_dict['points'].cuda() # Takes 50 ms?
                 torch.cuda.synchronize()
 
                 #load_data_to_gpu(batch_dict)
@@ -165,14 +193,17 @@ class InferenceNode(Node):
             model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
 
             pred_dict = batch_dict['final_box_dicts'][0]
+            pred_dict['pred_boxes'] = self.tranform_to_base_link(pred_dict['pred_boxes'])
+
             self.publish_dets(pred_dict, multi_arr.header.stamp)
             finish_time = time.time()
             #print(batch_dict['final_box_dicts'][0]['pred_labels'].size(), (finish_time -start_time)*1e3, 'ms')
         self.sample_counter += 1
             #finishovski_time = time.time()
 
-        if self.sample_counter % 50 == 0:
+        if self.sample_counter % 100 == 0:
             model.print_time_stats()
+            model.clear_stats()
 
     # This func takes less than 1 ms, ~0.6 ms
     def publish_dets(self, pred_dict, stamp):
