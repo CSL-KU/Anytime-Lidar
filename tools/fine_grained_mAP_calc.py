@@ -13,7 +13,9 @@ import numba
 from matplotlib import pyplot as plt
 from collections import OrderedDict
 from itertools import cycle
-
+from tqdm import tqdm
+from itertools import product
+import concurrent.futures
 #"fields": [
 #        "scene",
 #        "time_segment",
@@ -22,6 +24,12 @@ from itertools import cycle
 #        "deadline_ms",
 #        "seg_sample_stats"
 #    ],
+def get_dl_data(datas, dl):
+    for d in datas:
+        if d[0] == dl:
+            return d
+    return datas[0]
+
 
 #@numba.jit(nopython=True)
 def gen_features(bboxes, scores, labels, coords_2d=True):
@@ -50,10 +58,10 @@ def create_bev_tensor(feature_coords, features):
     return bev_tensor
 
 class SegInfo:
-    def __init__(self, path_list, eval_path_list = [], dist_th=None, class_name=None):
-        self.class_names = ['car','truck', 'construction_vehicle', 'bus', 'trailer',
-                      'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
-        self.dist_thresholds = ['0.5', '1.0', '2.0', '4.0'] # hope this will be ok
+    def __init__(self, path_list, eval_path_list = []): #, dist_th=None, class_name=None):
+        self.class_names = ['car'] #,'truck', 'construction_vehicle', 'bus', 'trailer',
+#                      'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+        self.dist_thresholds = ['2.0'] #, '1.0', '2.0', '4.0'] # hope this will be ok
 
         self.dataset_dict = {} # key: sample_token val: (deadline, bev_tensor)
         for path in eval_path_list:
@@ -92,13 +100,13 @@ class SegInfo:
         for i, f in enumerate(seg_info_fields):
             self.__setattr__(f+'_idx', i)
 
-        if dist_th is not None:
-            self.seg_info_tuples = [t for t in self.seg_info_tuples \
-                    if t[self.dist_th_idx] == dist_th]
+#        if dist_th is not None:
+        self.seg_info_tuples = [t for t in self.seg_info_tuples \
+                 if t[self.dist_th_idx] == 2.0]
 
-        if class_name is not None:
-            self.seg_info_tuples = [t for t in self.seg_info_tuples \
-                    if t[self.class_idx] == class_name]
+#        if class_name is not None:
+        self.seg_info_tuples = [t for t in self.seg_info_tuples \
+                 if t[self.class_idx] == 'car']
         
         self.scene_to_idx={}
         self.scene_to_idx_counter=0
@@ -155,39 +163,57 @@ class SegInfo:
         self.all_segments = list(seg_sample_tokens_dict.keys())
         self.all_deadlines = list(all_deadlines)
 
+    def calc_max_mAP(self, lims):
+        if lims[0] == 0:
+            progress_bar = tqdm(total=lims[1]-lims[0], leave=True, dynamic_ncols=True)
+        else:
+            progress_bar = None
 
-    def do_eval(self, deadline_ms=None, exhaustive=False):
+        max_mAP =.0
+        for it, perm in enumerate(product(self.all_deadlines, repeat=len(self.all_segments))):
+            if it >= lims[0] and it < lims[1]:
+                cur_seg_dls = {seg:dl for dl, seg in zip(perm, self.all_segments)}
+                seg_eval_dict = {}
+                for key, datas in self.seg_eval_data_dict.items():
+                    seg_i = '='.join(key.split('=')[:2])
+                    seg_eval_dict[key] = get_dl_data(datas, cur_seg_dls[seg_i])
+                mAP = self.calc_mAP(seg_eval_dict, False)
+                if mAP > max_mAP:
+                    max_mAP = mAP
+                    best_perm = perm
+                    best_seg_eval_dict = seg_eval_dict
+                    #progress_bar.set_postfix({'mAP':max_mAP})
+                if progress_bar is not None:
+                    progress_bar.update()
+
+        if progress_bar is not None:
+            progress_bar.close()
+
+        return (max_mAP, best_perm, best_seg_eval_dict)
+
+    def do_eval(self, deadline_ms=None, upper_bound_calc_method='heuristic'):
         #if deadline is none, it will pick the deadline that gives the best result
-
-        def get_dl_data(datas, dl):
-            for d in datas:
-                if d[0] == dl:
-                    return d
-            return datas[0]
 
         if deadline_ms is None: # calculate upper bound
             max_mAP = 0.
             best_seg_eval_dict = None
 
-            from tqdm import tqdm
-            if exhaustive:
-                from itertools import product
+            if upper_bound_calc_method == 'exhaustive':
                 num_iters = len(self.all_deadlines)**len(self.all_segments)
-                progress_bar = tqdm(total=num_iters, leave=True, dynamic_ncols=True)
-                for it, perm in enumerate(product(self.all_deadlines, repeat=len(self.all_segments))):
-                    cur_seg_dls = {seg:dl for dl, seg in zip(perm, self.all_segments)}
-                    seg_eval_dict = {}
-                    for key, datas in self.seg_eval_data_dict.items():
-                        seg_i = '='.join(key.split('=')[:2])
-                        seg_eval_dict[key] = get_dl_data(datas, cur_seg_dls[seg_i])
-                    mAP = self.calc_mAP(seg_eval_dict, False)
-                    if mAP > max_mAP:
-                        max_mAP = mAP
-                        best_perm = perm
-                        best_seg_eval_dict = seg_eval_dict
-                        progress_bar.set_postfix({'mAP':max_mAP})
-                    progress_bar.update()
-            else: # Heuristic
+                num_procs = 12
+                step = num_iters // num_procs
+                lims_all = [[i*step, (i+1)*step] for i in range(num_procs)]
+                lims_all[-1][-1] = num_iters
+                #print(num_iters,  lims)
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_procs) as executor:
+                    futures =[executor.submit(self.calc_max_mAP, lims) for lims in lims_all]
+                    for fut in futures:
+                        mAP, perm_ret, seg_eval_dict_ret = fut.result()
+                        if mAP > max_mAP:
+                            max_mAP = mAP
+                            best_perm = perm_ret
+                            best_seg_eval_dict = seg_eval_dict_ret
+            elif upper_bound_calc_method == 'heuristic':
                 # for each segment, try all deadlines and find the best deadline
                 # that gives the most boost to the mAP.
                 num_iters = len(self.all_deadlines)*len(self.all_segments)
@@ -204,14 +230,66 @@ class SegInfo:
                         mAP = self.calc_mAP(seg_eval_dict, False)
                         if mAP > max_mAP:
                             max_mAP = mAP
-                            #print('max mAP:', max_mAP)
                             best_seg_eval_dict = seg_eval_dict
                             progress_bar.set_postfix({'mAP':max_mAP})
                         else:
                             cur_seg_dls[seg] = old_dl
                         progress_bar.update()
                 best_perm = list(cur_seg_dls.values())
+            elif upper_bound_calc_method == 'precision_based':
+                num_iters = len(self.all_segments)
+                progress_bar = tqdm(total=num_iters, leave=True, dynamic_ncols=True)
+                seg_dls, best_seg_eval_dict, best_perm = {}, {}, []
+                for j, seg in enumerate(self.all_segments):
+                    datas_all = []
+                    keys_all = []
+                    for key, datas in self.seg_eval_data_dict.items():
+                        seg_i = '='.join(key.split('=')[:2])
+                        if seg == seg_i:
+                            datas_all.extend(datas)
+                            keys_all.append(key)
+                    #determine the best deadline for this segment
+                    deadlines, cnt = np.unique([d[0] for d in datas_all], return_counts=True)
+                    cnt = -(cnt - np.max(cnt)) # num zeros to add
+                    best_dl, max_prec = datas_all[0][0], 0.
+                    for i, dl in enumerate(deadlines):
+                        dl_datas = [d for d in datas_all if d[0] == dl]
+
+                        class_agnostic = False
+                        if class_agnostic:
+                            merged_datas = (
+                                dl_datas[0],
+                                np.concatenate([d[1] for d in dl_datas]),
+                                np.concatenate([d[2] for d in dl_datas]),
+                                np.sum([d[3] for d in dl_datas]).item()
+                            )
+                            mean_prec, mean_rec = self.get_seg_prec_recall(merged_datas)
+                        else:
+                            precs_and_recs  = [self.get_seg_prec_recall(d) for d in dl_datas]
+                            precs_and_recs += [0., 0.] * cnt[i]
+                            precs_and_recs = np.array(precs_and_recs)
+                            mean_prec = np.mean(precs_and_recs[:, 0])
+                            mean_rec = np.mean(precs_and_recs[:, 1])
+                            #mean_prec += mean_rec
+
+                        if mean_prec > max_prec:
+                            best_dl = dl
+                            max_prec = mean_prec
+
+                    for key in keys_all:
+                        datas = get_dl_data(self.seg_eval_data_dict[key], best_dl)
+                        best_seg_eval_dict[key] = datas
+                    best_perm.append(best_dl)
+
+                    progress_bar.update()
+                max_mAP = self.calc_mAP(best_seg_eval_dict, False)
+            else:
+                print('Unkown upper bound calculation method', upper_bound_calc_method)
+                return
+
             progress_bar.close()
+            print('Deadlines of each segment:')
+            print(best_perm)
             print('Upper bound mAP:', max_mAP)
             print('Deadline stats:')
             deadlines, occurances = np.unique(np.array(best_perm), return_counts=True)
@@ -285,7 +363,7 @@ class SegInfo:
         """ Calculated average precision. """
         sort_inds = np.argsort(-all_scr) # descending
         tp = all_tp[sort_inds]
-        scr =  all_scr[sort_inds] # this is confidence score
+        #scr =  all_scr[sort_inds] # this is confidence score
         fp = np.logical_not(tp)
         #print('class:', cls_nm, 'dist thr:', dist_th, 'num dets:', tp.shape)
 
@@ -313,11 +391,12 @@ class SegInfo:
     def get_seg_prec_recall(self, eval_data_tpl):
         deadline_ms, tp_arr, scr_arr, num_gt_seg = eval_data_tpl
 
-        if num_gt_seg == 0: # dont consider these, ignore false positives
-            return -1, -1
+        if num_gt_seg == 0:
+            return 0., 0.
 
         tp = np.sum(tp_arr)
         fp = len(tp_arr) - tp
+
         if fp == 0. and tp == 0.:
             return 0., 0.
         else:
@@ -362,15 +441,18 @@ seg_info = SegInfo( # takes a list
 #        [in_dir+'cp_pp_valo.json'],
 #        [in_dir+'cp_voxel01_valo.json'],
         ['segment_precision_info.json'],
-        [f'eval_data_{float(dl)}ms.pkl' for dl in range(45,105+1,30)]
+#        [f'eval_data_{float(dl)}ms.pkl' for dl in range(95,195+1,50)]
 #        ['backup/segment_precision_info.json'],
 #        ['./backup/'+f'eval_data_{float(dl)}ms.pkl' for dl in range(45,105+1,10)]
 )
 #VALO
-for dl in seg_info.all_deadlines:
-    print('Deadline', dl)
-    seg_info.do_eval(dl)
-seg_info.do_eval()
+#for dl in seg_info.all_deadlines:
+#    print('Deadline', dl)
+#    seg_info.do_eval(dl)
+
+seg_info.do_eval(None, 'precision_based')
+seg_info.do_eval(None, 'heuristic')
+#seg_info.do_eval(None, 'exhaustive')
 
 #baseline
 #for dl in (75, 125, 175):
