@@ -7,7 +7,7 @@ import concurrent.futures
 import time
 
 numres = 5
-num_calibs_scenes = 75
+num_calibs_scenes = 150
 #merge_evals=True
 merge_evals=False
 NUM_BINS=10
@@ -117,7 +117,7 @@ else:
     with open('sampled_dets/dataset.pkl', 'rb') as f:
         all_evals = pickle.load(f)
 
-global_best_res = 2
+global_best_res = 1
 res_sel_stats_train, res_sel_stats_test = np.zeros(numres), np.zeros(numres)
 # For each calibration scene
 all_train_inputs, all_train_labels = [], []
@@ -139,11 +139,13 @@ for calib_id, evals in enumerate(all_evals):
         tuples = np.stack(new_tuples)
 
     #if res_sel_stats[best_res] % 5 == 0: # if want to do split of 80% to 20%
-    if calib_id <= 75:
-        all_test_inputs.append(tuples)
-        all_test_labels.append(np.full(tuples.shape[0], best_res))
+    if (res_sel_stats_train + res_sel_stats_test)[best_res] % 2 == 0:
+        #if res_sel_stats_test[best_res] < 9:
+        all_test_inputs.append(tuples[:2])
+        all_test_labels.append(np.full(tuples[:2].shape[0], best_res))
         res_sel_stats_test[best_res] += 1
     else:
+        #if res_sel_stats_train[best_res] < 9:
         all_train_inputs.append(tuples)
         all_train_labels.append(np.full(tuples.shape[0], best_res))
         res_sel_stats_train[best_res] += 1
@@ -170,13 +172,9 @@ y_test = y_test[mask]
 # Using relvel 90th percentile, num cars, num peds, num barriers, num tcones works ok!
 objveldist = [f'objvel_bin{i}' for i in range(NUM_BINS)]
 relveldist = [f'relvel_bin{i}' for i in range(NUM_BINS)]
-
-feature_names = ['ev', *objveldist, *relveldist,
-                 #'ov10p', 'ovmean', 'ov90p', 'ov99p', 'ovsum',
-                 #'rv10p', 'rvmean', 'rv90p', 'rv99p', 'rvsum',
-                 'car','truck', 'construction_vehicle', 'bus', 'trailer',
-                 'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
-                 'exec_time_ms']
+obj_names = ['car','truck', 'construction_vehicle', 'bus', 'trailer',
+             'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+feature_names = ['ev', *objveldist, *relveldist, *obj_names, 'exec_time_ms']
 
 ci = feature_names.index('car')
 X_train = np.concatenate((X_train, X_train[:,ci:ci+10].sum(1, keepdims=True)),axis=1)
@@ -191,7 +189,7 @@ if do_masking:
     print('mask:', mask)
     X_train = X_train[:, mask]
     X_test = X_test[:, mask]
-    features_names = features_to_keep
+    feature_names = features_to_keep
 
 print('Chosen feature names:')
 print(feature_names)
@@ -266,10 +264,10 @@ y_pred = rf_classifier.predict(X_test)
 
 #speed test
 t1 = time.monotonic()
-for i in range(100):
+for i in range(50):
     rf_classifier.predict(X_test[i:i+1])
 t2 = time.monotonic()
-tdiff = (t2 - t1) * 1000 / 100
+tdiff = (t2 - t1) * 1000 / 50
 print('Inference time:', tdiff, 'ms')
 
 # Calculate accuracy
@@ -302,6 +300,7 @@ else:
 #cv_scores = cross_val_score(rf_classifier, X, y, cv=5)
 #print("\nCross-validation scores:", cv_scores)
 #print(f"Average CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+
 import sys
 sys.exit()
 
