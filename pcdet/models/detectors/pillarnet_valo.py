@@ -12,20 +12,23 @@ import numpy as np
 from typing import List
 
 import ctypes
-ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so", mode=ctypes.RTLD_GLOBAL)
-
+ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so",
+        mode=ctypes.RTLD_GLOBAL)
 
 class DenseConvsPipeline(torch.nn.Module):
-    def __init__(self, backbone_2d, dense_head, tcount):
+    def __init__(self, backbone_3d, backbone_2d, dense_head, tcount):
         super().__init__()
+        self.backbone_3d = backbone_3d
         self.backbone_2d = backbone_2d
         self.dense_head = dense_head
         self.tcount = tcount
 
-    def forward(self, spatial_features : torch.Tensor, set_out_tile_sizes : bool = False) -> List[torch.Tensor]:
-        spatial_features_2d = self.backbone_2d(spatial_features)
+    def forward(self, x_conv4 : torch.Tensor, set_out_tile_sizes : bool = False) -> List[torch.Tensor]:
+        x_conv5 = self.backbone_3d.forward_dense(x_conv4)
+        data_dict = self.backbone_2d({"multi_scale_2d_features" : 
+            {"x_conv4": x_conv4, "x_conv5": x_conv5}})
 
-        outputs = self.dense_head.forward_pre(spatial_features_2d)
+        outputs = self.dense_head.forward_pre(data_dict['spatial_features_2d'])
         shr_conv_outp = outputs[0]
         heatmaps = outputs[1:]
 
@@ -60,7 +63,7 @@ def fix_topk_outputs(tile_sizes : List[int], mapping : torch.Tensor,
         topk_out[-1] = xs + tile_sz * (mapping[xs_tile_inds] - xs_tile_inds)
     return topk_outputs
 
-class CenterPointVALO(AnytimeTemplateV2):
+class PillarNetVALO(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         torch.backends.cudnn.benchmark = True
@@ -68,31 +71,22 @@ class CenterPointVALO(AnytimeTemplateV2):
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
 
-        self.update_time_dict( {
+        self.update_time_dict({
             'Sched1' : [],
             'VFE' : [],
-            'MapToBEV' : [],
             'Sched2' : [],
-        })
-        if self.sched_bb3d:
-            self.update_time_dict({'Backbone3D': []})
-        self.update_time_dict( {
+            'Backbone3D': [],
             'FusedOps':[],
             'CenterHead-GenBox': [],
         })
 
-        if self.sched_bb3d:
-            self.vfe, self.backbone_3d, self.map_to_bev, self.backbone_2d, \
-                    self.dense_head = self.module_list
-        else:
-            self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
-            self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
+        self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
@@ -107,12 +101,10 @@ class CenterPointVALO(AnytimeTemplateV2):
 
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
-            # VFE doesn't take much of a time (5 ms), do not schedule its input
             batch_dict = self.vfe.range_filter(batch_dict)
-            if self.sched_vfe:
-                self.measure_time_start('Sched1')
-                batch_dict = self.schedule1(batch_dict)
-                self.measure_time_end('Sched1')
+            self.measure_time_start('Sched1')
+            batch_dict = self.schedule1(batch_dict)
+            self.measure_time_end('Sched1')
 
             if self.is_calibrating():
                 e1 = torch.cuda.Event(enable_timing=True)
@@ -122,6 +114,7 @@ class CenterPointVALO(AnytimeTemplateV2):
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
+            batch_dict['pillar_coords'] = batch_dict['voxel_coords']
             self.measure_time_end('VFE')
 
             if self.is_calibrating():
@@ -129,29 +122,14 @@ class CenterPointVALO(AnytimeTemplateV2):
                 e2.record()
                 batch_dict['vfe_layer_time_events'] = [e1, e2]
 
-            if not self.sched_vfe:
-                self.measure_time_start('Sched1')
-                batch_dict = self.schedule1(batch_dict)
-                self.measure_time_end('Sched1')
-
-            if self.sched_bb3d:
-                self.measure_time_start('Backbone3D')
-                batch_dict = self.backbone_3d(batch_dict)
-                self.measure_time_end('Backbone3D')
+            self.measure_time_start('Backbone3D')
+            batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
+            x_conv4 = batch_dict['x_conv4_out']
+            self.measure_time_end('Backbone3D')
 
             if self.is_calibrating():
                 e3 = torch.cuda.Event(enable_timing=True)
                 e3.record()
-
-            self.measure_time_start('MapToBEV')
-            if self.sched_bb3d:
-                batch_dict = self.map_to_bev(batch_dict)
-            else:
-                batch_dict['spatial_features'] = self.map_to_bev_scrpt(
-                        batch_dict['pillar_features'],
-                        batch_dict['voxel_coords'],
-                        batch_dict['batch_size'])
-            self.measure_time_end('MapToBEV')
 
             self.measure_time_start('Sched2')
             batch_dict = self.schedule2(batch_dict)
@@ -173,24 +151,24 @@ class CenterPointVALO(AnytimeTemplateV2):
                 fcdets_fut = None
 
             if not self.optimization1_done:
-                self.optimize1(batch_dict['spatial_features'])
+                self.optimize1(x_conv4)
 
+            batch_dict['spatial_features'] = x_conv4
             batch_dict['tcount'] = self.tcount
             batch_dict = prune_spatial_features(batch_dict)
+            x_conv4 = batch_dict['spatial_features'] # sliced
             self.measure_time_end('Sched2')
 
             self.measure_time_start('FusedOps')
-            sf = batch_dict['spatial_features']
             if self.fused_convs_trt is not None:
-                self.trt_outputs = self.fused_convs_trt({'spatial_features': sf}, self.trt_outputs)
+                self.trt_outputs = self.fused_convs_trt({'x_conv4': x_conv4}, self.trt_outputs)
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs)
             else:
-                outputs = self.opt_dense_convs(sf)
+                outputs = self.opt_dense_convs(x_conv4)
                 outp_names = self.opt_dense_convs_output_names_pd + \
                         self.opt_dense_convs_output_names_topk
                 out_dict = {name:outp for name, outp in zip(outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
-
             self.measure_time_end('FusedOps')
 
             if self.is_calibrating():
@@ -226,7 +204,7 @@ class CenterPointVALO(AnytimeTemplateV2):
     def optimize1(self, fwd_data):
         optimize_start = time.time()
 
-        input_names = ['spatial_features']
+        input_names = ['x_conv4']
         print(input_names[0], fwd_data.size())
         self.opt_dense_convs_output_names_pd = [name + str(i) for i in range(self.dense_head.num_det_heads) \
                 for name in self.dense_head.ordered_outp_names(False)]
@@ -241,7 +219,7 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         self.dense_head.instancenorm_mode()
 
-        self.opt_dense_convs = DenseConvsPipeline(self.backbone_2d, self.dense_head, self.tcount)
+        self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head, self.tcount)
         self.opt_dense_convs.eval()
         self.opt_dense_convs(fwd_data, True) # do this so tile sizes are determined
 
@@ -249,7 +227,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
-                "spatial_features": {
+                "x_conv4": {
                     3: "width",
                 },
             }
@@ -259,11 +237,12 @@ class CenterPointVALO(AnytimeTemplateV2):
             torch.onnx.export(
                     self.opt_dense_convs,
                     fwd_data,
-                    onnx_path, input_names=input_names,
+                    onnx_path,
+                    input_names=input_names,
                     output_names=outp_names,
                     dynamic_axes=dynamic_axes,
                     opset_version=17,
-                    custom_opsets={"cuda_slicer": 17},
+                    custom_opsets={"cuda_slicer": 17}
             )
             generated_onnx=True
 
@@ -300,6 +279,7 @@ class CenterPointVALO(AnytimeTemplateV2):
                 pred_dicts[idx][name] = v
             else:
                 topk_outputs[idx][self.topk_outp_names.index(name)] = v
+
         return pred_dicts, topk_outputs
 
     def get_training_loss(self):

@@ -90,7 +90,7 @@ MODEL:
         SHARED_CONV_CHANNEL: 64
         USE_BIAS_BEFORE_NORM: True
         NUM_HM_CONV: 2
-        ENABLE_NORM_IN_ATTR_LAYERS: False
+        ENABLE_NORM_IN_ATTR_LAYERS: True
         SEPARATE_HEAD_CFG:
             HEAD_ORDER: ['center', 'center_z', 'dim', 'rot', 'vel']
             HEAD_DICT: {

@@ -68,6 +68,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
+        self.model_name = self.model_cfg.NAME + '_' + self.model_cfg.NAME_POSTFIX
+
         self.sched_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoSchedNoProj)
 
         self.keep_forecasting_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoProj or \
@@ -191,16 +193,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if vcount_area is not None:
             vcount_area = vcount_area.unsqueeze(0).numpy()
 
-        #print(pcount_area)
-        #print(vcount_area)
-
-        if not self.sched_vfe:
+        if self.sched_bb3d:
             batch_dict['vcount_area'] = torch.from_numpy(vcount_area).int().cuda()
         batch_dict['nonempty_tile_coords'] = netc
 
         num_tiles, tiles_queue = round_robin_sched_helper(
                     netc, self.last_tile_coord, self.tcount)
-        #print('netc', tiles_queue)
         batch_dict['tiles_queue'] = tiles_queue
         self.add_dict['nonempty_tiles'].append(netc.tolist())
 
@@ -279,8 +277,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             predicted_bb3d_time_layerwise = bb3d_times_layerwise[tidx]
             predicted_voxels = num_voxel_preds[tidx].astype(int).flatten()
 
-        #print('last_tile_coords', self.last_tile_coord)
-
         if self.sched_vfe:
             self.add_dict['vfe_preds'].append(predicted_vfe_time)
         if self.sched_bb3d:
@@ -299,7 +295,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     not self.use_baseline_bb3d_predictor
             batch_dict['record_time'] = True
             batch_dict['tile_size_voxels'] = self.tile_size_voxels
-        #batch_dict['num_tiles'] = self.tcount
 
         return batch_dict
 
@@ -313,10 +308,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 if self.use_voxelnext:
                     out = batch_dict['encoded_spconv_tensor']
                     batch_dict['bb3d_intermediary_vinds'].append(out.indices)
-                #print('\nactual voxels:')
                 num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
                         [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
-                #print(num_voxels_actual)
                 self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
             else:
                 self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
@@ -385,12 +378,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.collect_calib_data = False
 
         power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-        self.calib_fname = f"calibdata_{power_mode}_m{self.model_cfg.METHOD}_r{self.tcount}"
-        if self.sched_vfe:
-            self.calib_fname += '_svfe'
-        if self.sched_bb3d:
-            self.calib_fname += '_sbb3d'
-        self.calib_fname += '.json'
+        self.calib_fname = f"calibdata_{power_mode}_{self.model_name}_r{self.tcount}.json"
         try:
             self.calibrator.read_calib_data(self.calib_fname)
         except OSError:
@@ -473,7 +461,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 plt.ylim([0, 1])
                 plt.xlabel('Actual - Predicted bb3d execution time (msec)')
                 plt.ylabel('CDF')
-                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_time_pred_err_{timedata}.pdf')
+                plt.savefig(f'{root_path}/{self.model_name}_bb3d_time_pred_err_{timedata}.pdf')
                 plt.clf()
 
             if self.sched_bb3d and not self.use_baseline_bb3d_predictor and not self.sched_disabled:
@@ -494,7 +482,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 plt.legend()
                 plt.xlabel('Actual - Predicted bb3d layer times')
                 plt.ylabel('CDF')
-                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_layer_time_err_{timedata}.pdf')
+                plt.savefig(f'{root_path}/{self.model_name}_bb3d_layer_time_err_{timedata}.pdf')
                 plt.clf()
 
 
@@ -517,7 +505,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 plt.legend()
                 plt.xlabel('Actual - Predicted bb3d num voxels')
                 plt.ylabel('CDF')
-                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_num_voxel_pred_err_{timedata}.pdf')
+                plt.savefig(f'{root_path}/{self.model_name}_bb3d_num_voxel_pred_err_{timedata}.pdf')
                 plt.clf()
                 print('Num voxel to exec time plot saved.')
 
@@ -568,5 +556,5 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
                 #plt.subplots_adjust(wspace=0, hspace=0)
 
-                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data_all_{timedata}.pdf')
+                plt.savefig(f'{root_path}/{self.model_name}_bb3d_fitted_data_all_{timedata}.pdf')
                 #ax.set_xlim([0, 70000])

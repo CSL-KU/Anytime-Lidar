@@ -26,13 +26,13 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
 
     # Centerpoint-pointpillar * 
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_trt.yaml"
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_valo.yaml"
-    CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
 
     # Centerpoint-voxel01 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
+    CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
 
     # Centerpoint-voxel0075 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
@@ -43,9 +43,18 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml"
     #CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
  
-    # PillarNet
+    # PillarNet 0.075
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar0075_res2d_centerpoint_trt.yaml"
     #CKPT_FILE="../models/cbgs_pillar0075_res2d_centerpoint.pth"
+
+    # PillarNet 0.1
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_trt.yaml"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
+
+    # PillarNet 0.2
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
+    #CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
 
     # DSVT - CenterHead
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"

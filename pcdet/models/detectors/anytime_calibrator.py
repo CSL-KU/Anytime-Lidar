@@ -322,7 +322,6 @@ class AnytimeCalibrator():
 
     def collect_data_v2(self, sched_algo, fname="calib_data.json"):
         print('Calibration starting...')
-        print('NUM_POINT_FEATURES:', self.model.vfe.num_point_features)
         print('POINT_CLOUD_RANGE:', self.model.vfe.point_cloud_range)
         print('VOXEL_SIZE:', self.model.vfe.voxel_size)
         print('GRID SIZE:', self.model.vfe.grid_size)

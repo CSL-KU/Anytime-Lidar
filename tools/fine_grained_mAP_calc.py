@@ -93,7 +93,7 @@ class SegInfo:
 
         self.dataset_dict = {}
 
-        eval_path_list = glob.glob(inp_dir + "/*.pkl")
+        eval_path_list = glob.glob(inp_dir + "/eval_data_*.pkl")
         for path in eval_path_list:
             print('Loading', path)
             with open(path, 'rb') as handle:
@@ -118,7 +118,7 @@ class SegInfo:
                             self.dataset_dict[sample_token] = [tpl]
 
         self.seg_info_tuples = []
-        seg_info_path_list = glob.glob(inp_dir + "/*.json")
+        seg_info_path_list = glob.glob(inp_dir + "/segment_*.json")
         for path in seg_info_path_list:
             print('Loading', path)
             with open(path, 'r') as handle:
