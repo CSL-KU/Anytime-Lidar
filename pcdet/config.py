@@ -21,8 +21,11 @@ def cfg_from_list(cfg_list, config):
         key_list = k.split('.')
         d = config
         for subkey in key_list[:-1]:
-            assert subkey in d, 'NotFoundKey: %s' % subkey
-            d = d[subkey]
+            #assert subkey in d, 'NotFoundKey: %s' % subkey
+            if isinstance(d, list):
+                d = d[int(subkey)]
+            else:
+                d = d[subkey]
         subkey = key_list[-1]
         assert subkey in d, 'NotFoundKey: %s' % subkey
         try:

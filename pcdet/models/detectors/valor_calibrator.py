@@ -76,8 +76,12 @@ class ValorCalibrator():
         self.postprocess_wcet_ms = .0
         self.calib_data_dict = None
         self.last_pred = np.zeros(5)
+        self.e2e_wcet_ms = 999.0
 
         self.data_sched_thr = float(os.environ.get('DATA_SCHED_THR', 0.7))
+
+    def get_e2e_wcet_ms(self):
+        return self.e2e_wcet_ms
 
     # NOTE batch size has to be 1 !
     def pred_exec_time_ms(self, num_points : int, pillar_counts: np.ndarray, num_slices: int,
@@ -262,8 +266,10 @@ class ValorCalibrator():
             print('postprocess_wcet_ms', self.postprocess_wcet_ms)
 
         if 'e2e_times_ms' in self.calib_data_dict:
+            arr = np.array(self.calib_data_dict['e2e_times_ms'])
             print('End to end execution time stats (ms):')
-            get_stats(np.array(self.calib_data_dict['e2e_times_ms']))
+            min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(arr)
+            self.e2e_wcet_ms = perc99_
 
     def collect_data(self, fname="calib_data.json"):
         print('Calibration starting...')

@@ -18,18 +18,20 @@ pth = os.environ['PCDET_PATH']
 pth = os.path.join(pth, "pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so")
 ctypes.CDLL(pth, mode=ctypes.RTLD_GLOBAL)
 
+VALO_OPT_ON = 6
+VALO_OPT_OFF = 7 # no dense conv opt, no forecasting
+VALO_OPT_WO_FORECASTING = 8 # yes dense conv opt, no forecasting
+VALO_OPT_OFF_WCET_SCHED = 9 # no dense conv opt, no forecasting, wcet scheduling
+
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
-        VALO_OPT_ON = 6
-        VALO_OPT_OFF = 7 # no dense conv opt, no forecasting
-        VALO_OPT_WO_FORECASTING = 8 # yes dense conv opt, no forecasting
-
-        self.valo_opt_on = (int(self.model_cfg.METHOD) == VALO_OPT_ON or \
-                int(self.model_cfg.METHOD) == VALO_OPT_WO_FORECASTING)
+        self.method = int(self.model_cfg.METHOD)
+        self.valo_opt_on = (self.method == VALO_OPT_ON or \
+                self.method == VALO_OPT_WO_FORECASTING)
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.valo_opt_on
-        self.enable_forecasting_to_fut = (int(self.model_cfg.METHOD) == VALO_OPT_ON)
+        self.enable_forecasting_to_fut = (self.method == VALO_OPT_ON)
 
         self.deadline_based_selection = True
         if self.deadline_based_selection:
@@ -169,55 +171,65 @@ class PillarNetVALOR(Detector3DTemplate):
                     x_minmax[self.res_idx, 0] = xmin
                     x_minmax[self.res_idx, 1] = xmax
             elif self.deadline_based_selection:
-                points = batch_dict['points']
-                points_xy = points[:, 1:3].contiguous()
-                num_points = points_xy.size(0)
                 abs_dl_sec = batch_dict['abs_deadline_sec']
-                #start_time = batch_dict['start_time_sec']
-                #deadline_ms = batch_dict['deadline_sec'] * 1e3
-                # This is needed in case we did not start when input arrived
-                #deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
-                all_pillar_counts = self.mpc_script(points_xy).int().cpu()
-                all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
-                for i in range(self.num_res):
-                    pillar_counts = all_pillar_counts[i]
-                    if self.valo_opt_on:
-                        nz_slice_inds = pillar_counts[0].nonzero()
-                        #time_passed_ms = (time.time() - start_time) * 1e3
-                        #time_left = deadline_ms - time_passed_ms
-                        xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                        x_minmax[i, 0] = xmin
-                        x_minmax[i, 1] = xmax
-                    else:
-                        xmin, xmax = x_minmax[i, 0], x_minmax[i, 1]
+                if self.method == VALO_OPT_OFF_WCET_SCHED:
+                    t = time.time()
+                    time_passed = (t - batch_dict['start_time_sec']) * 1000
                     time_left = (abs_dl_sec - time.time()) * 1000
-
-                    if self.enable_data_sched:
-                        pred_latency, new_xmin, new_xmax = self.calibrators[i]. \
-                                find_config_to_meet_dl(num_points,
-                                pillar_counts.numpy(),
-                                xmin.item(),
-                                xmax.item(),
-                                time_left,
-                                self.shrink_flip)
-                                # set a shrinking limit
-
+                    for i in range(self.num_res):
+                        pred_latency = self.calibrators[i].get_e2e_wcet_ms() - time_passed
                         if not self.is_calibrating() and pred_latency < time_left:
                             self.res_idx = i
                             conf_found = True
-                            shrink = (new_xmin > xmin) or (new_xmax < xmax)
-                            xmin, xmax = new_xmin, new_xmax
+                            break
+                else:
+                    points = batch_dict['points']
+                    points_xy = points[:, 1:3].contiguous()
+                    num_points = points_xy.size(0)
+                    #start_time = batch_dict['start_time_sec']
+                    #deadline_ms = batch_dict['deadline_sec'] * 1e3
+                    # This is needed in case we did not start when input arrived
+                    #deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
+                    all_pillar_counts = self.mpc_script(points_xy).int().cpu()
+                    all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
+                    for i in range(self.num_res):
+                        pillar_counts = all_pillar_counts[i]
+                        if self.valo_opt_on:
+                            nz_slice_inds = pillar_counts[0].nonzero()
+                            #time_passed_ms = (time.time() - start_time) * 1e3
+                            #time_left = deadline_ms - time_passed_ms
+                            xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
                             x_minmax[i, 0] = xmin
                             x_minmax[i, 1] = xmax
-                            break
-                    else:
-                        pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
-                                pillar_counts.numpy(), (xmax - xmin + 1).item())
-                        if not self.is_calibrating() and pred_latency < time_left:
-                            self.res_idx = i
-                            conf_found = True
-                            shrink = False
-                            break
+                        else:
+                            xmin, xmax = x_minmax[i, 0], x_minmax[i, 1]
+                        time_left = (abs_dl_sec - time.time()) * 1000
+
+                        if self.enable_data_sched:
+                            pred_latency, new_xmin, new_xmax = self.calibrators[i]. \
+                                    find_config_to_meet_dl(num_points,
+                                    pillar_counts.numpy(),
+                                    xmin.item(),
+                                    xmax.item(),
+                                    time_left,
+                                    self.shrink_flip)
+                                    # set a shrinking limit
+
+                            if not self.is_calibrating() and pred_latency < time_left:
+                                self.res_idx = i
+                                conf_found = True
+                                shrink = (new_xmin > xmin) or (new_xmax < xmax)
+                                xmin, xmax = new_xmin, new_xmax
+                                x_minmax[i, 0] = xmin
+                                x_minmax[i, 1] = xmax
+                                break
+                        else:
+                            pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
+                                    pillar_counts.numpy(), (xmax - xmin + 1).item())
+                            if not self.is_calibrating() and pred_latency < time_left:
+                                self.res_idx = i
+                                conf_found = True
+                                break
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
@@ -402,7 +414,7 @@ class PillarNetVALOR(Detector3DTemplate):
         #print('Fused operations output names:', self.opt_outp_names)
 
         # Create a onnx and tensorrt file for each resolution
-        onnx_path = self.model_cfg.ONNX_PATH + '_m' + str(self.model_cfg.METHOD) + f'_res{self.res_idx}.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '_m' + str(self.method) + f'_res{self.res_idx}.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "x_conv4": {
@@ -506,7 +518,7 @@ class PillarNetVALOR(Detector3DTemplate):
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            name = self.model_name + '_m' + str(self.model_cfg.METHOD)
+            name = self.model_name + '_m' + str(self.method)
             calib_fnames[res_idx] = f"calib_files/{name}_{power_mode}_res{res_idx}.json"
             try:
                 self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])
