@@ -1,4 +1,5 @@
 from .detector3d_template import Detector3DTemplate
+from .mural_calibrator import  MURALCalibrator
 import torch
 import time
 import onnx
@@ -9,7 +10,7 @@ from typing import List
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 from ...utils import common_utils
 
-class DenseConvsPipeline(torch.nn.Module):
+class DenseOps(torch.nn.Module):
     def __init__(self, backbone_3d, backbone_2d, dense_head):
         super().__init__()
         self.backbone_3d = backbone_3d
@@ -41,7 +42,7 @@ class PillarNetOpt(Detector3DTemplate):
         self.update_time_dict({
             'VFE' : [],
             'Backbone3D': [],
-            'DenseConvsPipeline':[],
+            'DenseOps':[],
             'CenterHead-Topk': [],
             'CenterHead-GenBox': [],
         })
@@ -54,12 +55,22 @@ class PillarNetOpt(Detector3DTemplate):
         self.dense_convs_trt = None
         self.filter_pc_range =  self.vfe.point_cloud_range + \
                 torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+        self.calib_pc_range = self.filter_pc_range.clone()
         self.traced_vfe = None
 
+        self.resolution_dividers = [1.0]
+        self.res_idx = 0
+        num_slices = 1
+        self.dense_conv_opt_on = False
+        self.model_name = self.model_cfg.NAME + '_' + self.model_cfg.NAME_POSTFIX
+        self.dense_inp_slice_sz = int(self.dataset.grid_size[0] /  \
+                self.backbone_3d.sparse_outp_downscale_factor())
+        self.calibrators = [MURALCalibrator(self, self.res_idx, num_slices)]
 
     def forward(self, batch_dict):
         if self.training:
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
@@ -93,6 +104,9 @@ class PillarNetOpt(Detector3DTemplate):
             self.measure_time_end('VFE')
 
             self.measure_time_start('Backbone3D')
+            if self.is_calibrating():
+                batch_dict['record_time'] = True # returns bb3d_layer_time_events
+            batch_dict['record_int_vcounts'] = True # returns bb3d_num_voxels, no overhead
             batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
             x_conv4 = batch_dict['x_conv4_out']
             self.measure_time_end('Backbone3D')
@@ -101,7 +115,7 @@ class PillarNetOpt(Detector3DTemplate):
                 self.optimize1(x_conv4)
                 self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
-            self.measure_time_start('DenseConvsPipeline')
+            self.measure_time_start('DenseOps')
 
             if self.dense_convs_trt is not None:
                 #outputs = self.dense_convs_trt({'x_conv4': x_conv4})
@@ -110,7 +124,7 @@ class PillarNetOpt(Detector3DTemplate):
             else:
                 outputs = self.opt_dense_convs(x_conv4)
             batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
-            self.measure_time_end('DenseConvsPipeline')
+            self.measure_time_end('DenseOps')
 
             self.measure_time_start('CenterHead-Topk')
             topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])
@@ -119,6 +133,9 @@ class PillarNetOpt(Detector3DTemplate):
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], batch_dict["pred_dicts"], topk_outputs, None)
             self.measure_time_end('CenterHead-GenBox')
+
+
+            batch_dict['tensor_slice_inds'] = [0, 0] # we need this just for time prediction
 
             # let the hooks of parent class handle this
             return batch_dict
@@ -132,7 +149,7 @@ class PillarNetOpt(Detector3DTemplate):
                 for name in self.dense_head.ordered_outp_names()]
         print('Fused operations output names:', self.opt_dense_convs_output_names)
 
-        self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)
+        self.opt_dense_convs = DenseOps(self.backbone_3d, self.backbone_2d, self.dense_head)
         self.opt_dense_convs.eval()
 
         onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
@@ -196,6 +213,33 @@ class PillarNetOpt(Detector3DTemplate):
 
         return final_pred_dict, recall_dict
 
-    def calibrate(self, batch_size=1):
-        return super().calibrate(1)
+    #def calibrate(self, batch_size=1):
+    #    return super().calibrate(1)
 
+    def calibrate(self, batch_size=1):
+        collect_calib_data = False
+        calib_fname = ""
+
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        calib_fname = f"calib_files/{self.model_name}_{power_mode}.json"
+        print('Trying to load calib file:', calib_fname)
+        try:
+            self.calibrators[0].read_calib_data(calib_fname)
+        except OSError:
+            collect_calib_data = True
+
+        self.calibration_on()
+        print(f'Calibrating baseline model...')
+        super().calibrate(1)
+
+        if collect_calib_data:
+            self.calibrators[0].collect_data(calib_fname)
+        self.calibration_off()
+
+        self.clear_stats()
+
+        if collect_calib_data:
+            print('Collected calib data, exiting...')
+            sys.exit()
+
+        return None

@@ -324,9 +324,9 @@ class MURALCalibrator():
 
             lbd = self.model.latest_batch_dict
 
-            pp_ms =  self.model._time_dict['PreProcess'][-1]
-            sched_ms =  self.model._time_dict['Sched'][-1]
-            preprocess_ms_arr[sample_idx] = pp_ms + sched_ms
+            preprocess_ms_arr[sample_idx] =  self.model._time_dict['PreProcess'][-1]
+            if 'Sched' in self.model._time_dict:
+                pp_ms += self.model._time_dict['Sched'][-1]
 
             num_points_arr[sample_idx] = lbd['points'].size(0)
             vfe_ms_arr[sample_idx] = self.model._time_dict['VFE'][-1]
