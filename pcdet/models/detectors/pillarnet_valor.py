@@ -231,7 +231,8 @@ class PillarNetVALOR(Detector3DTemplate):
         with open('random_forest_model.pkl', 'rb') as f:
             self.res_predictor = pickle.load(f)
             print('Loaded resolution predictor.')
-        self.sched_step = -1
+        self.sched_step = 0
+        self.sched_time_point_ms = 0
 
     def forward(self, batch_dict):
         if self.training:
@@ -337,48 +338,49 @@ class PillarNetVALOR(Detector3DTemplate):
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
-            elif self.res_predictor is not None and self.latest_batch_dict is not None:
-                # Sched every 10 seconds
-                new_step = int(self.sim_cur_time_ms) // 20000
-                if new_step > self.sched_step:
-                    self.sched_step = new_step
-                    pd = self.latest_batch_dict['final_box_dicts'][0]
-                    # Later do the slicing
-                    #points = batch_dict['points']
-                    #points_xy = points[:, 1].contiguous()
+            elif self.res_predictor is not None:
+                assert batch_dict['scene_reset'] == (self.latest_batch_dict is None) # just to make sure
+                if self.latest_batch_dict is not None:
+                    # If you want to sched periodically rel to scene start, uncomment
+                    #tdiff = int(self.sim_cur_time_ms - self.sched_time_point_ms)
+                    #if tdiff >= 5000:
+                    #    self.sched_step += 1
+                    #    self.sched_time_point_ms = self.sim_cur_time_ms
 
-                    # Random forest based prediction
-                    ev = self.sampled_egovels[self.dataset_indexes[0]] # current one
+                    if self.sched_step > 0:
+                        self.sched_step -= 1
+                        pd = self.latest_batch_dict['final_box_dicts'][0]
 
-                    obj_velos = pd['pred_boxes'][:, 7:9].numpy()
-                    rel_velos = obj_velos - ev
-                    obj_velos = np.linalg.norm(obj_velos, axis=1)
-                    rel_velos = np.linalg.norm(rel_velos, axis=1)
+                        # Random forest based prediction
+                        ev = self.sampled_egovels[self.dataset_indexes[0]] # current one
 
-                    #vel_10p, vel_90p, vel_99p = np.percentile(obj_velos, [10, 90, 99])
-                    #vel_mean = np.mean(obj_velos)
+                        obj_velos = pd['pred_boxes'][:, 7:9].numpy()
+                        mask = np.logical_not(np.isnan(obj_velos).any(1))
+                        obj_velos = obj_velos[mask]
+                        rel_velos = obj_velos - ev
+                        obj_velos = np.linalg.norm(obj_velos, axis=1)
+                        rel_velos = np.linalg.norm(rel_velos, axis=1)
 
-                    rvel_10p, rvel_99p = np.percentile(rel_velos, [10, 99])
-                    #rvel_mean = np.mean(rel_velos)
+                        NUM_BINS=10
+                        MAX_CAR_VEL = 15
+                        MAX_REL_VEL = 2*MAX_CAR_VEL
+                        objvel_dist = np.bincount((obj_velos/MAX_CAR_VEL*NUM_BINS).astype(int),
+                                                  minlength=NUM_BINS)[:NUM_BINS]
+                        relvel_dist = np.bincount((rel_velos/MAX_REL_VEL*NUM_BINS).astype(int),
+                                                  minlength=NUM_BINS)[:NUM_BINS]
 
-                    #vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p, vel_99p,
-                    #                      rvel_10p, rvel_mean, rvel_90p, rvel_99p])
+                        exec_time_ms = self.last_elapsed_time_musec / 1000
+                        inp_tuple = np.concatenate((objvel_dist, relvel_dist, [exec_time_ms]))
+                        inp_tuple = np.expand_dims(inp_tuple, 0)
+                        if not self.is_calibrating():
+                            self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
+                elif not self.is_calibrating():
+                    self.res_idx = 2 # middle, since random forest was trained with its input
 
-                    num_class = 10
-                    num_objs_dist = np.bincount(pd['pred_labels'].numpy()-1, minlength=num_class)
-                    num_cars, num_peds = num_objs_dist[0], num_objs_dist[-2]
-                    exec_time_ms = self.last_elapsed_time_musec / 1000
-                    #inp_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum(),
-                    #                            exec_time_ms]))
-                    inp_tuple = np.array((rvel_10p, rvel_99p, num_cars,
-                                          num_peds, num_objs_dist.sum(), exec_time_ms))
-                    inp_tuple = np.expand_dims(inp_tuple, 0)
-                    if not self.is_calibrating():
-                        self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
-                    #print('new_resolution', self.res_idx)
-            elif not self.is_calibrating():
-                self.res_idx = 1 # global best as default
-            #print('cur_resolution', self.res_idx, int(self.sim_cur_time_ms))
+            self.sched_step += batch_dict['scene_reset']
+            if self.sched_step > 0:
+                self.sched_time_point_ms = self.sim_cur_time_ms
+
 
             xmin, xmax = x_minmax[self.res_idx] # must do this!
 
@@ -617,10 +619,8 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.calibrators[res_idx].collect_data(calib_fnames[res_idx])
                 # After this, the calibration data should be processed with dynamic deadline
             self.calibration_off()
-
+            self.sched_step = 0
+            self.sched_time_point_ms = 0
         self.res_idx = cur_res_idx
         #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
-        self.sim_cur_time_ms = 0.
-        self.sched_step = -1
-        self.latest_batch_dict = None
         return None

@@ -96,7 +96,6 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     model.enable_forecasting = forecasting
     model.calibrate()
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
-    model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
     sampled_exec_times_ms = [None] * num_samples
 
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
@@ -105,7 +104,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             if streaming:
                 potential_sample_tkn = model.dataset.infos[cur_sample_idx]['token']
                 scene_token = model.token_to_scene[potential_sample_tkn]
-                if model.prev_scene_token != scene_token:
+                if cur_sample_idx > 0 and model.prev_scene_token != scene_token:
+                    #print('NEW SCENE')
                     target_sched_time_ms = 0.
                     while model.prev_scene_token != scene_token:
                         cur_sample_idx -= 1
@@ -297,9 +297,10 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/pillar01_01125_01285_016_0225_valor.yaml"
         ckpt_file = "../models/pillar01_01125_01285_016_0225_valor_e30.pth"
         num_res = 5
-    elif chosen_method == 'VALOR4res': # VALOR Pillarnet LS 5res
-        cfg_file  = "./cfgs/nuscenes_models/pillar012_015_020_030_valor.yaml"
-        ckpt_file = "../models/pillar012_015_020_030_valor_e20.pth"
+    elif chosen_method == 'MEW':
+        cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
+        ckpt_file = "../models/pillar_010_011_012_014_016_valor_e30.pth"
+        num_res = 5
     else:
         print('Unknown method, exiting.')
         sys.exit()

@@ -55,7 +55,7 @@ def read_data(pth):
         
         obj_velos = boxes[:, 7:9].numpy()
         mask = np.logical_not(np.isnan(obj_velos).any(1))
-        obj_velos[mask]
+        obj_velos = obj_velos[mask]
         rel_velos = obj_velos - ev
         obj_velos = np.linalg.norm(obj_velos, axis=1)
         rel_velos = np.linalg.norm(rel_velos, axis=1)

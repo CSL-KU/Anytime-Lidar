@@ -925,6 +925,8 @@ class Detector3DTemplate(nn.Module):
         self.enable_forecasting = enable_forc
         self._default_deadline_sec = deadline_backup
         self.prev_scene_token = '' 
+        self.sim_cur_time_ms = 0.
+        self.latest_batch_dict = None
 
         if isinstance(pred_dicts, list):
             det = pred_dicts[0]
