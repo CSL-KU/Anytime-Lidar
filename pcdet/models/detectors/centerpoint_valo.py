@@ -12,8 +12,9 @@ import numpy as np
 from typing import List
 
 import ctypes
-ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so", mode=ctypes.RTLD_GLOBAL)
-
+pth = os.environ['PCDET_PATH']
+pth = os.path.join(pth, "pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so")
+ctypes.CDLL(pth, mode=ctypes.RTLD_GLOBAL)
 
 class DenseConvsPipeline(torch.nn.Module):
     def __init__(self, backbone_2d, dense_head, tcount):

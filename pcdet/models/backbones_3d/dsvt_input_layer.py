@@ -10,8 +10,8 @@ from torch.onnx import register_custom_op_symbolic
 from typing import Dict, List, Tuple, Final
 
 import pcdet.ops.utils as pcdet_utils
-pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/ingroup_inds")
-pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/dsvt_ops")
+pcdet_utils.load_torch_op_shr_lib("pcdet/ops/ingroup_inds")
+pcdet_utils.load_torch_op_shr_lib("pcdet/ops/dsvt_ops")
 
 def ingroup_inds_nograd(g, group_inds):
     return g.op("kucsl::ingroup_inds_nograd", group_inds)

@@ -1,9 +1,9 @@
 CLASS_NAMES: ['car', 'truck', 'bus', 'bicycle', 'pedestrian']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-    POINT_CLOUD_RANGE: [-57.6, -57.6, -5.0, 57.6, 57.6, 3.0]
-    #POINT_CLOUD_RANGE: [-76.8, -76.8, -5.0, 76.8, 76.8, 3.0]
+    _BASE_CONFIG_: /home/humble/shared/Anytime-Lidar/tools/cfgs/dataset_configs/nuscenes_dataset.yaml
+    #POINT_CLOUD_RANGE: [-57.6, -57.6, -5.0, 57.6, 57.6, 3.0]
+    POINT_CLOUD_RANGE: [-76.8, -76.8, -5.0, 76.8, 76.8, 3.0]
 
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
@@ -58,7 +58,7 @@ DATA_CONFIG:
 
 MODEL:
     NAME: PillarNetVALOR
-    NAME_POSTFIX: p010_015_020_024_030
+    NAME_POSTFIX: p010_015_020_024_030_awsim
 
     VFE:
         NAME: DynamicPillarVFESimple2D
@@ -88,7 +88,7 @@ MODEL:
         NORM_METHOD: 'ResAwareBatch'
 
     DENSE_HEAD:
-        NAME: CenterHead
+        NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
         RESOLUTION_DIV: [1.0, 1.5, 2.0, 2.4, 3.0]
         NORM_METHOD: 'ResAwareBatch'
@@ -131,7 +131,7 @@ MODEL:
         POST_PROCESSING:
             SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 196
+            MAX_OBJ_PER_SAMPLE: 128
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2

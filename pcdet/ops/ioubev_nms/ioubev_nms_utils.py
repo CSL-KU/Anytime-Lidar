@@ -4,7 +4,7 @@ from . import ioubev_nms_cuda
 from typing import Optional, List
 
 import pcdet.ops.utils as pcdet_utils
-pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/ioubev_nms")
+pcdet_utils.load_torch_op_shr_lib("pcdet/ops/ioubev_nms")
 
 def nms_gpu_bev(boxes : torch.Tensor, scores : torch.Tensor, thresh : float, pre_maxsize : Optional[int], post_max_size : Optional[int]):
     """Nms function with gpu implementation.

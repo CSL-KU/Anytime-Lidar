@@ -3,15 +3,9 @@ from torch.onnx import register_custom_op_symbolic
 
 from ...ops.iou3d_nms.iou3d_nms_cuda import boxes_iou_bev_cpu
 from typing import Dict, Final, List, Tuple
-from os import listdir
 
-# Assume it is run at Anytime-Lidar/tools
-
-shr_lib_dir="../pcdet/ops/forecasting/"
-for file_name in listdir(shr_lib_dir):
-    if file_name.endswith('.so'):
-        torch.ops.load_library(shr_lib_dir + file_name)
-        break
+import pcdet.ops.utils as pcdet_utils
+pcdet_utils.load_torch_op_shr_lib("pcdet/ops/forecasting")
 
 def forecast_past_dets(g, pred_boxes, past_pose_indexes, past_poses, cur_pose, \
         past_timestamps, target_timestamp):

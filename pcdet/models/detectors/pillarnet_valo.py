@@ -15,8 +15,9 @@ from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBa
 from ...utils.spconv_utils import spconv
 
 import ctypes
-ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so",
-        mode=ctypes.RTLD_GLOBAL)
+pth = os.environ['PCDET_PATH']
+pth = os.path.join(pth, "pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so")
+ctypes.CDLL(pth, mode=ctypes.RTLD_GLOBAL)
 
 def set_bn_resolution(resawarebns, res_idx):
     for rabn in resawarebns:
