@@ -118,20 +118,18 @@ else:
         all_evals = pickle.load(f)
 
 global_best_res = 2
-mAP_stats = np.zeros(numres)
-#NDS_stats = np.zeros(numres)
+res_sel_stats_train, res_sel_stats_test = np.zeros(numres), np.zeros(numres)
 # For each calibration scene
 all_train_inputs, all_train_labels = [], []
 all_test_inputs, all_test_labels = [], []
 window_length=1
 skipped_scenes = 0
-for evals in all_evals:
+for calib_id, evals in enumerate(all_evals):
     best_res, mAP = get_best_res(evals)
     best_res2, NDS = get_best_res(evals, 'NDS')
     if best_res != best_res2:
         skipped_scenes += 1
         continue
-    mAP_stats[best_res] += 1
     tuples = evals[global_best_res]['tuples']
 
     if window_length > 1:
@@ -140,17 +138,22 @@ for evals in all_evals:
             new_tuples.append(tuples[i:(i+window_length)].ravel())
         tuples = np.stack(new_tuples)
 
-    if mAP_stats[best_res] % 5 == 0: # make 80% train 20% test
+    #if res_sel_stats[best_res] % 5 == 0: # if want to do split of 80% to 20%
+    if calib_id <= 75:
         all_test_inputs.append(tuples)
         all_test_labels.append(np.full(tuples.shape[0], best_res))
+        res_sel_stats_test[best_res] += 1
     else:
         all_train_inputs.append(tuples)
         all_train_labels.append(np.full(tuples.shape[0], best_res))
+        res_sel_stats_train[best_res] += 1
 
 print(f'Skipped {skipped_scenes} scenes')
-print('Best resolution stats:')
-print(mAP_stats)
-
+print('Best resolution stats for train and test:')
+print(res_sel_stats_train)
+print(res_sel_stats_test)
+print('Num train scenes:', len(all_train_inputs))
+print('Num test scenes:', len(all_test_inputs))
 X_train = np.concatenate(all_train_inputs, axis=0).astype(float)
 X_test = np.concatenate(all_test_inputs, axis=0).astype(float)
 y_train = np.concatenate(all_train_labels, axis=0).astype(int)
