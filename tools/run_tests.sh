@@ -13,7 +13,7 @@ export CALIBRATION=${CALIBRATION:-0}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export TASKSET=${TASKSET:-"taskset -c 2-7"}
 export USE_AMP=${USE_AMP:-"false"}
-export PMODE=${POWER_MODE:-"MAXN"}
+export PMODE=${PMODE:-"UNKNOWN_POWER_MODE"}
 
 if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #PointPillars Multihead *

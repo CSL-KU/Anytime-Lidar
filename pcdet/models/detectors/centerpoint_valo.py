@@ -270,6 +270,7 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         tokens = self.model_cfg.ONNX_PATH.split('/')
         trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
+        print('Trying to load trt engine at', trt_path)
         try:
             self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
         except:
@@ -278,7 +279,6 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
-
 
         self.dense_head_scrpt = torch.jit.script(self.dense_head)
         self.optimization1_done = True
