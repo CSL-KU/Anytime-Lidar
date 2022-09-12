@@ -139,20 +139,23 @@ method_colors= [
 m_to_c_ls = [(method_colors[i], linestyles[i]) for i in range(len(method_colors))]
 
 method_num_to_str = [
-        '3PointPillars-1',
-        '2PointPillars-2',
-        '1PointPillars-3',
-        '4MultiStage',
-        '5StaticHS',
-        '6RoundRobin-NoPrj',
-        '8Ours-NoPrj',
-        '9PConfHS-P',
-        'ARoundRobin',
-        'COurs',
-        'DNearOptimal',
-        '7ClsScrSum-NoPrj',
-        'BClsScrSum',
-        'ENearOptimal-NoPrj',
+  #      '3PointPillars-1',
+        '1Anytime',
+        '2CenterPoint',
+        '3Anytime-NoPrj',
+        #'2PointPillars-2',
+        #'1PointPillars-3',
+#        '4MultiStage',
+#        '5StaticHS',
+#        '6RoundRobin-NoPrj',
+#        '8Ours-NoPrj',
+#        '9PConfHS-P',
+#        'ARoundRobin',
+#        'COurs',
+#        'DNearOptimal',
+#        '7ClsScrSum-NoPrj',
+#        'BClsScrSum',
+#        'ENearOptimal-NoPrj',
 ]
 
 def merge_eval_dicts(eval_dicts):
@@ -265,7 +268,7 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
         futs.append(executor.submit(load_eval_dict, path))
     for f in concurrent.futures.as_completed(futs):
         ed = f.result()
-        k = method_num_to_str[ed['method']-1]
+        k = method_num_to_str[ed['method']]
         if k not in exps_dict:
             exps_dict[k] = []
         ed['color'] = m_to_c_ls[ed['method']-1][0]
@@ -287,38 +290,41 @@ for exp_name, evals in exps_dict.items():
 print(exps_dict.keys())
 plot_sets=[]
 plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'PointPillars-3',
-        'PointPillars-2',
-        'PointPillars-1',
-        'MultiStage',
-        'Ours',
+        'Anytime',
+        'CenterPoint',
+        'Anytime-NoPrj',
+#        'PointPillars-3',
+#        'PointPillars-2',
+#        'PointPillars-1',
+#        'MultiStage',
+#        'Ours',
 ]})
 
-plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'ClsScrSum-NoPrj',
-        'RoundRobin-NoPrj',
-        'Ours-NoPrj',
-        'NearOptimal-NoPrj',
-]})
-
-plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'ClsScrSum',
-        'RoundRobin',
-        'Ours',
-        'NearOptimal',
-]})
-
-plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'ClsScrSum-NoPrj',
-        'ClsScrSum',
-        'RoundRobin-NoPrj',
-        'RoundRobin',
-        'Ours-NoPrj',
-        'Ours',
-        'NearOptimal-NoPrj',
-        'NearOptimal',
-]})
-
+#plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#        'ClsScrSum-NoPrj',
+#        'RoundRobin-NoPrj',
+#        'Ours-NoPrj',
+#        'NearOptimal-NoPrj',
+#]})
+#
+#plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#        'ClsScrSum',
+#        'RoundRobin',
+#        'Ours',
+#        'NearOptimal',
+#]})
+#
+#plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#        'ClsScrSum-NoPrj',
+#        'ClsScrSum',
+#        'RoundRobin-NoPrj',
+#        'RoundRobin',
+#        'Ours-NoPrj',
+#        'Ours',
+#        'NearOptimal-NoPrj',
+#        'NearOptimal',
+#]})
+#
 plot_set_choice = int(sys.argv[2])
 exps_dict=plot_sets[plot_set_choice]
 out_path="./exp_plots/set" + sys.argv[2]
@@ -371,7 +377,7 @@ def plot_func_dm(exps_dict):
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
     #fig.suptitle("Ratio of missed deadlines over a range of deadlines", fontsize=16)
-    plt.savefig(out_path + "/deadlines_missed.jpg")
+    plt.savefig(out_path + "/deadlines_missed.png")
 
 
 procs.append(Process(target=plot_func_dm, args=(exps_dict,)))
@@ -391,13 +397,13 @@ def plot_func_eted(exps_dict):
         i+=1
         ax.scatter(x, y, color=l2d[0].get_c())
     ax.invert_xaxis()
-    ax.set_ylim(.0, 140)
+    ax.set_ylim(.0, 400)
     ax.legend(fontsize='medium')
     ax.set_ylabel('End-to-end time (msec)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
     #fig.suptitle("Average end-to-end time over different deadlines", fontsize=16)
-    plt.savefig(out_path + "/end-to-end_deadlines.jpg")
+    plt.savefig(out_path + "/end-to-end_deadlines.png")
 
 
 procs.append(Process(target=plot_func_eted, args=(exps_dict,)))
@@ -433,7 +439,7 @@ def plot_avg_AP(merged_exps_dict):
         for s in cur_cls_names:
             cur_cls_names_str += s + ' '
         fig.suptitle(cur_cls_names_str + " classes, average precision over different deadlines", fontsize=16)
-        plt.savefig(out_path + f"/AP_deadlines_{filenum}.jpg")
+        plt.savefig(out_path + f"/AP_deadlines_{filenum}.png")
 
 #procs.append(Process(target=plot_avg_AP, \
 #                     args=(merged_exps_dict,)))
@@ -469,7 +475,7 @@ def plot_stage_and_head_usage(merged_exps_dict):
         ax.set_ylim(0.0, ylim)
         ylim += 3.0
 
-    plt.savefig(out_path + "/rpn_and_heads_stats.jpg")
+    plt.savefig(out_path + "/rpn_and_heads_stats.png")
 #if plot_head_selection:
 #    procs.append(Process(target=plot_stage_and_head_usage, \
 #                         args=(merged_exps_dict,)))
@@ -495,7 +501,7 @@ def plot_instance_data(merged_exps_dict):
         ax.set_xlabel('Deadline (msec)', fontsize='x-large')
         ax.grid('True', ls='--')
     #fig.suptitle("Average end-to-end time over different deadlines", fontsize=16)
-    plt.savefig(out_path + "/instance_data.jpg")
+    plt.savefig(out_path + "/instance_data.png")
 
 for exp_name, evals in merged_exps_dict.items():
     evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
@@ -522,7 +528,7 @@ ax.set_xlabel('Deadline (msec)', fontsize='x-large')
 ax.grid('True', ls='--')
 ax.set_ylim(0.0, 105.)
 
-plt.savefig(out_path + "/normalized_NDS_deadlines.jpg")
+plt.savefig(out_path + "/normalized_NDS_deadlines.png")
 
 def autolabel(rects):
     """Attach a text label above each bar in *rects*, displaying its height."""
@@ -558,7 +564,7 @@ ax.set_ylabel('Average accuracy (%)', fontsize='x-large')
 #ax.grid('True', ls='--')
 ax.set_ylim(0.0, 119.)
 
-plt.savefig(out_path + "/normalized_NDS_bar.jpg")
+plt.savefig(out_path + "/normalized_NDS_bar.png")
 
 for p in procs:
     p.join()

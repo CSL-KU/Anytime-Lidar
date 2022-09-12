@@ -100,11 +100,14 @@ class Detector3DTemplate(nn.Module):
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
         else:
-            self._eval_dict['deadline_sec'] = 10.0  # loong deadline
+            self._eval_dict['deadline_sec'] = 999999.0  # loong deadline
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
 
         print('Default deadline is:', self._eval_dict['deadline_sec'])
+
+        # To be filled by the child class, in case needed
+        self._eval_dict['additional'] = {}
 
         self._use_empty_det_dict_for_eval = False
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)

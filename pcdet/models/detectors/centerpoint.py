@@ -96,3 +96,6 @@ class CenterPoint(Detector3DTemplate):
             )
 
         return final_pred_dict, recall_dict
+
+    def calibrate(self, batch_size=1):
+        return super().calibrate()

@@ -38,19 +38,27 @@ fi
 
 # Centerpoint-pointpillar
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
+#CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_12_5_data.pth"
+
+# Centerpoint-pointpillar-anytime
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
+#CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
 
 # Centerpoint-voxel01
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml"
+#CKPT_FILE="../models/cbgs_dyn_voxel01_centerpoint.pth"
+
+# Centerpoint-voxel01-anytime
+CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml"
+CKPT_FILE="../models/cbgs_voxel01_centerpoint_anytime_16x16.pth"
 
 # Centerpoint-voxel0075
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_res3d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
 # Centerpoint-KITTI-voxel
-CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
-CKPT_FILE="../models/centerpoint_kitti.pth"
+#CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
+#CKPT_FILE="../models/centerpoint_kitti.pth"
 
 TASKSET="taskset -c 2,3"
 export OMP_NUM_THREADS=2
@@ -66,32 +74,35 @@ CMD="nice --20 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
 
 set -x
 if [ $1 == 'profile' ]; then
-        export CUDA_LAUNCH_BLOCKING=1
+#        export CUDA_LAUNCH_BLOCKING=1
         $CMD 
-        export CUDA_LAUNCH_BLOCKING=0
+#        export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ]; then
 	mv -f eval_dict_* backup
 	OUT_DIR=exp_data_nsc
 	mkdir -p $OUT_DIR
-	m=1
-	prfx="cbgs_dyn_pp_multihead_"
-	for model in "1br" "2br" "3br" "imprecise" "imprecise" \
-		"imprecise" "imprecise" "imprecise" "imprecise" \
-		"imprecise" "imprecise" "imprecise" "imprecise" "imprecise"
+    
+    CFG_FILES=( \
+        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" \
+        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
+        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" )
+    CKPT_FILES=( \
+        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" \
+        "../models/cbgs_voxel01_centerpoint.pth" \
+        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" )
+    
+    for m in ${!CFG_FILES[@]}
 	do
-		if [ $m == 5 ] || [ $m == 8 ]; then
-			# These are not needed
-			m=$((m+1))
-			continue
-		fi
-		cfg="$prfx""$model"
-		CFG_FILE="./cfgs/nuscenes_models/$cfg.yaml"
-		CKPT_FILE="../models/$cfg/default/ckpt/checkpoint_epoch_20.pth"
+        if [ $m == 1 ]; then
+            continue
+        fi
+		CFG_FILE=${CFG_FILES[$m]}
+		CKPT_FILE=${CKPT_FILES[$m]}
 		CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
 			--ckpt $CKPT_FILE --batch_size=1 --workers 0"
-		ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
-		ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
-		sed -i "$ARG" $CFG_FILE
+		#ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
+		#ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
+		#sed -i "$ARG" $CFG_FILE
 		for s in $(seq $2 $3 $4)
 		do
 			OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
@@ -103,8 +114,9 @@ elif [ $1 == 'methods' ]; then
 				mv -f eval_dict_*.json $OUT_DIR/eval_dict_m"$m"_d"$s".json
 			fi
 		done
-		m=$((m+1))
 	done
 elif [ $1 == 'single' ]; then
+        $CMD  --set "MODEL.DEADLINE_SEC" $2
+elif [ $1 == 'calib' ]; then
         $CMD
 fi

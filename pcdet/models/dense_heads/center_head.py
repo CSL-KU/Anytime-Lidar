@@ -95,6 +95,11 @@ class CenterHead(nn.Module):
         self.predict_boxes_when_training = predict_boxes_when_training
         self.forward_ret_dict = {}
         self.build_losses()
+        self.det_dict_copy = {
+            "pred_boxes": torch.zeros([0, 9], dtype=torch.float, device='cuda'),
+            "pred_scores": torch.zeros([0], dtype=torch.float,device='cuda'),
+            "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
+        }
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -297,9 +302,12 @@ class CenterHead(nn.Module):
                 ret_dict[k]['pred_labels'].append(final_dict['pred_labels'])
 
         for k in range(batch_size):
-            ret_dict[k]['pred_boxes'] = torch.cat(ret_dict[k]['pred_boxes'], dim=0)
-            ret_dict[k]['pred_scores'] = torch.cat(ret_dict[k]['pred_scores'], dim=0)
-            ret_dict[k]['pred_labels'] = torch.cat(ret_dict[k]['pred_labels'], dim=0) + 1
+            if not ret_dict[k]['pred_boxes']:
+                ret_dict[k] = self.get_empty_det_dict()
+            else:
+                ret_dict[k]['pred_boxes'] = torch.cat(ret_dict[k]['pred_boxes'], dim=0)
+                ret_dict[k]['pred_scores'] = torch.cat(ret_dict[k]['pred_scores'], dim=0)
+                ret_dict[k]['pred_labels'] = torch.cat(ret_dict[k]['pred_labels'], dim=0) + 1
 
         return ret_dict
 
@@ -353,3 +361,9 @@ class CenterHead(nn.Module):
                 data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict
+
+    def get_empty_det_dict(self):
+        det_dict = {}
+        for k,v in self.det_dict_copy.items():
+            det_dict[k] = v.clone().detach()
+        return det_dict

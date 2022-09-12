@@ -138,11 +138,11 @@ def _topk(scores, K=40, using_slicing=False):
     topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)
 
     topk_inds = topk_inds % (height * width)
-    topk_ys = (topk_inds // width).float()
+    topk_ys = torch.div(topk_inds, width, rounding_mode='trunc').float()
     topk_xs = (topk_inds % width).int().float()
 
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
-    topk_classes = (topk_ind // K)
+    topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
     topk_classes = topk_classes.int() if not using_slicing else topk_classes.float()
     topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K) \
             if not using_slicing else None

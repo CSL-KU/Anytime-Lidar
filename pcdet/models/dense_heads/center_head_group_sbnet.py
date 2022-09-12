@@ -171,8 +171,13 @@ class CenterHeadGroupSbnet(nn.Module):
         self.forward_ret_dict = {}
         self.build_losses()
 
-        self.det_dict_copy = None
         self.calibrated = False
+
+        self.det_dict_copy = {
+            "pred_boxes": torch.zeros([0, 9], dtype=torch.float, device='cuda'),
+            "pred_scores": torch.zeros([0], dtype=torch.float,device='cuda'),
+            "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
+        }
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -619,18 +624,6 @@ class CenterHeadGroupSbnet(nn.Module):
     def calibrate(self, data_dict):
         self.calibrated = True
         data_dict = self(data_dict) # just forward it
-
-        if not self.training:
-            det_dict_example = data_dict['final_box_dicts'][0]
-            self.det_dict_copy = {
-                "pred_boxes": torch.zeros([0, det_dict_example["pred_boxes"].size()[1]],
-                dtype=det_dict_example["pred_boxes"].dtype,
-                device=det_dict_example["pred_boxes"].device),
-                "pred_scores": torch.zeros([0], dtype=det_dict_example["pred_scores"].dtype,
-                device=det_dict_example["pred_scores"].device),
-                "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype,
-                device=det_dict_example["pred_labels"].device),
-            }
 
     def get_empty_det_dict(self):
         det_dict = {}
