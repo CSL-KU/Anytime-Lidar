@@ -31,7 +31,6 @@ __all__ = {
     'PillarNet': PillarNet,
     'MPPNet': MPPNet,
     'MPPNetE2E': MPPNetE2E,
-    'PillarNet': PillarNet,
     'VoxelNeXt': VoxelNeXt,
 }
 
