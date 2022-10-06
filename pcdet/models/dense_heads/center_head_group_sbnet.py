@@ -604,16 +604,17 @@ class CenterHeadGroupSbnet(nn.Module):
         self.calibrated = True
         data_dict = self(data_dict) # just forward it
 
-        det_dict_example = data_dict['final_box_dicts'][0]
-        self.det_dict_copy = {
-            "pred_boxes": torch.zeros([0, det_dict_example["pred_boxes"].size()[1]],
-            dtype=det_dict_example["pred_boxes"].dtype,
-            device=det_dict_example["pred_boxes"].device),
-            "pred_scores": torch.zeros([0], dtype=det_dict_example["pred_scores"].dtype,
-            device=det_dict_example["pred_scores"].device),
-            "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype,
-            device=det_dict_example["pred_labels"].device),
-        }
+        if not self.training:
+            det_dict_example = data_dict['final_box_dicts'][0]
+            self.det_dict_copy = {
+                "pred_boxes": torch.zeros([0, det_dict_example["pred_boxes"].size()[1]],
+                dtype=det_dict_example["pred_boxes"].dtype,
+                device=det_dict_example["pred_boxes"].device),
+                "pred_scores": torch.zeros([0], dtype=det_dict_example["pred_scores"].dtype,
+                device=det_dict_example["pred_scores"].device),
+                "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype,
+                device=det_dict_example["pred_labels"].device),
+            }
 
     def get_empty_det_dict(self):
         det_dict = {}
