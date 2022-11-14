@@ -10,3 +10,5 @@ tqdm
 torchvision
 SharedArray
 opencv-python
+json
+cv2
