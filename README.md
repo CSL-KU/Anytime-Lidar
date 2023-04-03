@@ -239,6 +239,14 @@ All models are trained with 8 GPUs.
 | [PV-RCNN](tools/cfgs/once_models/pv_rcnn.yaml)         | 77.77   | 23.50      | 59.37   | 53.55  |
 | [CenterPoint](tools/cfgs/once_models/centerpoint.yaml) | 78.02   | 49.74      | 67.22   | 64.99  |
 
+### Argoverse2 3D Object Detection Baselines
+All models are trained with 4 GPUs.
+
+|                                                         | mAP  |                                              download                                              | 
+|---------------------------------------------------------|:----:|:--------------------------------------------------------------------------------------------------:|
+| [VoxelNeXt](tools/cfgs/argo2_models/cbgs_voxel01_voxelnext.yaml)        | 30.0 | [model-30M](https://drive.google.com/file/d/1zr-it1ERJzLQ3a3hP060z_EQqS_RkNaC/view?usp=share_link) | 
+| [VoxelNeXt-K3](tools/cfgs/argo2_models/cbgs_voxel01_voxelnext_headkernel3.yaml) | 30.7 | [model-45M](https://drive.google.com/file/d/1NrYRsiKbuWyL8jE4SY27IHpFMY9K0o__/view?usp=share_link) | 
+
 ### Other datasets
 Welcome to support other datasets by submitting pull request. 
 
