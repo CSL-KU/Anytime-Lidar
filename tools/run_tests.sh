@@ -49,16 +49,23 @@ fi
 #CKPT_FILE="../models/cbgs_dyn_voxel01_centerpoint.pth"
 
 # Centerpoint-voxel01-anytime
-CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml"
-CKPT_FILE="../models/cbgs_voxel01_centerpoint_anytime_16x16.pth"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml"
+#CKPT_FILE="../models/cbgs_voxel01_centerpoint_anytime_16x16.pth"
 
 # Centerpoint-voxel0075
+# NDS:     0.5522 End-to-end,305.03,411.82,446.76,466.24,469.26,20.38
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_res3d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
 # Centerpoint-KITTI-voxel
 #CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
 #CKPT_FILE="../models/centerpoint_kitti.pth"
+
+# VoxelNeXt
+#NDS:     0.5501 End-to-end,202.77,315.00,347.92,354.18,363.76,22.32
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml"
+CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml"
+CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
 
 TASKSET="taskset -c 2,3"
 export OMP_NUM_THREADS=2
@@ -82,38 +89,43 @@ elif [ $1 == 'methods' ]; then
 	OUT_DIR=exp_data_nsc
 	mkdir -p $OUT_DIR
     
+
     CFG_FILES=( \
-        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" \
-        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
-        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" )
+	"./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml" \
+	"./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml")
+#        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" \
+#        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
+#        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" )
     CKPT_FILES=( \
-        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" \
-        "../models/cbgs_voxel01_centerpoint.pth" \
-        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" )
+	"../models/voxelnext_nuscenes_kernel1.pth"\
+	"../models/voxelnext_nuscenes_kernel1.pth")
+#        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" \
+#        "../models/cbgs_voxel01_centerpoint.pth" \
+#        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" )
     
     for m in ${!CFG_FILES[@]}
 	do
-        if [ $m == 1 ]; then
-            continue
-        fi
-		CFG_FILE=${CFG_FILES[$m]}
-		CKPT_FILE=${CKPT_FILES[$m]}
-		CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
-			--ckpt $CKPT_FILE --batch_size=1 --workers 0"
-		#ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
-		#ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
-		#sed -i "$ARG" $CFG_FILE
-		for s in $(seq $2 $3 $4)
-		do
-			OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
-			if [ -f $OUT_FILE ]; then
-				printf "Skipping $OUT_FILE test.\n"
-			else
-				$CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $m
-				# rename the output and move the corresponding directory
-				mv -f eval_dict_*.json $OUT_DIR/eval_dict_m"$m"_d"$s".json
-			fi
-		done
+        #if [ $m == 1 ]; then
+        #    continue
+        #fi
+	CFG_FILE=${CFG_FILES[$m]}
+	CKPT_FILE=${CKPT_FILES[$m]}
+	CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
+		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+	#ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
+	#ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
+	#sed -i "$ARG" $CFG_FILE
+	for s in $(seq $2 $3 $4)
+	do
+		OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+		if [ -f $OUT_FILE ]; then
+			printf "Skipping $OUT_FILE test.\n"
+		else
+			$CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $m
+			# rename the output and move the corresponding directory
+			mv -f eval_dict_*.json $OUT_DIR/eval_dict_m"$m"_d"$s".json
+		fi
+	done
 	done
 elif [ $1 == 'single' ]; then
         $CMD  --set "MODEL.DEADLINE_SEC" $2
