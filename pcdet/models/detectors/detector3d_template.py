@@ -48,7 +48,6 @@ def pre_forward_hook(module, inp_args):
     return batch_dict
 
 def post_forward_hook(module, inp_args, outp_args):
-    #print(outp_args)
     assert not isinstance(outp_args, tuple)
     batch_dict = outp_args
     pp_args = module.post_processing_pre(batch_dict) # NMS

@@ -449,7 +449,7 @@ class VoxelNeXtHead(nn.Module):
                 dim=batch_dim, vel=batch_vel, iou=batch_iou,
                 point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
                 feature_map_stride=self.feature_map_stride,
-                K=post_process_cfg.MAX_OBJ_PER_SAMPLE,
+                K=min(batch_hm.size(1), post_process_cfg.MAX_OBJ_PER_SAMPLE),
                 #circle_nms=(post_process_cfg.NMS_CONFIG.NMS_TYPE == 'circle_nms'),
                 score_thresh=post_process_cfg.SCORE_THRESH,
                 post_center_limit_range=post_center_limit_range

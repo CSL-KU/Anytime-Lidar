@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_mini_dataset.yaml
     POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
     INFO_PATH: {
         'train': [nuscenes_infos_10sweeps_train.pkl],
@@ -132,6 +132,8 @@ MODEL:
 
         EVAL_METRIC: kitti
 
+    DEADLINE_SEC: 9999.9
+    METHOD: 1
 
 
 OPTIMIZATION:
