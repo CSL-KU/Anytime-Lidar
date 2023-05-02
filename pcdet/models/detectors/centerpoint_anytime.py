@@ -85,7 +85,7 @@ class CenterPointAnytime(Detector3DTemplate):
 
         # these values needs calibration
         self.time_pred_coeffs = torch.ones(6, device='cuda')
-        self.pred_net_time_stats = {'99perc':0.0, 'max': 0.0}
+        self.pred_net_time_stats = {'95perc':0.0, 'max': 0.0}
 
         self.calib_num_tiles = -1
         #print(self)
@@ -274,7 +274,7 @@ class CenterPointAnytime(Detector3DTemplate):
             torch.cuda.synchronize()
             self.psched_start_time = time.time()
             rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
-            rem_time -= self.pred_net_time_stats['99perc']
+            rem_time -= self.pred_net_time_stats['95perc']
             diffs = (tpreds < rem_time)
             diffs = diffs.cpu()
 
@@ -363,7 +363,7 @@ class CenterPointAnytime(Detector3DTemplate):
         self.projection_reset()
 
         # check if the wcet pred file is there
-        fname = f"calib_raw_data.json"
+        fname = f"calib_raw_data_centerpoint.json"
         try:
             with open(fname, 'r') as handle:
                 calib_dict = json.load(handle)
@@ -454,14 +454,14 @@ class CenterPointAnytime(Detector3DTemplate):
                 self.add_dict['voxel_counts2'].append(\
                         self.latest_batch_dict['voxel_coords'].size(0))
                 self.add_dict['chosen_tile_coords'].append(tiles)
-                num_tiles += 10
+                num_tiles += 2
                 #print('Rep, idx, all:', rep, i, len(self.dataset), 'num_tiles:', num_tiles)
         gc.enable()
         print('Time calibration Complete')
         for k in ('voxel_counts',  'chosen_tile_coords'):
             for i, t in enumerate(self.add_dict[k]):
                 self.add_dict[k][i] = t.cpu().tolist()
-        with open(f"calib_raw_data.json", 'w') as handle:
+        with open(f"calib_raw_data_centerpoint.json", 'w') as handle:
             json.dump(self.add_dict, handle, indent=4)
 
     def post_eval(self):
