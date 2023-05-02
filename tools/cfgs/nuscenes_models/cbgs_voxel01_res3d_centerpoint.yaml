@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_mini_dataset.yaml
 
 MODEL:
     NAME: CenterPoint
@@ -71,7 +71,7 @@ MODEL:
             MAX_OBJ_PER_SAMPLE: 500
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
-                NMS_THRESH: 0.2
+                NMS_THRESH: 0.01
                 NMS_PRE_MAXSIZE: 1000
                 NMS_POST_MAXSIZE: 83
 
@@ -80,7 +80,8 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-
+    DEADLINE_SEC: 9999.9
+    METHOD: 1
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4

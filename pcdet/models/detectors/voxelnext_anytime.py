@@ -9,13 +9,13 @@ import numpy as np
 import scipy
 import gc 
 import random
-import os
+#import os
 
 from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"]=":4096:8"
+#os.environ["CUBLAS_WORKSPACE_CONFIG"]=":4096:8"
 
 class VoxelNeXtAnytime(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -25,7 +25,7 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
-        torch.use_deterministic_algorithms(True)
+#        torch.use_deterministic_algorithms(True)
 
         self.vfe, self.backbone_3d, self.dense_head = self.module_list
         self.update_time_dict( {
@@ -247,7 +247,7 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             torch.cuda.synchronize()
             self.psched_start_time = time.time()
             rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
-            rem_time -= self.pred_net_time_stats['max']
+            rem_time -= self.pred_net_time_stats['99perc']
             diffs = (tpreds < rem_time)
             diffs = diffs.cpu()
 
