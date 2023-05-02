@@ -5,7 +5,7 @@ fi
 
 PROF_CMD=""
 if [ $1 == 'profile' ]; then
-	PROF_CMD="nsys profile -w true \
+	PROF_CMD="./nsys profile -w true \
 		--trace cuda,nvtx \
 		--process-scope=process-tree"
 	# osrt and cudnn doesn't work :(
@@ -76,14 +76,18 @@ export OMP_NUM_THREADS=2
 #ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
 #sed -i "$ARG" $CFG_FILE
 
-CMD="nice --20 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
+#CMD="nice --20 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
+#	--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+CMD="chrt -f 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
 	--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+
+#export CUBLAS_WORKSPACE_CONFIG=":4096:2"
 
 set -x
 if [ $1 == 'profile' ]; then
-#        export CUDA_LAUNCH_BLOCKING=1
-        $CMD 
-#        export CUDA_LAUNCH_BLOCKING=0
+        export CUDA_LAUNCH_BLOCKING=1
+        $CMD --set "MODEL.DEADLINE_SEC" $2
+        export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ]; then
 	mv -f eval_dict_* backup
 	OUT_DIR=exp_data_nsc
@@ -110,11 +114,10 @@ elif [ $1 == 'methods' ]; then
         #fi
 	CFG_FILE=${CFG_FILES[$m]}
 	CKPT_FILE=${CKPT_FILES[$m]}
-	CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
+	#CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
+	#	--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+	CMD="chrt -f 90 $TASKSET python test.py --cfg_file=$CFG_FILE \
 		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
-	#ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
-	#ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
-	#sed -i "$ARG" $CFG_FILE
 	for s in $(seq $2 $3 $4)
 	do
 		OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json

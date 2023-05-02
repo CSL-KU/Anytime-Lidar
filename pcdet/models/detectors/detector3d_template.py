@@ -52,18 +52,20 @@ def post_forward_hook(module, inp_args, outp_args):
     batch_dict = outp_args
     pp_args = module.post_processing_pre(batch_dict) # NMS
     torch.cuda.synchronize()
-    finish_time = time.time()
+    module.finish_time = time.time()
+    #print(finish_time - batch_dict['PostSched_start'])
     module.measure_time_end('End-to-end')
     torch.cuda.nvtx.range_pop()
 
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
-    tdiff = round(finish_time - batch_dict['abs_deadline_sec'], 3)
+    tdiff = round(module.finish_time - batch_dict['abs_deadline_sec'], 3)
     module._eval_dict['deadline_diffs'].append(tdiff)
 
-    dl_missed = (True if tdiff > 0 else False)
+    dl_missed = (tdiff > 0)
 
     if dl_missed:
+        #print('Deadline missed!', tdiff, module.finish_time - module.psched_start_time)
         module._eval_dict['deadlines_missed'] += 1
         if module._use_empty_det_dict_for_eval:
             pred_dicts = [ module.get_empty_det_dict() for p in pred_dicts ]
@@ -114,6 +116,7 @@ class Detector3DTemplate(nn.Module):
         self.hooks_binded = True
     
         self.latest_batch_dict = None
+        self.psched_start_time = 0
 
     def train(self, mode=True):
         super().train(mode)

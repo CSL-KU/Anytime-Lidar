@@ -7,10 +7,15 @@ import json
 import random
 import numpy as np
 import scipy
-#from sklearn.model_selection import train_test_split
+import gc 
+import random
+import os
 
 from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
+from .. import load_data_to_gpu
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"]=":4096:8"
 
 class VoxelNeXtAnytime(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -20,6 +25,7 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
+        torch.use_deterministic_algorithms(True)
 
         self.vfe, self.backbone_3d, self.dense_head = self.module_list
         self.update_time_dict( {
@@ -32,13 +38,8 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         ################################################################################
         #self.tcount= torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
         self.tcount = self.model_cfg.TILE_COUNT
+        self.tcount_cuda = torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
         self.total_num_tiles = self.tcount[0] * self.tcount[1]
-
-        #Tile prios are going to be updated dynamically, initially all tiles have equal priority
-        self.tile_prios = torch.full((self.total_num_tiles,), \
-                self.total_num_tiles//2, dtype=torch.long, device='cuda')
-        #self.tile_prios = torch.randint(0, self.total_num_tiles, (self.total_num_tiles,), \
-        #        dtype=torch.long, device='cuda')
 
         # This number will be determined by the scheduling algorithm initially for each input
         self.last_tile_coord = 0
@@ -70,21 +71,16 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         ################################################################################
 
         self.calibrating_now = False
-        self.calib_tile_idx_start = 1
         self.add_dict = self._eval_dict['additional']
         self.add_dict['tcount'] = self.tcount
-        for k in ('voxel_counts', 'chosen_tile_coords', 'PostSched'):
+        for k in ('voxel_counts', 'voxel_counts2', 'chosen_tile_coords', 'PostSched'):
             self.add_dict[k] = []
 
         # these values needs calibration
-        self.time_pred_coeffs = [1.,1.,1.]
-        self.projection_wcet = 0.002
+        self.time_pred_coeffs = torch.ones(6, device='cuda')
         self.pred_net_time_stats = {'99perc':0.0, 'max': 0.0}
 
-        grid_size = self.dataset.grid_size
-        self.scale_yz = grid_size[1] * grid_size[2]
-        self.scale_z = grid_size[2]
-
+        self.calib_num_tiles = -1
         #print(self)
 
 
@@ -97,11 +93,6 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             self.last_tile_coord = 0
             self.prev_scene_token = scene_token
 
-        if self.calibrating_now:
-            return self.calib_forward(batch_dict)
-            #batch_dict['final_box_dicts'] = [self.get_empty_det_dict()]
-            #return batch_dict
-
         if self.enable_projection and batch_dict['batch_size'] == 1:
             self.cur_pose = self.token_to_pose[self.latest_token]
             self.cur_ts = self.token_to_ts[self.latest_token]
@@ -109,6 +100,8 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         self.measure_time_start('VFE')
         batch_dict = self.vfe(batch_dict, model=self)
         self.measure_time_end('VFE')
+
+        #print('sum of voxel counts:', torch.sum(self.voxel_counts).cpu())
 
         self.measure_time_start('Backbone3D')
         batch_dict = self.backbone_3d(batch_dict)
@@ -127,7 +120,6 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             return ret_dict, tb_dict, disp_dict
         else:
             if self.enable_projection:
-                torch.cuda.synchronize()
                 self.measure_time_start('Projection')
                 batch_dict = self.projection(batch_dict)
                 self.measure_time_end('Projection')
@@ -214,77 +206,28 @@ class VoxelNeXtAnytime(Detector3DTemplate):
 
         return batch_dict
 
-
-    def calib_forward(self, batch_dict):
-        points = batch_dict['points']
-        # First, learn the number of nonempty tiles
-        batch_dict['calib_num_tiles'] = 0
-        batch_dict = self.vfe(batch_dict, model=self)
-        max_num_tiles = batch_dict['chosen_tile_coords'].size(0)
-
-        # Now try out all possilibities
-        self.calib_tile_idx_start = (self.calib_tile_idx_start % 10) + 1
-        for num_tiles in range(self.calib_tile_idx_start, max_num_tiles+1, 10):
-            times, vcs, tiles = [], [], []
-            for rep in range(3):
-                batch_dict['points'] = points
-                #batch_dict['point_coords'] = point_coords
-                batch_dict['calib_num_tiles'] = num_tiles
-                batch_dict = self.vfe(batch_dict, model=self)
-                batch_dict = self.backbone_3d(batch_dict)
-                batch_dict = self.dense_head(batch_dict)
-                torch.cuda.synchronize()
-
-                times.append(time.time() - batch_dict['PostSched_start'])
-                vcs.append(batch_dict['voxel_counts'])
-                tiles.append(batch_dict['chosen_tile_coords'])
-
-            idx = times.index(max(times))
-            self.add_dict['PostSched'].append(times[idx])
-            self.add_dict['voxel_counts'].append(vcs[idx])
-            self.add_dict['chosen_tile_coords'].append(tiles[idx])
-
-        return batch_dict
-
-
-    # This method is being called inside VFE
-    # NOTE Assumes batch size of 1
-    def schedule(self, batch_dict):
-        self.measure_time_start('Sched')
-        # float32, long
-        points, point_coords = batch_dict['points'], batch_dict['point_coords']
-
+    def get_nonempty_tiles_v2(self, voxel_coords):
         # Calculate where each voxel resides in which tile
-        merge_coords = point_coords[:, 1] * self.scale_yz + \
-                        point_coords[:, 2] * self.scale_z + \
-                        point_coords[:, 3]
-        unq_coords = torch.unique(merge_coords)
-        voxel_x = torch.div(unq_coords, self.scale_yz, rounding_mode='trunc')
-        voxel_y = torch.div((unq_coords % self.scale_yz), self.scale_z, rounding_mode='trunc')
-        tile_x = torch.div(voxel_x, self.tile_size_voxels[0], rounding_mode='trunc')
-        tile_y = torch.div(voxel_y, self.tile_size_voxels[1], rounding_mode='trunc')
-        voxel_tile_coords = tile_x * self.tcount[0] + tile_y
+        tile_coords = torch.div(voxel_coords[:, -2:], self.tile_size_voxels, \
+                rounding_mode='trunc').long()
 
-        # Get the tiles and number of voxels in them, maybe faster in cpu?
+        voxel_tile_coords = tile_coords[:, 1] * self.tcount[1] + tile_coords[:, 0]
         nonempty_tile_coords, voxel_counts = torch.unique(voxel_tile_coords, \
                 sorted=True, return_counts=True)
+        return voxel_tile_coords, nonempty_tile_coords, voxel_counts
+
+    def schedule_v2(self, batch_dict):
+        self.measure_time_start('Sched')
+        voxel_coords = batch_dict['voxel_coords']
+        voxel_tile_coords, nonempty_tile_coords, voxel_counts = self.get_nonempty_tiles_v2(voxel_coords)
 
         if not self.training:
             # Here I need to run the scheduling algorithm
-
-            # supress empty tiles by temporarily increasing the priority of nonempty tiles
-            #tile_prios[nonempty_tile_coords] += self.total_num_tiles
-            #highest_prios, chosen_tile_coords = \
-            #        torch.topk(tile_prios, calib_num_tiles, sorted=False)
-            #tile_prios[nonempty_tile_coords] -= self.total_num_tiles
-
             num_nonempty_tiles = nonempty_tile_coords.size(0)
-
             # find the index+1 of the last tile that was processed in the previous round
             # if it doesn't exist, find the one that is smaller closest
             tile_begin_idx = \
                     (nonempty_tile_coords > self.last_tile_coord).type(torch.uint8).argmax()
-
             tl_end = tile_begin_idx + num_nonempty_tiles
             ntc = nonempty_tile_coords.expand(2, num_nonempty_tiles).flatten()
             ntc = ntc[tile_begin_idx:tl_end]
@@ -295,61 +238,51 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             cnts_cumsum = torch.cumsum(cnts, dim=0).float()
 
             # Get execution time predictions
-            #inputs = torch.stack((cnts_cumsum, num_tiles)).T.float()
-
             C = self.time_pred_coeffs
-            tpreds= C[0]*cnts_cumsum + C[1]*num_tiles + C[2]
-
+            #tpreds = C[0]*cnts_cumsum + C[1]*num_tiles + C[2]
+            x1, y1 = cnts_cumsum, num_tiles
+            XY = torch.stack((torch.ones(x1.size(0), device='cuda'), x1, y1, \
+                    x1*y1, x1**2, y1**2), dim=1)
+            tpreds = torch.matmul(XY, C)
             torch.cuda.synchronize()
-            batch_dict['PostSched_start'] = time.time()
-            rem_time = batch_dict['abs_deadline_sec'] - batch_dict['PostSched_start']
-            rem_time -= self.pred_net_time_stats['max'] + self.projection_wcet
+            self.psched_start_time = time.time()
+            rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
+            rem_time -= self.pred_net_time_stats['max']
             diffs = (tpreds < rem_time)
-            #print(diffs)
-
-            # calibration in progress, ignore tpreds and deadline
-            calib_num_tiles = batch_dict['calib_num_tiles'] if self.calibrating_now else -1
-
-            # diffs.all() is the when we can meet all deadlines
+            diffs = diffs.cpu()
 
             all_true = diffs.all()
-            if (not self.calibrating_now and all_true) or (calib_num_tiles == 0):
+            if ((not self.calibrating_now) and all_true) or (self.calib_num_tiles == 0):
                 # Use all tiles
                 chosen_tile_coords = nonempty_tile_coords
                 self.last_tile_coord = 0
-                batch_dict['voxel_counts'] = cnts
+                self.voxel_counts = cnts
             else:
-                # Point filtering is needed
-                idx = diffs.to(dtype=torch.uint8).argmin()+1
+                # Voxwl filtering is needed
+                idx = diffs.to(dtype=torch.uint8).argmin()-1
                 if self.calibrating_now:
-                    idx = calib_num_tiles
+                    idx = self.calib_num_tiles
+                if idx < 1:
+                    idx = 1
                 chosen_tile_coords = ntc[:idx]
 
-                self.last_tile_coord = random.randint(0, num_nonempty_tiles-1) \
-                        if self.calibrating_now else chosen_tile_coords[-1]
+                self.last_tile_coord = chosen_tile_coords[-1]
 
-                point_tile_coords = torch.div(point_coords[..., 1:3], self.tile_size_voxels, \
-                        rounding_mode='trunc').long()
-                point_tile_coords = point_coords[:, 0].long() * self.total_num_tiles + \
-                        point_tile_coords[...,0] * self.tcount[1] + point_tile_coords[...,1]
-
-                tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
+                tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         chosen_tile_coords)
-
-                batch_dict['points'] = points[tile_filter]
-                batch_dict['point_coords'] = point_coords[tile_filter]
-                batch_dict['voxel_counts'] = cnts[:idx]
+                batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
+                batch_dict['voxel_coords'] = voxel_coords[tile_filter]
+                self.voxel_counts = cnts[:idx]
             batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
-            self.measure_time_end('Sched')
-            #print(num_nonempty_tiles, chosen_tile_coords.size(0))
         else:
-            #torch.cuda.synchronize()
-            #batch_dict['PostSched_start'] = time.time()
-            # No filtering, process all nonempty tiles
             batch_dict['chosen_tile_coords'] = nonempty_tile_coords
+        self.chosen_tile_coords = batch_dict['chosen_tile_coords']
+        self.measure_time_end('Sched')
 
         return batch_dict
+
+
 
     def get_training_loss(self):
         disp_dict = {}
@@ -408,8 +341,9 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             with open(fname, 'r') as handle:
                 calib_dict = json.load(handle)
 
-            voxel_counts = calib_dict["voxel_counts"]
-            num_voxels = [sum(vc) for vc in voxel_counts]
+            #voxel_counts = calib_dict["voxel_counts"]
+            #num_voxels = [sum(vc) for vc in voxel_counts]
+            num_voxels = calib_dict["voxel_counts2"]
 
             tile_coords = calib_dict["chosen_tile_coords"]
             num_tiles = [len(tc) for tc in tile_coords]
@@ -420,11 +354,19 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             Z = np.array(psched_time, dtype=np.float32)
             x1, y1, z1 = X.flatten(), Y.flatten(), Z.flatten()
 
-            A = np.c_[x1, y1, np.ones(x1.shape[0])]
-            C,_,_,_ = scipy.linalg.lstsq(A, z1)    # coefficients
+            # linear
+            #A = np.c_[x1, y1, np.ones(x1.shape[0])]
+            #C,_,_,_ = scipy.linalg.lstsq(A, z1)    # coefficients
+            #plane_z = C[0]*x1 + C[1]*y1 + C[2]
 
-            self.time_pred_coeffs = C
-            plane_z = C[0]*x1 + C[1]*y1 + C[2]
+            # quadratic
+            xy = np.stack([x1, y1], axis=1)
+            A = np.c_[np.ones(x1.shape[0]), xy, np.prod(xy, axis=1), xy**2]
+            C,_,_,_ = scipy.linalg.lstsq(A, z1)
+            plane_z = np.dot(np.c_[np.ones(x1.shape), x1, y1, x1*y1, x1**2, y1**2], C)
+
+            self.time_pred_coeffs = torch.from_numpy(C).float().cuda()
+            print('self.time_pred_coeffs', self.time_pred_coeffs)
 
             diff = z1 - plane_z
             perc95 = np.percentile(diff, 95, method='lower')
@@ -435,23 +377,65 @@ class VoxelNeXtAnytime(Detector3DTemplate):
                 '95perc': float(perc95),
                 '99perc': float(perc99),
                 'max': float(max(diff))}
-            print('Time prediction stats:')
 
         except FileNotFoundError:
             print(f'Calibration file {fname} not found, running calibration')
             self.calibrating_now = True # time calibration!
+            self.calibration_procedure()
+            sys.exit()
 
+        print('Time prediction stats:')
         print(self.pred_net_time_stats)
 
         return None #pred_dicts
 
+    def calibration_procedure(self):
+        gc.disable()
+        all_max_num_tiles = []
+        for i in range(len(self.dataset)):
+            data_dict = self.dataset.getitem_pre(i)
+            data_dict = self.dataset.getitem_post(data_dict)
+            data_dict = self.dataset.collate_batch([data_dict])
+            load_data_to_gpu(data_dict)
+
+            _, nonempty_tile_coords, _ = self.get_nonempty_tiles_v2(data_dict['voxel_coords'])
+            max_num_tiles = nonempty_tile_coords.size(0)
+            all_max_num_tiles.append(max_num_tiles)
+
+        print(min(all_max_num_tiles), max(all_max_num_tiles))
+        torch.cuda.empty_cache()
+        gc.collect()
+        num_tiles=random.randint(1, all_max_num_tiles[0]//2)
+        for rep in range(10):
+            print('Rep:', rep)
+            for i in range(len(self.dataset)):
+                max_num_tiles = all_max_num_tiles[i]
+                if num_tiles >= max_num_tiles:
+                    num_tiles = random.randint(1, max_num_tiles//10)
+
+                self.calib_num_tiles = num_tiles
+                with torch.no_grad():
+                    pred_dicts, ret_dict = self([i])
+                tm =self.finish_time - self.psched_start_time
+                vc = self.voxel_counts
+                tiles = self.chosen_tile_coords
+                torch.cuda.empty_cache()
+                gc.collect()
+
+                self.add_dict['PostSched'].append(tm)
+                self.add_dict['voxel_counts'].append(vc)
+                self.add_dict['voxel_counts2'].append(\
+                        self.latest_batch_dict['voxel_coords'].size(0))
+                self.add_dict['chosen_tile_coords'].append(tiles)
+                num_tiles += 10
+                #print('Rep, idx, all:', rep, i, len(self.dataset), 'num_tiles:', num_tiles)
+        gc.enable()
+        print('Time calibration Complete')
+        for k in ('voxel_counts',  'chosen_tile_coords'):
+            for i, t in enumerate(self.add_dict[k]):
+                self.add_dict[k][i] = t.cpu().tolist()
+        with open(f"calib_raw_data.json", 'w') as handle:
+            json.dump(self.add_dict, handle, indent=4)
+
     def post_eval(self):
-        if self.calibrating_now:
-            print('Time calibration Complete')
-            for k in ('voxel_counts', 'chosen_tile_coords'):
-                for i, t in enumerate(self.add_dict[k]):
-                    self.add_dict[k][i] = t.cpu().tolist()
-            with open(f"calib_raw_data.json", 'w') as handle:
-                json.dump(self.add_dict, handle, indent=4)
-            sys.exit()
-        print(f"Deadlines missed: {self._eval_dict['deadlines_missed']}")
+        print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")

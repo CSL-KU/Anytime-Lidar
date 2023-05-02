@@ -5,18 +5,18 @@ DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_mini_dataset.yaml
     POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
     INFO_PATH: {
-        'train': [nuscenes_infos_10sweeps_train.pkl],
-        'test': [nuscenes_infos_10sweeps_val.pkl],
+        'train': [nuscenes_infos_5sweeps_train.pkl],
+        'test': [nuscenes_infos_5sweeps_val.pkl],
     }
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
               DB_INFO_PATH:
-                - nuscenes_dbinfos_10sweeps_withvelo.pkl
+                - nuscenes_dbinfos_5sweeps_withvelo.pkl
               USE_SHARED_MEMORY: False  #True  # set it to True to speed up (it costs about 15GB shared memory)
               DB_DATA_PATH:
-                - nuscenes_dbinfos_10sweeps_withvelo_global.pkl.npy
+                - nuscenes_dbinfos_5sweeps_withvelo_global.pkl.npy
               PREPARE: {
                 filter_by_min_points: [
                     'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',
@@ -54,7 +54,7 @@ DATA_CONFIG:
         - NAME: shuffle_points
           SHUFFLE_ENABLED: {
             'train': True,
-            'test': True
+            'test': False
           }
 
         - NAME: transform_points_to_voxels

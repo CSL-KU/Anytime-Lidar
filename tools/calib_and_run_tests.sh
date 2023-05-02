@@ -38,31 +38,31 @@ link_tables_and_dicts()
 	done
 }
 
-link_tables_and_dicts "nusc_tables_and_dicts/250"
+test_prep()
+{
+	link_tables_and_dicts "nusc_tables_and_dicts/$1"
+	cp splits.py.test $SPLITS_PY_DIR/splits.py
+	gen_data
+}
+
+SPLITS_PY_DIR="/root/nuscenes-devkit/python-sdk/nuscenes/utils"
 
 ## CALIBRATION
-str='mini_train, mini_val = mini_val, mini_train'
-sed_str_calib='s/#'$str'/'$str'/g'
-sed --follow-symlinks -i "$sed_str_calib" splits.py # calib
-copy_data 250 calib
+link_tables_and_dicts "nusc_tables_and_dicts/250"
+cp splits.py.calib $SPLITS_PY_DIR/splits.py
+gen_data
 ./run_tests.sh calib
-#python find_correlation.py calib_raw_data.json
 
 ## TEST
-#sed_str_test='s/'$str'/#'$str'/g'
-#sed --follow-symlinks -i "$sed_str_test" splits.py # test
-#copy_data 250 test
+#test_prep 250
+#./run_tests.sh methods 0.250 -0.025 0.225
+#test_prep 200
+#./run_tests.sh methods 0.200 -0.025 0.175
+#test_prep 150
+#./run_tests.sh methods 0.150 -0.025 0.125
+#test_prep 100
+#./run_tests.sh methods 0.100 -0.025 0.075
 
-## Test 150 ms
-#./run_tests.sh methods 0.450 -0.050 0.200
-#
-## Gen test data 100ms
-#link_tables_and_dicts "nusc_tables_and_dicts/100"
-#gen_data
-#
-## Test 100 ms
-#./run_tests.sh methods 0.100 -0.010 0.050
-#
 ##Plot
 #for s in 0 1 2 3
 #do

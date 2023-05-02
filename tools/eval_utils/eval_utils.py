@@ -60,11 +60,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     # Forward once for initialization and calibration
     batch_size = dataloader.batch_size
     if 'calibrate' in dir(model):
-        with torch.no_grad():
-            torch.cuda.cudart().cudaProfilerStop()
-            model.calibrate(batch_size)
-            torch.cuda.cudart().cudaProfilerStart()
-            print("Calibration complete.")
+        #torch.cuda.cudart().cudaProfilerStop()
+        model.calibrate(batch_size)
+        #torch.cuda.cudart().cudaProfilerStart()
 
     global speed_test
     num_samples = 100 if speed_test and len(dataset) >= 100 else len(dataset)
