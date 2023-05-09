@@ -60,25 +60,27 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     # Forward once for initialization and calibration
     batch_size = dataloader.batch_size
     if 'calibrate' in dir(model):
-        #torch.cuda.cudart().cudaProfilerStop()
+        torch.cuda.cudart().cudaProfilerStop()
         model.calibrate(batch_size)
-        #torch.cuda.cudart().cudaProfilerStart()
+        torch.cuda.cudart().cudaProfilerStart()
 
     global speed_test
-    num_samples = 100 if speed_test and len(dataset) >= 100 else len(dataset)
+    num_samples = 20 if speed_test and len(dataset) >= 10 else len(dataset)
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
     start_time = time.time()
     gc.disable()
     for i in range(len(dataloader)):
+        if speed_test and i == num_samples:
+            break
         if getattr(args, 'infer_time', False):
             start_time = time.time()
 
+        data_indexes = [i*batch_size+j for j in range(batch_size) \
+                if i*batch_size+j < len(dataset)]
         with torch.no_grad():
-            data_indexes = [i*batch_size+j for j in range(batch_size) \
-                    if i*batch_size+j < len(dataset)]
             pred_dicts, ret_dict = model(data_indexes)
-            batch_dict = model.latest_batch_dict
+        batch_dict = model.latest_batch_dict
         disp_dict = {}
 
         if getattr(args, 'infer_time', False):
