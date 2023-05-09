@@ -65,10 +65,13 @@ def post_forward_hook(module, inp_args, outp_args):
     dl_missed = (tdiff > 0)
 
     if dl_missed:
-        #print('Deadline missed!', tdiff, module.finish_time - module.psched_start_time)
+        print('Deadline missed!', tdiff)
         module._eval_dict['deadlines_missed'] += 1
         if module._use_empty_det_dict_for_eval:
             pred_dicts = [ module.get_empty_det_dict() for p in pred_dicts ]
+
+    tm = module.finish_time - module.psched_start_time
+    module._eval_dict['additional']['PostSched'].append(tm)
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
@@ -101,14 +104,14 @@ class Detector3DTemplate(nn.Module):
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
         else:
-            self._eval_dict['deadline_sec'] = 999999.0  # loong deadline
+            self._eval_dict['deadline_sec'] = 9999.9  # loong deadline
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
 
         print('Default deadline is:', self._eval_dict['deadline_sec'])
 
         # To be filled by the child class, in case needed
-        self._eval_dict['additional'] = {}
+        self._eval_dict['additional'] = {'PostSched':[]}
 
         self._use_empty_det_dict_for_eval = False
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)
@@ -683,7 +686,10 @@ class Detector3DTemplate(nn.Module):
         #data_dict["abs_deadline_sec"] = time.time () + 10.0
         training = self.training
         self.eval()
+
+        self._eval_dict['deadline_sec'] = 9999.9
         pred_dicts, recall_dict = self([i for i in range(batch_size)]) # this calls forward!
+        self._eval_dict['deadline_sec'] = self._default_deadline_sec
 
         #Print full tensor sizes
         print('\ndata_dict after forward:')
