@@ -48,13 +48,13 @@ class CenterPointAnytime(Detector3DTemplate):
         self.total_num_tiles = self.tcount[0] * self.tcount[1]
 
         # This number will be determined by the scheduling algorithm initially for each input
-        self.last_tile_coord = 0
-        self.reduce_mask_stream = torch.cuda.Stream()
+        self.last_tile_coord = -1
+        #self.reduce_mask_stream = torch.cuda.Stream()
         self.tile_size_voxels = torch.from_numpy(\
                 self.dataset.grid_size[:2] / self.tcount).cuda().long()
 
         ####Projection###
-        self.enable_projection = True
+        self.enable_projection = False
         self.token_to_scene = {}
         self.token_to_ts = {}
         with open('token_to_pos.json', 'r') as handle:
@@ -79,16 +79,17 @@ class CenterPointAnytime(Detector3DTemplate):
 
         self.calibrating_now = False
         self.add_dict = self._eval_dict['additional']
-        self.add_dict['tcount'] = self.tcount
-        for k in ('voxel_counts', 'voxel_counts2', 'chosen_tile_coords', 'PostSched'):
+        for k in ('voxel_counts', 'num_tiles', 'PostSched'):
             self.add_dict[k] = []
 
         # these values needs calibration
-        self.time_pred_coeffs = torch.ones(6, device='cuda')
+        self.time_pred_coeffs = torch.zeros(6, device='cuda')
         self.pred_net_time_stats = {'95perc':0.0, 'max': 0.0}
 
+        self.num_chosen_tiles = 0
         self.calib_num_tiles = -1
         #print(self)
+        self.skip_projection=False
 
     def produce_reduce_mask(self, data_dict):
         tile_coords = data_dict['chosen_tile_coords']
@@ -101,25 +102,23 @@ class CenterPointAnytime(Detector3DTemplate):
         return ReduceMask(inds, counts)
 
     def forward(self, batch_dict):
-        self.latest_token = batch_dict['metadata'][0]['token']
-        scene_token = self.token_to_scene[self.latest_token]
-        if scene_token != self.prev_scene_token:
-            if self.enable_projection:
+        if self.enable_projection:
+            latest_token = batch_dict['metadata'][0]['token']
+            scene_token = self.token_to_scene[latest_token]
+            if scene_token != self.prev_scene_token:
                 self.projection_reset()
-            self.last_tile_coord = 0
-            self.prev_scene_token = scene_token
+                self.prev_scene_token = scene_token
 
-        if self.enable_projection and batch_dict['batch_size'] == 1:
-            self.cur_pose = self.token_to_pose[self.latest_token]
-            self.cur_ts = self.token_to_ts[self.latest_token]
+            self.cur_pose = self.token_to_pose[latest_token]
+            self.cur_ts = self.token_to_ts[latest_token]
 
         self.measure_time_start('VFE')
         batch_dict = self.vfe(batch_dict, model=self)
         self.measure_time_end('VFE')
 
         # Produce the reduce mask in parallel in a seperate stream
-        with torch.cuda.stream(self.reduce_mask_stream):
-            batch_dict['reduce_mask'] = self.produce_reduce_mask(batch_dict)
+        #with torch.cuda.stream(self.reduce_mask_stream):
+        #    batch_dict['reduce_mask'] = self.produce_reduce_mask(batch_dict)
 
         self.measure_time_start('Backbone3D')
         batch_dict = self.backbone_3d(batch_dict)
@@ -127,10 +126,11 @@ class CenterPointAnytime(Detector3DTemplate):
 
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
-        self.reduce_mask_stream.synchronize()
+        #self.reduce_mask_stream.synchronize()
         self.measure_time_end('MapToBEV')
 
         self.measure_time_start('Backbone2D')
+        batch_dict['reduce_mask'] = self.produce_reduce_mask(batch_dict)
         batch_dict = self.backbone_2d(batch_dict)
         self.measure_time_end('Backbone2D')
 
@@ -149,7 +149,12 @@ class CenterPointAnytime(Detector3DTemplate):
             if self.enable_projection:
                 self.measure_time_start('Projection')
                 batch_dict = self.projection(batch_dict)
+                self.skip_projection=False
                 self.measure_time_end('Projection')
+
+                self.add_dict['voxel_counts'].append(\
+                        self.latest_batch_dict['voxel_coords'].size(0))
+                self.add_dict['num_tiles'].append(self.num_chosen_tiles)
 
             return batch_dict
 
@@ -190,7 +195,7 @@ class CenterPointAnytime(Detector3DTemplate):
             self.past_detections['pose_idx'] -= len(dets_to_rm)
 
         projected_boxes=None
-        if self.past_poses.size(0) > 0:
+        if self.past_poses.size(0) > 0 and not self.skip_projection:
 
             mask, projected_boxes = cuda_projection.project_past_detections(
                     batch_dict['chosen_tile_coords'],
@@ -257,11 +262,11 @@ class CenterPointAnytime(Detector3DTemplate):
                     (nonempty_tile_coords > self.last_tile_coord).type(torch.uint8).argmax()
             tl_end = tile_begin_idx + num_nonempty_tiles
             ntc = nonempty_tile_coords.expand(2, num_nonempty_tiles).flatten()
-            ntc = ntc[tile_begin_idx:tl_end]
+            ntc = ntc[tile_begin_idx:tl_end].contiguous()
 
             num_tiles = torch.arange(1, ntc.size(0)+1, device=voxel_counts.device).float()
             cnts = voxel_counts.expand(2, voxel_counts.size(0)).flatten()
-            cnts = cnts[tile_begin_idx:tl_end]
+            cnts = cnts[tile_begin_idx:tl_end].contiguous()
             cnts_cumsum = torch.cumsum(cnts, dim=0).float()
 
             # Get execution time predictions
@@ -275,41 +280,36 @@ class CenterPointAnytime(Detector3DTemplate):
             self.psched_start_time = time.time()
             rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
             rem_time -= self.pred_net_time_stats['95perc']
-            diffs = (tpreds < rem_time)
-            diffs = diffs.cpu()
+            diffs = (tpreds < rem_time).cpu()
+            idx = torch.sum(diffs).item()
 
-            all_true = diffs.all()
-            if ((not self.calibrating_now) and all_true) or (self.calib_num_tiles == 0):
+            if self.calibrating_now:
+                idx = self.calib_num_tiles
+            elif idx < 1: #self.total_num_tiles//20:
+                idx = int(num_tiles[0]) #self.total_num_tiles//20 # setting to 1 can cause problems
+
+            if idx == num_nonempty_tiles:
                 # Use all tiles
+                self.skip_projection=True
                 chosen_tile_coords = nonempty_tile_coords
-                self.last_tile_coord = 0
-                self.voxel_counts = cnts
+                self.last_tile_coord = -1
             else:
                 # Voxwl filtering is needed
-                idx = diffs.to(dtype=torch.uint8).argmin()-1
-                if self.calibrating_now:
-                    idx = self.calib_num_tiles
-                if idx < 1:
-                    idx = 1
                 chosen_tile_coords = ntc[:idx]
-
                 self.last_tile_coord = chosen_tile_coords[-1]
-
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         chosen_tile_coords)
-                batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
-                batch_dict['voxel_coords'] = voxel_coords[tile_filter]
-                self.voxel_counts = cnts[:idx]
+                batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter].contiguous()
+                batch_dict['voxel_coords'] = voxel_coords[tile_filter].contiguous()
+                #print('Filtered voxel coords:',batch_dict['voxel_coords'].size())
             batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
         else:
             batch_dict['chosen_tile_coords'] = nonempty_tile_coords
-        self.chosen_tile_coords = batch_dict['chosen_tile_coords']
+        self.num_chosen_tiles = batch_dict['chosen_tile_coords'].size(0)
         self.measure_time_end('Sched')
 
         return batch_dict
-
-
 
     def get_training_loss(self):
         disp_dict = {}
@@ -353,14 +353,15 @@ class CenterPointAnytime(Detector3DTemplate):
             device=self.past_detections["pred_labels"].device)
         self.past_poses = torch.zeros([0, 14], dtype=torch.float)
         self.past_ts = torch.zeros([0], dtype=torch.long)
+        self.last_tile_coord = -1
 
     def calibrate(self, batch_size=1):
-        ep = self.enable_projection
-        self.enable_projection = False
-        super().calibrate()
-        pred_dicts = super().calibrate(batch_size)
-        self.enable_projection = ep
+        super().calibrate(batch_size)
+        self.enable_projection = True
         self.projection_reset()
+
+        for l in self.add_dict.values():
+            l.clear()
 
         # check if the wcet pred file is there
         fname = f"calib_raw_data_centerpoint.json"
@@ -368,12 +369,13 @@ class CenterPointAnytime(Detector3DTemplate):
             with open(fname, 'r') as handle:
                 calib_dict = json.load(handle)
 
-            #voxel_counts = calib_dict["voxel_counts"]
-            #num_voxels = [sum(vc) for vc in voxel_counts]
-            num_voxels = calib_dict["voxel_counts2"]
+            num_voxels = calib_dict["voxel_counts"]
 
-            tile_coords = calib_dict["chosen_tile_coords"]
-            num_tiles = [len(tc) for tc in tile_coords]
+            if 'num_tiles' in calib_dict and calib_dict['num_tiles']:
+                num_tiles = calib_dict['num_tiles']
+            else:
+                tile_coords = calib_dict["chosen_tile_coords"]
+                num_tiles = [len(tc) for tc in tile_coords]
 
             psched_time = calib_dict["PostSched"]
             X = np.array(num_voxels, dtype=np.float32)
@@ -432,37 +434,24 @@ class CenterPointAnytime(Detector3DTemplate):
         print(min(all_max_num_tiles), max(all_max_num_tiles))
         torch.cuda.empty_cache()
         gc.collect()
-        num_tiles=random.randint(1, all_max_num_tiles[0]//2)
-        for rep in range(10):
-            print('Rep:', rep)
+
+        for num_tiles in range(1, max(all_max_num_tiles)+1):
+            print('Num tiles:', num_tiles)
             for i in range(len(self.dataset)):
-                max_num_tiles = all_max_num_tiles[i]
-                if num_tiles >= max_num_tiles:
-                    num_tiles = random.randint(1, max_num_tiles//10)
+                if num_tiles <= all_max_num_tiles[i]:
+                    self.calib_num_tiles = num_tiles
+                    with torch.no_grad():
+                        pred_dicts, ret_dict = self([i])
+                    gc.collect()
 
-                self.calib_num_tiles = num_tiles
-                with torch.no_grad():
-                    pred_dicts, ret_dict = self([i])
-                tm =self.finish_time - self.psched_start_time
-                vc = self.voxel_counts
-                tiles = self.chosen_tile_coords
-                torch.cuda.empty_cache()
-                gc.collect()
-
-                self.add_dict['PostSched'].append(tm)
-                self.add_dict['voxel_counts'].append(vc)
-                self.add_dict['voxel_counts2'].append(\
-                        self.latest_batch_dict['voxel_coords'].size(0))
-                self.add_dict['chosen_tile_coords'].append(tiles)
-                num_tiles += 2
-                #print('Rep, idx, all:', rep, i, len(self.dataset), 'num_tiles:', num_tiles)
         gc.enable()
+        self.add_dict['tcount'] = self.tcount
+        self.add_dict['exec_times'] = self.get_time_dict()
+        self.add_dict['exec_time_stats'] = self.get_time_dict_stats()
         print('Time calibration Complete')
-        for k in ('voxel_counts',  'chosen_tile_coords'):
-            for i, t in enumerate(self.add_dict[k]):
-                self.add_dict[k][i] = t.cpu().tolist()
         with open(f"calib_raw_data_centerpoint.json", 'w') as handle:
             json.dump(self.add_dict, handle, indent=4)
 
     def post_eval(self):
+        self.add_dict['tcount'] = self.tcount
         print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")
