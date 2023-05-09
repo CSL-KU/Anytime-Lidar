@@ -83,6 +83,7 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         self.num_chosen_tiles = 0
         self.calib_num_tiles = -1
         #print(self)
+        self.skip_projection=False
 
 
     def forward(self, batch_dict):
@@ -119,11 +120,12 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             if self.enable_projection:
                 self.measure_time_start('Projection')
                 batch_dict = self.projection(batch_dict)
+                self.skip_projection=False
                 self.measure_time_end('Projection')
 
-            self.add_dict['voxel_counts'].append(\
-                    self.latest_batch_dict['voxel_coords'].size(0))
-            self.add_dict['num_tiles'].append(self.num_chosen_tiles)
+                self.add_dict['voxel_counts'].append(\
+                        self.latest_batch_dict['voxel_coords'].size(0))
+                self.add_dict['num_tiles'].append(self.num_chosen_tiles)
 
             return batch_dict
 
@@ -164,7 +166,7 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             self.past_detections['pose_idx'] -= len(dets_to_rm)
 
         projected_boxes=None
-        if self.past_poses.size(0) > 0:
+        if self.past_poses.size(0) > 0 and not self.skip_projection:
 
             mask, projected_boxes = cuda_projection.project_past_detections(
                     batch_dict['chosen_tile_coords'],
@@ -248,24 +250,18 @@ class VoxelNeXtAnytime(Detector3DTemplate):
             torch.cuda.synchronize()
             self.psched_start_time = time.time()
             rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
-            rem_time -= self.pred_net_time_stats['max']
+            rem_time -= self.pred_net_time_stats['95perc']
             diffs = (tpreds < rem_time).cpu()
-            #all_true = diffs.all()
             idx = torch.sum(diffs).item()
-
-#            num_tiles = (torch.arange(0.1,1.1,0.1) * num_nonempty_tiles).to(torch.int)
-#            i = (num_tiles <= idx).sum()-1
-#            if i == -1:
-#                i = 0
-#            idx = num_tiles[i]
 
             if self.calibrating_now:
                 idx = self.calib_num_tiles
             elif idx < 1: #self.total_num_tiles//20:
-                idx = num_tiles[0] #self.total_num_tiles//20 # setting to 1 can cause problems
+                idx = int(num_tiles[0]) #self.total_num_tiles//20 # setting to 1 can cause problems
 
-            if ((not self.calibrating_now) and (idx == num_nonempty_tiles)) or (idx == 0):
+            if idx == num_nonempty_tiles:
                 # Use all tiles
+                self.skip_projection=True
                 chosen_tile_coords = nonempty_tile_coords
                 self.last_tile_coord = -1
             else:
@@ -410,26 +406,15 @@ class VoxelNeXtAnytime(Detector3DTemplate):
         torch.cuda.empty_cache()
         gc.collect()
 
-        # Numbers to check: 5% 10% 20% 40% full
-
-        #num_tiles=random.randint(1, all_max_num_tiles[0]//2)
-        #for perc in (0.10, 0.20, 0.40, 0.80, 0.95, 0.99):
-        for perc in range(1,11):
-            perc /= 10
-            print('Calib density:', perc)
+        for num_tiles in range(1, max(all_max_num_tiles)+1):
+            print('Num tiles:', num_tiles)
             for i in range(len(self.dataset)):
-                max_num_tiles = all_max_num_tiles[i]
-                #if num_tiles >= max_num_tiles:
-                #    num_tiles = 1
-                num_tiles = math.ceil(max_num_tiles * perc)
-                self.calib_num_tiles = num_tiles
-                with torch.no_grad():
-                    pred_dicts, ret_dict = self([i])
-                #torch.cuda.empty_cache()
-                gc.collect()
+                if num_tiles <= all_max_num_tiles[i]:
+                    self.calib_num_tiles = num_tiles
+                    with torch.no_grad():
+                        pred_dicts, ret_dict = self([i])
+                    gc.collect()
 
-                #num_tiles += random.randint(1, 5)
-                #print('Rep, idx, all:', rep, i, len(self.dataset), 'num_tiles:', num_tiles)
         gc.enable()
         self.add_dict['tcount'] = self.tcount
         self.add_dict['exec_times'] = self.get_time_dict()
