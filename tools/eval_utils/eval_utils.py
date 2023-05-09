@@ -61,7 +61,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     batch_size = dataloader.batch_size
     if 'calibrate' in dir(model):
         torch.cuda.cudart().cudaProfilerStop()
-        model.calibrate(batch_size)
+        model.calibrate()
         torch.cuda.cudart().cudaProfilerStart()
 
     global speed_test

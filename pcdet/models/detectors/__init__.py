@@ -1,4 +1,5 @@
 from .detector3d_template import Detector3DTemplate
+from .anytime_template import AnytimeTemplate
 from .PartA2_net import PartA2Net
 from .point_rcnn import PointRCNN
 from .pointpillar import PointPillar
@@ -18,6 +19,7 @@ from .voxelnext_anytime import VoxelNeXtAnytime
 
 __all__ = {
     'Detector3DTemplate': Detector3DTemplate,
+    'AnytimeTemplate': AnytimeTemplate,
     'SECONDNet': SECONDNet,
     'PartA2Net': PartA2Net,
     'PVRCNN': PVRCNN,
