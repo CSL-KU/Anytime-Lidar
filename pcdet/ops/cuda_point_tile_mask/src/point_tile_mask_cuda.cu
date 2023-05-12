@@ -45,7 +45,10 @@ torch::Tensor point_tile_mask(
 )
 {
 
-  const auto threads_per_block = 256;
+  auto threads_per_block = 256;
+  while(threads_per_block < chosen_tile_coords.size(0))
+    threads_per_block += 128;
+
   const auto num_blocks = std::ceil((double)tile_coords.size(0) / threads_per_block);
  
   auto tensor_options = torch::TensorOptions()
