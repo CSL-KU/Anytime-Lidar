@@ -80,8 +80,8 @@ class AnytimeTemplate(Detector3DTemplate):
         self.RoundRobin = 0
         self.AgingWithDistance = 1
 
-#        self.sched_algo = self.RoundRobin
-        self.sched_algo = self.AgingWithDistance
+        self.sched_algo = self.RoundRobin
+#        self.sched_algo = self.AgingWithDistance
 
     def projection_init(self, batch_dict):
         latest_token = batch_dict['metadata'][0]['token']
@@ -208,9 +208,9 @@ class AnytimeTemplate(Detector3DTemplate):
                     (netc > self.last_tile_coord).type(torch.uint8).argmax()
             tl_end = tile_begin_idx + num_nonempty_tiles
             ntc = netc.expand(2, num_nonempty_tiles).flatten()
-            ntc = ntc[tile_begin_idx:tl_end].contiguous()
+            netc = ntc[tile_begin_idx:tl_end].contiguous()
 
-            num_tiles = torch.arange(1, ntc.size(0)+1, device=netc_vcounts.device).float()
+            num_tiles = torch.arange(1, netc.size(0)+1, device=netc_vcounts.device).float()
             cnts = netc_vcounts.expand(2, netc_vcounts.size(0)).flatten()
             cnts = cnts[tile_begin_idx:tl_end].contiguous()
             cnts_cumsum = torch.cumsum(cnts, dim=0).float()
@@ -425,7 +425,8 @@ class AnytimeTemplate(Detector3DTemplate):
         torch.cuda.empty_cache()
         gc.collect()
 
-        for num_tiles in range(1, max(all_max_num_tiles)+1):
+        # 10 different tiles should be enough
+        for num_tiles in range(1, max(all_max_num_tiles)+1, min(all_max_num_tiles)//10):
             print('Num tiles:', num_tiles)
             for i in range(len(self.dataset)):
                 if num_tiles <= all_max_num_tiles[i]:
@@ -433,6 +434,13 @@ class AnytimeTemplate(Detector3DTemplate):
                     with torch.no_grad():
                         pred_dicts, ret_dict = self([i])
                     gc.collect()
+
+        print('Num tiles: ALL')
+        for i in range(len(self.dataset)):
+            self.calib_num_tiles = all_max_num_tiles[i]
+            with torch.no_grad():
+                pred_dicts, ret_dict = self([i])
+            gc.collect()
 
         gc.enable()
         self.add_dict['tcount'] = self.tcount
