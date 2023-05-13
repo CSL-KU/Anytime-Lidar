@@ -81,8 +81,7 @@ class AnytimeTemplate(Detector3DTemplate):
         self.RoundRobin = 1
         self.AgingWithDistance = 2
 
-        self.sched_algo = self.RoundRobin
-#        self.sched_algo = self.AgingWithDistance
+        self.sched_algo = self.model_cfg.METHOD
 
         self.aft_prj_nms_conf = copy.deepcopy(\
                 self.model_cfg.DENSE_HEAD.POST_PROCESSING.NMS_CONFIG)
@@ -121,7 +120,7 @@ class AnytimeTemplate(Detector3DTemplate):
                 self.past_detections['pose_idx'] -= len(dets_to_rm)
 
             projected_boxes=None
-            if self.past_poses.size(0) > 0 and not self.skip_projection:
+            if self.past_detections['pred_boxes'].size(0) > 0 and not self.skip_projection:
 
                 projected_boxes = cuda_projection.project_past_detections(
                         self.past_detections['pred_boxes'],
