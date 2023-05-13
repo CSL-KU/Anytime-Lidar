@@ -29,8 +29,7 @@ class CenterPointAnytime(AnytimeTemplate):
         return ReduceMask(inds, counts)
 
     def forward(self, batch_dict):
-        if self.enable_projection:
-            self.projection_init(batch_dict)
+        self.projection_init(batch_dict)
 
         self.measure_time_start('VFE')
         batch_dict = self.vfe(batch_dict, model=self)
@@ -66,10 +65,9 @@ class CenterPointAnytime(AnytimeTemplate):
             }
             return ret_dict, tb_dict, disp_dict
         else:
-            if self.enable_projection:
-                self.measure_time_start('Projection')
-                batch_dict = self.projection(batch_dict)
-                self.measure_time_end('Projection')
+            self.measure_time_start('Projection')
+            batch_dict = self.projection(batch_dict)
+            self.measure_time_end('Projection')
 
             return batch_dict
 
