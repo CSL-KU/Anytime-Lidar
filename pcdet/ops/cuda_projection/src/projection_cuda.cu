@@ -208,102 +208,77 @@ using two_dim_pa32 = torch::PackedTensorAccessor32<scalar_t,2,torch::RestrictPtr
 
 template <typename scalar_t>
 __global__ void projection_cuda_kernel(
-        const one_dim_pa32<scalar_t>  chosen_tile_coords,
-        const one_dim_pa32<scalar_t>  pred_tile_coords,
         const two_dim_pa32<fp_type>   pred_boxes,
         const one_dim_pa32<scalar_t>  past_pose_indexes,
         const two_dim_pa32<fp_type>   past_poses,
         const one_dim_pa32<fp_type>   cur_pose,
         const one_dim_pa32<long>      past_ts,
         const long                    cur_ts,
-        one_dim_pa32<bool>            mask,
         two_dim_pa32<fp_type>         projected_boxes) {
-  auto chosen_tile_coords_sz = chosen_tile_coords.size(0);
-  
-  // With shared memory, the time reduced to 0.25 ms from 0.37 ms
-  extern __shared__ __align__(sizeof(scalar_t)) unsigned char smem[];
-  scalar_t *chsn_tile_coords= reinterpret_cast<scalar_t *>(smem);
-  
-  if(threadIdx.x < chosen_tile_coords_sz)
-    chsn_tile_coords[threadIdx.x] = chosen_tile_coords[threadIdx.x];
-  __syncthreads();
-  
   // blockIdx.x is the block id
   // blockDim.x is the number of threads in a block
   // threadIdx.x is the thread id in the block
   auto idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if(idx < pred_tile_coords.size(0)){
-    auto tile_coord = pred_tile_coords[idx];
-    bool includes=false;
-    // Check if tile_coord is included in chosen tile coords or not
-    for(auto i=0; i < chosen_tile_coords_sz; ++i){
-      includes |= (tile_coord == chsn_tile_coords[i]);
-    }
-    mask[idx] = !includes;
+  if(idx < pred_boxes.size(0)){
+    fp_type axis[3] = {0., 0., 1.};
+    Quaternion q(axis, pred_boxes[idx][6]);
+    Box pred_box(pred_boxes[idx][0], pred_boxes[idx][1], pred_boxes[idx][2],
+      pred_boxes[idx][3], pred_boxes[idx][4], pred_boxes[idx][5],
+      q, pred_boxes[idx][7], pred_boxes[idx][8], 0);
+    auto pose_idx = past_pose_indexes[idx];
 
-    if(!includes){
-      fp_type axis[3] = {0., 0., 1.};
-      Quaternion q(axis, pred_boxes[idx][6]);
-      Box pred_box(pred_boxes[idx][0], pred_boxes[idx][1], pred_boxes[idx][2],
-        pred_boxes[idx][3], pred_boxes[idx][4], pred_boxes[idx][5],
-        q, pred_boxes[idx][7], pred_boxes[idx][8], 0);
-      auto pose_idx = past_pose_indexes[idx];
+    Quaternion csr_q(past_poses[pose_idx][3], past_poses[pose_idx][4],
+        past_poses[pose_idx][5], past_poses[pose_idx][6]);
+    pred_box.rotate(csr_q);
 
-      Quaternion csr_q(past_poses[pose_idx][3], past_poses[pose_idx][4],
-          past_poses[pose_idx][5], past_poses[pose_idx][6]);
-      pred_box.rotate(csr_q);
+    pred_box.translate(past_poses[pose_idx][0], past_poses[pose_idx][1],
+        past_poses[pose_idx][2]);
 
-      pred_box.translate(past_poses[pose_idx][0], past_poses[pose_idx][1], 
-          past_poses[pose_idx][2]);
+    Quaternion epr_q(past_poses[pose_idx][10], past_poses[pose_idx][11],
+        past_poses[pose_idx][12], past_poses[pose_idx][13]);
+    pred_box.rotate(epr_q);
 
-      Quaternion epr_q(past_poses[pose_idx][10], past_poses[pose_idx][11],
-          past_poses[pose_idx][12], past_poses[pose_idx][13]);
-      pred_box.rotate(epr_q);
+    pred_box.translate(past_poses[pose_idx][7], past_poses[pose_idx][8],
+        past_poses[pose_idx][9]);
 
-      pred_box.translate(past_poses[pose_idx][7], past_poses[pose_idx][8], 
-          past_poses[pose_idx][9]);
+    fp_type elapsed_sec = (fp_type)(cur_ts - past_ts[pose_idx]) / 1000000.0;
+    fp_type x_diff = pred_box.vel_x()*elapsed_sec;
+    fp_type y_diff = pred_box.vel_y()*elapsed_sec;
+    if (isfinite(x_diff) && isfinite(y_diff))
+      pred_box.translate(x_diff, y_diff, 0);
 
-      fp_type elapsed_sec = (fp_type)(cur_ts - past_ts[pose_idx]) / 1000000.0; 
-      fp_type x_diff = pred_box.vel_x()*elapsed_sec;
-      fp_type y_diff = pred_box.vel_y()*elapsed_sec;
-      if (isfinite(x_diff) && isfinite(y_diff))
-        pred_box.translate(x_diff, y_diff, 0);
+    // Now use cure pose but inverted
+    pred_box.translate(-cur_pose[7], -cur_pose[8], -cur_pose[9]);
 
-      // Now use cure pose but inverted
-      pred_box.translate(-cur_pose[7], -cur_pose[8], -cur_pose[9]);
+    Quaternion epr_inv_q(cur_pose[10], cur_pose[11], cur_pose[12], cur_pose[13]);
+    epr_inv_q.invert_inplace();
+    pred_box.rotate(epr_inv_q);
 
-      Quaternion epr_inv_q(cur_pose[10], cur_pose[11], cur_pose[12], cur_pose[13]);
-      epr_inv_q.invert_inplace();
-      pred_box.rotate(epr_inv_q);
+    pred_box.translate(-cur_pose[0], -cur_pose[1], -cur_pose[2]);
 
-      pred_box.translate(-cur_pose[0], -cur_pose[1], -cur_pose[2]);
+    Quaternion csr_inv_q(cur_pose[3], cur_pose[4], cur_pose[5], cur_pose[6]);
+    csr_inv_q.invert_inplace();
+    pred_box.rotate(csr_inv_q);
 
-      Quaternion csr_inv_q(cur_pose[3], cur_pose[4], cur_pose[5], cur_pose[6]);
-      csr_inv_q.invert_inplace();
-      pred_box.rotate(csr_inv_q);
+    projected_boxes[idx][0] = pred_box.center_x();
+    projected_boxes[idx][1] = pred_box.center_y();
+    projected_boxes[idx][2] = pred_box.center_z();
+    projected_boxes[idx][3] = pred_box.size_x();
+    projected_boxes[idx][4] = pred_box.size_y();
+    projected_boxes[idx][5] = pred_box.size_z();
 
-      projected_boxes[idx][0] = pred_box.center_x();
-      projected_boxes[idx][1] = pred_box.center_y();
-      projected_boxes[idx][2] = pred_box.center_z();
-      projected_boxes[idx][3] = pred_box.size_x();
-      projected_boxes[idx][4] = pred_box.size_y();
-      projected_boxes[idx][5] = pred_box.size_z();
+    fp_type r = pred_box.r();
+    fp_type i = pred_box.i();
+    fp_type j = pred_box.j();
+    fp_type k = pred_box.k();
 
-      fp_type r = pred_box.r();
-      fp_type i = pred_box.i();
-      fp_type j = pred_box.j();
-      fp_type k = pred_box.k();
-
-      projected_boxes[idx][6] = 2 * ATAN2(SQRT(i*i+j*j+k*k), r);
-      projected_boxes[idx][7] = pred_box.vel_x();
-      projected_boxes[idx][8] = pred_box.vel_y();
-    }
+    projected_boxes[idx][6] = 2 * ATAN2(SQRT(i*i+j*j+k*k), r);
+    projected_boxes[idx][7] = pred_box.vel_x();
+    projected_boxes[idx][8] = pred_box.vel_y();
   }
 }
 
-std::vector<torch::Tensor> project_past_detections(
-        torch::Tensor chosen_tile_coords, // [num_chosen_tiles] x*w+y notation, long
-        torch::Tensor pred_tile_coords, // [num_objects] x*w+y notation, long
+torch::Tensor project_past_detections(
         torch::Tensor pred_boxes, // [num_objects, 9], fp_type
         torch::Tensor past_pose_indexes, // [num_objects], long
         torch::Tensor past_poses, // [num_past_poses, 14], fp_type
@@ -313,31 +288,26 @@ std::vector<torch::Tensor> project_past_detections(
 )
 {
   const auto threads_per_block = 256;
-  const auto num_blocks = std::ceil((fp_type)pred_tile_coords.size(0) / threads_per_block);
+  const auto num_blocks = std::ceil((fp_type)pred_boxes.size(0) / threads_per_block);
  
   auto tensor_options = torch::TensorOptions()
       .layout(torch::kStrided)
       .dtype(torch::kBool) // Bool
-      .device(pred_tile_coords.device().type())
+      .device(pred_boxes.device().type())
       .requires_grad(false);
 
-  torch::Tensor mask = torch::zeros({pred_tile_coords.size(0)}, tensor_options);
   torch::Tensor projected_boxes = torch::empty_like(pred_boxes);
 
-  AT_DISPATCH_INTEGRAL_TYPES(pred_tile_coords.type(), "projection_cuda", ([&] {
-    auto sh_mem_size = chosen_tile_coords.size(0)*sizeof(scalar_t);
-    projection_cuda_kernel<scalar_t><<<num_blocks, threads_per_block, sh_mem_size>>>(
-      chosen_tile_coords.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
-      pred_tile_coords.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
+  AT_DISPATCH_INTEGRAL_TYPES(past_pose_indexes.type(), "projection_cuda", ([&] {
+    projection_cuda_kernel<scalar_t><<<num_blocks, threads_per_block>>>(
       pred_boxes.packed_accessor32<fp_type,2,torch::RestrictPtrTraits>(),
       past_pose_indexes.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
       past_poses.packed_accessor32<fp_type,2,torch::RestrictPtrTraits>(),
       cur_pose.packed_accessor32<fp_type,1,torch::RestrictPtrTraits>(),
       past_timestamps.packed_accessor32<long,1,torch::RestrictPtrTraits>(),
       cur_timestamp,
-      mask.packed_accessor32<bool,1,torch::RestrictPtrTraits>(),
       projected_boxes.packed_accessor32<fp_type,2,torch::RestrictPtrTraits>());
   }));
 
-  return std::vector<torch::Tensor>{mask, projected_boxes};
+  return projected_boxes;
 }

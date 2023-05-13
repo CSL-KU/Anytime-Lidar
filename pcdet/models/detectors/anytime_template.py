@@ -7,7 +7,9 @@ import json
 import numpy as np
 import scipy
 import gc
+import copy
 
+from ..model_utils import model_nms_utils
 from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
@@ -29,7 +31,6 @@ class AnytimeTemplate(Detector3DTemplate):
 #        torch.use_deterministic_algorithms(True)
 
         ################################################################################
-        #self.tcount= torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
         self.tcount = self.model_cfg.TILE_COUNT
         self.tcount_cuda = torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
         self.total_num_tiles = self.tcount[0] * self.tcount[1]
@@ -60,7 +61,7 @@ class AnytimeTemplate(Detector3DTemplate):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
         self.past_poses = torch.zeros([0, 14], dtype=torch.float)
         self.past_ts = torch.zeros([0], dtype=torch.long)
-        self.det_timeout_limit = int(0.5 * 1000000) # in microseconds
+        self.det_timeout_limit = int(0.6 * 1000000) # in microseconds
         self.prev_scene_token = ''
         ################################################################################
 
@@ -77,100 +78,97 @@ class AnytimeTemplate(Detector3DTemplate):
         self.skip_projection=False
 
         self.tile_ages = torch.ones(self.total_num_tiles, dtype=torch.long, device='cuda')
-        self.RoundRobin = 0
-        self.AgingWithDistance = 1
+        self.RoundRobin = 1
+        self.AgingWithDistance = 2
 
         self.sched_algo = self.RoundRobin
 #        self.sched_algo = self.AgingWithDistance
 
-    def projection_init(self, batch_dict):
-        latest_token = batch_dict['metadata'][0]['token']
-        scene_token = self.token_to_scene[latest_token]
-        if scene_token != self.prev_scene_token:
-            self.projection_reset()
-            self.prev_scene_token = scene_token
+        self.aft_prj_nms_conf = copy.deepcopy(\
+                self.model_cfg.DENSE_HEAD.POST_PROCESSING.NMS_CONFIG)
+        self.aft_prj_nms_conf.NMS_PRE_MAXSIZE = 9999
+        self.aft_prj_nms_conf.NMS_POST_MAXSIZE = 300
 
-        self.cur_pose = self.token_to_pose[latest_token]
-        self.cur_ts = self.token_to_ts[latest_token]
+    def projection_init(self, batch_dict):
+        if self.enable_projection:
+            latest_token = batch_dict['metadata'][0]['token']
+            scene_token = self.token_to_scene[latest_token]
+            if scene_token != self.prev_scene_token:
+                self.projection_reset()
+                self.prev_scene_token = scene_token
+
+            self.cur_pose = self.token_to_pose[latest_token]
+            self.cur_ts = self.token_to_ts[latest_token]
 
     #TODO det_timeout_limit needs to be calibrated
     def projection(self, batch_dict):
-        # First, remove the outdated detections
-        num_dets, dets_to_rm = self.past_detections['num_dets'], []
         pred_dicts = batch_dict['final_box_dicts']
+        if self.enable_projection:
+            # First, remove the outdated detections
+            num_dets, dets_to_rm = self.past_detections['num_dets'], []
 
-        ctc = batch_dict['chosen_tile_coords']
-        pcr = self.dataset.point_cloud_range
-        for pd in pred_dicts:
-            x = pd['pred_boxes'][:, 0]
-            y = pd['pred_boxes'][:, 1]
-            # NOTE I am not sure about the indices of pcr ant tcount
-            # but it is fine since tcount[0] == tcount[1]
-            x_inds =  ((x - pcr[0]) / (pcr[3] - pcr[0]) * self.tcount[0]).trunc().long()
-            y_inds =  ((y - pcr[1]) / (pcr[4] - pcr[1]) * self.tcount[1]).trunc().long()
-            inds = x_inds * self.tcount[1] + y_inds
+            while num_dets:
+                # timestamp comparison
+                if (self.cur_ts[0] - self.past_ts[len(dets_to_rm)]) <= self.det_timeout_limit:
+                    break
+                dets_to_rm.append(num_dets.pop(0))
+            if dets_to_rm:
+                self.past_poses = self.past_poses[len(dets_to_rm):]
+                self.past_ts = self.past_ts[len(dets_to_rm):]
+                dets_to_rm_sum = sum(dets_to_rm)
+                for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
+                    self.past_detections[k] = self.past_detections[k][dets_to_rm_sum:]
+                self.past_detections['pose_idx'] -= len(dets_to_rm)
 
-            # Filter the predictions outside of chosen tiles
-            #tile_filter = cuda_point_tile_mask.point_tile_mask(inds, ctc)
-            #inds = inds[tile_filter]
-            #for k,v in pd.items():
-            #    if k != 'pred_ious':
-            #        pd[k] = v[tile_filter]
-            pd['tile_inds'] = inds
+            projected_boxes=None
+            if self.past_poses.size(0) > 0 and not self.skip_projection:
 
-        while num_dets:
-            # timestamp comparison
-            if (self.cur_ts[0] - self.past_ts[len(dets_to_rm)]) <= self.det_timeout_limit:
-                break
-            dets_to_rm.append(num_dets.pop(0))
-        if dets_to_rm:
-            self.past_poses = self.past_poses[len(dets_to_rm):]
-            self.past_ts = self.past_ts[len(dets_to_rm):]
-            dets_to_rm_sum = sum(dets_to_rm)
-            for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx', 'tile_inds'):
-                self.past_detections[k] = self.past_detections[k][dets_to_rm_sum:]
-            self.past_detections['pose_idx'] -= len(dets_to_rm)
+                projected_boxes = cuda_projection.project_past_detections(
+                        self.past_detections['pred_boxes'],
+                        self.past_detections['pose_idx'],
+                        self.past_poses.cuda(),
+                        self.cur_pose.cuda(),
+                        self.past_ts.cuda(),
+                        self.cur_ts.item())
 
-        projected_boxes=None
-        if self.past_poses.size(0) > 0 and not self.skip_projection:
+                projected_scores = self.past_detections['pred_scores']
+                projected_labels = self.past_detections['pred_labels']
 
-            # The mask here allows filtering the projections on chosen tile coords
-            mask, projected_boxes = cuda_projection.project_past_detections(
-                    batch_dict['chosen_tile_coords'],
-                    self.past_detections['tile_inds'],
-                    self.past_detections['pred_boxes'],
-                    self.past_detections['pose_idx'],
-                    self.past_poses.cuda(),
-                    self.cur_pose.cuda(),
-                    self.past_ts.cuda(),
-                    self.cur_ts.item())
+            # Second, append new detections
+            num_dets = pred_dicts[0]['pred_labels'].size(0)
+            self.past_detections['num_dets'].append(num_dets)
+            # Append the current pose
+            self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
+            self.past_ts = torch.cat((self.past_ts, self.cur_ts))
+            # Append the pose idx for the detection that will be added
+            past_poi = self.past_detections['pose_idx']
+            poi = torch.full((num_dets,), self.past_poses.size(0)-1,
+                dtype=past_poi.dtype, device=past_poi.device)
+            self.past_detections['pose_idx'] = torch.cat((past_poi, poi))
+            for k in ('pred_boxes', 'pred_scores', 'pred_labels'):
+                self.past_detections[k] = torch.cat((self.past_detections[k], pred_dicts[0][k]))
 
-            projected_boxes = projected_boxes[mask]
-            projected_scores = self.past_detections['pred_scores'][mask]
-            projected_labels = self.past_detections['pred_labels'][mask]
+            # append the projected detections
+            if projected_boxes is not None:
+                pred_dicts[0]['pred_boxes'] = torch.cat((pred_dicts[0]['pred_boxes'],
+                    projected_boxes))
+                pred_dicts[0]['pred_scores'] = torch.cat((pred_dicts[0]['pred_scores'],
+                    projected_scores))
+                pred_dicts[0]['pred_labels'] = torch.cat((pred_dicts[0]['pred_labels'],
+                    projected_labels))
 
-        # Second, append new detections
-        num_dets = pred_dicts[0]['pred_labels'].size(0)
-        self.past_detections['num_dets'].append(num_dets)
-        # Append the current pose
-        self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
-        self.past_ts = torch.cat((self.past_ts, self.cur_ts))
-        # Append the pose idx for the detection that will be added
-        past_poi = self.past_detections['pose_idx']
-        poi = torch.full((num_dets,), self.past_poses.size(0)-1,
-            dtype=past_poi.dtype, device=past_poi.device)
-        self.past_detections['pose_idx'] = torch.cat((past_poi, poi))
-        for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'tile_inds'):
-            self.past_detections[k] = torch.cat((self.past_detections[k], pred_dicts[0][k]))
+                batch_dict['final_box_dicts'] = pred_dicts
 
-        # append the projected detections
-        if projected_boxes is not None:
-            pred_dicts[0]['pred_boxes'] = torch.cat((pred_dicts[0]['pred_boxes'],
-                projected_boxes))
-            pred_dicts[0]['pred_scores'] = torch.cat((pred_dicts[0]['pred_scores'],
-                projected_scores))
-            pred_dicts[0]['pred_labels'] = torch.cat((pred_dicts[0]['pred_labels'],
-                projected_labels))
+        if not self.skip_projection:
+            # Run the final NMS
+            selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                box_scores=pred_dicts[0]['pred_scores'], box_preds=pred_dicts[0]['pred_boxes'],
+                nms_config=self.aft_prj_nms_conf, score_thresh=None
+            )
+
+            pred_dicts[0]['pred_boxes'] = pred_dicts[0]['pred_boxes'][selected]
+            pred_dicts[0]['pred_scores'] = selected_scores
+            pred_dicts[0]['pred_labels'] = pred_dicts[0]['pred_labels'][selected]
 
             batch_dict['final_box_dicts'] = pred_dicts
 
@@ -198,7 +196,6 @@ class AnytimeTemplate(Detector3DTemplate):
             return
 
         num_nonempty_tiles = netc.size(0)
-
         if self.sched_algo == self.RoundRobin:
 
             # Here I need to run the scheduling algorithm
@@ -262,8 +259,8 @@ class AnytimeTemplate(Detector3DTemplate):
 
         if self.calibrating_now:
             idx = self.calib_num_tiles
-        elif idx < 1: #self.total_num_tiles//20:
-            idx = int(num_tiles[0]) #self.total_num_tiles//20 # setting to 1 can cause problems
+        elif idx < 1:
+            idx = int(num_tiles[0])
 
         if idx == num_nonempty_tiles:
             # Use all tiles
@@ -278,15 +275,14 @@ class AnytimeTemplate(Detector3DTemplate):
                     chosen_tile_coords)
             batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter].contiguous()
             batch_dict['voxel_coords'] = voxel_coords[tile_filter].contiguous()
-            #print('Filtered voxel coords:',batch_dict['voxel_coords'].size())
+            self.tile_ages += 1
+        
+        self.tile_ages[chosen_tile_coords] = 1
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
         self.add_dict['voxel_counts'].append(\
                 batch_dict['voxel_coords'].size(0))
         self.add_dict['num_tiles'].append(batch_dict['chosen_tile_coords'].size(0))
-
-        self.tile_ages += 1
-        self.tile_ages[batch_dict['chosen_tile_coords']] = 1
 
         self.measure_time_end('Sched')
 
@@ -329,8 +325,6 @@ class AnytimeTemplate(Detector3DTemplate):
         self.past_detections = self.get_empty_det_dict()
         self.past_detections['num_dets'] = []
         self.past_detections['pose_idx'] = torch.zeros([0], dtype=torch.long,
-            device=self.past_detections["pred_labels"].device)
-        self.past_detections['tile_inds'] = torch.zeros([0], dtype=torch.long,
             device=self.past_detections["pred_labels"].device)
         self.past_poses = torch.zeros([0, 14], dtype=torch.float)
         self.past_ts = torch.zeros([0], dtype=torch.long)
@@ -406,7 +400,7 @@ class AnytimeTemplate(Detector3DTemplate):
         print('Time prediction stats:')
         print(self.pred_net_time_stats)
 
-        return None #pred_dicts
+        return None
 
     def calibration_procedure(self, fname="calib_raw_data.json"):
         gc.disable()
