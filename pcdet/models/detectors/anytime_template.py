@@ -56,13 +56,6 @@ class AnytimeTemplate(Detector3DTemplate):
             self.token_to_pose[k] = torch.tensor((*cst, *csr, *ept, *epr), dtype=torch.float)
             self.token_to_ts[k] = torch.tensor((v['timestamp'],), dtype=torch.long)
             self.token_to_scene[k] = v['scene']
-
-        self.past_detections = {'num_dets': []}
-        # Poses include [cst(3) csr(4) ept(3) epr(4)]
-        self.past_poses = torch.zeros([0, 14], dtype=torch.float)
-        self.past_ts = torch.zeros([0], dtype=torch.long)
-        self.det_timeout_limit = int(0.6 * 1000000) # in microseconds
-        self.prev_scene_token = ''
         ################################################################################
 
         self.calibrating_now = False
@@ -80,6 +73,7 @@ class AnytimeTemplate(Detector3DTemplate):
         self.tile_ages = torch.ones(self.total_num_tiles, dtype=torch.long, device='cuda')
         self.RoundRobin = 1
         self.AgingWithDistance = 2
+        self.ProjectionOnly, self.projLastNth = 3, 1
 
         self.sched_algo = self.model_cfg.METHOD
 
@@ -87,6 +81,17 @@ class AnytimeTemplate(Detector3DTemplate):
                 self.model_cfg.DENSE_HEAD.POST_PROCESSING.NMS_CONFIG)
         self.aft_prj_nms_conf.NMS_PRE_MAXSIZE = 9999
         self.aft_prj_nms_conf.NMS_POST_MAXSIZE = 300
+
+        self.past_detections = {'num_dets': []}
+        self.det_timeout_limit = int(0.6 * 1000000) # in microseconds
+        self.prev_scene_token = ''
+        if self.sched_algo == self.ProjectionOnly:
+            self.past_poses = []
+            self.past_ts = []
+        else:
+            # Poses include [cst(3) csr(4) ept(3) epr(4)]
+            self.past_poses = torch.zeros([0, 14], dtype=torch.float)
+            self.past_ts = torch.zeros([0], dtype=torch.long)
 
     def projection_init(self, batch_dict):
         if self.enable_projection:
@@ -99,8 +104,85 @@ class AnytimeTemplate(Detector3DTemplate):
             self.cur_pose = self.token_to_pose[latest_token]
             self.cur_ts = self.token_to_ts[latest_token]
 
+    def projection_for_test(self, batch_dict):
+        pred_dicts = batch_dict['final_box_dicts']
+
+        if self.enable_projection:
+            # only keeps the previous detection
+            projected_boxes=None
+            pb = self.past_detections['pred_boxes']
+            if len(pb) >= self.projLastNth and pb[-self.projLastNth].size(0) > 0:
+
+                projected_boxes = cuda_projection.project_past_detections(
+                        self.past_detections['pred_boxes'][-self.projLastNth],
+                        self.past_detections['pose_idx'][-self.projLastNth],
+                        self.past_poses[-self.projLastNth].cuda(),
+                        self.cur_pose.cuda(),
+                        self.past_ts[-self.projLastNth].cuda(),
+                        self.cur_ts.item())
+
+                projected_labels = self.past_detections['pred_labels'][-self.projLastNth]
+                projected_scores = self.past_detections['pred_scores'][-self.projLastNth]
+
+            ####USE DETECTION DATA#### START
+#            # Second, append new detections
+#            num_dets = pred_dicts[0]['pred_labels'].size(0)
+#            self.past_detections['num_dets'] = num_dets
+#            # Append the current pose
+#            self.past_poses = self.cur_pose.unsqueeze(0)
+#            self.past_ts = self.cur_ts #.unsqueeze(0)
+#            # Append the pose idx for the detection that will be added
+#            self.past_detections['pose_idx'] = \
+#                    torch.full((num_dets,), 0, dtype=torch.long, device='cuda')
+#
+#            for k in ('pred_boxes', 'pred_scores', 'pred_labels'):
+#                self.past_detections[k] = pred_dicts[0][k]
+#
+#            # append the projected detections
+#            if projected_boxes is not None:
+#                pred_dicts[0]['pred_boxes'] = projected_boxes
+#                pred_dicts[0]['pred_scores'] = projected_scores
+#                pred_dicts[0]['pred_labels'] = projected_labels
+            ####USE DETECTION DATA#### END
+
+            ####USE GROUND TRUTH#### START
+            self.past_detections['pred_boxes'].append(batch_dict['gt_boxes'][0][..., :9])
+            self.past_detections['pred_labels'].append(batch_dict['gt_boxes'][0][...,-1].int())
+            self.past_detections['pred_scores'].append(torch.ones_like(\
+                    self.past_detections['pred_labels'][-1]))
+
+            num_dets = self.past_detections['pred_scores'][-1].size(0)
+            self.past_poses.append(self.cur_pose.unsqueeze(0))
+            self.past_ts.append(self.cur_ts)
+            self.past_detections['pose_idx'].append( \
+                    torch.zeros((num_dets,), dtype=torch.long, device='cuda'))
+            ####USE GROUND TRUTH#### END
+
+            while len(self.past_poses) > self.projLastNth:
+                for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
+                    self.past_detections[k].pop(0)
+                self.past_poses.pop(0)
+                self.past_ts.pop(0)
+
+            # append the projected detections
+            if projected_boxes is not None:
+                pred_dicts[0]['pred_boxes']  = projected_boxes
+                pred_dicts[0]['pred_labels'] = projected_labels
+                pred_dicts[0]['pred_scores'] = projected_scores
+            else:
+                # use groud truth if projection was not possible
+                pred_dicts[0]['pred_boxes']  = self.past_detections['pred_boxes'][-1]
+                pred_dicts[0]['pred_labels'] = self.past_detections['pred_labels'][-1]
+                pred_dicts[0]['pred_scores'] = self.past_detections['pred_scores'][-1]
+
+        return batch_dict
+
+
     #TODO det_timeout_limit needs to be calibrated
     def projection(self, batch_dict):
+        if self.sched_algo == self.ProjectionOnly:
+            return self.projection_for_test(batch_dict)
+
         pred_dicts = batch_dict['final_box_dicts']
         if self.enable_projection:
             # First, remove the outdated detections
@@ -229,6 +311,11 @@ class AnytimeTemplate(Detector3DTemplate):
             num_tiles = torch.arange(1, netc.size(0)+1, device=netc_vcounts.device).float()
             cnts_cumsum = torch.cumsum(netc_vcounts, dim=0).float()
 
+        elif self.sched_algo == self.ProjectionOnly:
+            batch_dict['chosen_tile_coords'] = netc
+            self.measure_time_end('Sched')
+            return batch_dict
+
         # Get execution time predictions
         if self.time_pred_coeffs:
             coeffs = self.time_pred_coeffs
@@ -321,12 +408,17 @@ class AnytimeTemplate(Detector3DTemplate):
 
     def projection_reset(self):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
-        self.past_detections = self.get_empty_det_dict()
-        self.past_detections['num_dets'] = []
-        self.past_detections['pose_idx'] = torch.zeros([0], dtype=torch.long,
-            device=self.past_detections["pred_labels"].device)
-        self.past_poses = torch.zeros([0, 14], dtype=torch.float)
-        self.past_ts = torch.zeros([0], dtype=torch.long)
+        if self.sched_algo == self.ProjectionOnly:
+            for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx', 'num_dets'):
+                self.past_detections[k] = []
+            self.past_poses, self.past_ts = [], []
+        else:
+            self.past_detections = self.get_empty_det_dict()
+            self.past_detections['num_dets'] = []
+            self.past_detections['pose_idx'] = torch.zeros([0], dtype=torch.long,
+                device=self.past_detections["pred_labels"].device)
+            self.past_poses = torch.zeros([0, 14], dtype=torch.float)
+            self.past_ts = torch.zeros([0], dtype=torch.long)
         self.last_tile_coord = -1
         self.tile_ages = torch.ones(self.total_num_tiles, dtype=torch.long, device='cuda')
 
@@ -367,6 +459,10 @@ class AnytimeTemplate(Detector3DTemplate):
 
         for l in self.add_dict.values():
             l.clear()
+
+        if self.sched_algo == self.ProjectionOnly:
+            print('Projection test is running.')
+            return None
 
         # check if the wcet pred file is there
         try:
