@@ -54,18 +54,20 @@ gen_data
 ./run_tests.sh calib
 
 ## TEST
-test_prep 350
-./run_tests.sh methods 0.350 -0.050 0.301
-test_prep 300
-./run_tests.sh methods 0.300 -0.050 0.251
+
+#test_prep 500
+#./run_tests.sh methods 0.350 -0.025 0.251
 test_prep 250
-./run_tests.sh methods 0.250 -0.050 0.201
-test_prep 200
-./run_tests.sh methods 0.200 -0.050 0.151
-test_prep 150
-./run_tests.sh methods 0.150 -0.050 0.101
+./run_tests.sh methods 0.250 -0.050 0.101
 test_prep 100
 ./run_tests.sh methods 0.100 -0.050 0.051
+
+#test_prep 200
+#./run_tests.sh methods 0.200 -0.050 0.151
+#test_prep 150
+#./run_tests.sh methods 0.150 -0.050 0.101
+#test_prep 100
+#./run_tests.sh methods 0.100 -0.050 0.051
 
 ##Plot
 #for s in 0 1 2 3

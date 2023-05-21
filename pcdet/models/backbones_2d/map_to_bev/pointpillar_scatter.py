@@ -15,7 +15,7 @@ class PointPillarScatter(nn.Module):
         pillar_features, coords = batch_dict['pillar_features'], batch_dict['voxel_coords']
         batch_spatial_features = []
         batch_size = coords[:, 0].max().int().item() + 1
-        channels_first = 'tcount' not in batch_dict
+        channels_first = 'chosen_tile_coords' not in batch_dict
         dim1 = self.num_bev_features if channels_first else self.nz * self.nx * self.ny
         dim2 = self.nz * self.nx * self.ny if channels_first else self.num_bev_features
         for batch_idx in range(batch_size):

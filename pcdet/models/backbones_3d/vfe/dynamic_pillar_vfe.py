@@ -94,6 +94,16 @@ class DynamicPillarVFE(VFETemplate):
         mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
         points = points[mask]
         points_coords = points_coords[mask]
+
+        if 'model' in kwargs:
+            batch_dict['voxel_coords'] = points_coords[:, [1,0]]
+            batch_dict = kwargs['model'].schedule(batch_dict)
+            if batch_dict['mask'] is not None:
+                mask = batch_dict['mask']
+                points_coords = batch_dict['voxel_coords'][:, [1,0]]
+                points = points[mask]
+
+
         points_xyz = points[:, [1, 2, 3]].contiguous()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
@@ -119,15 +129,7 @@ class DynamicPillarVFE(VFETemplate):
             points_dist = torch.norm(points[:, 1:4], 2, dim=1, keepdim=True)
             features.append(points_dist)
         features = torch.cat(features, dim=-1)
-        
-        for pfn in self.pfn_layers:
-            features = pfn(features, unq_inv)
-        # features = self.linear1(features)
-        # features_max = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
-        # features = torch.cat([features, features_max[unq_inv, :]], dim=1)
-        # features = self.linear2(features)
-        # features = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
-        
+
         # generate voxel coordinates
         unq_coords = unq_coords.int()
         voxel_coords = torch.stack((unq_coords // self.scale_xy,
@@ -136,9 +138,17 @@ class DynamicPillarVFE(VFETemplate):
                                    torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int()
                                    ), dim=1)
         voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
+        batch_dict['voxel_coords'] = voxel_coords
+
+        for pfn in self.pfn_layers:
+            features = pfn(features, unq_inv)
+        # features = self.linear1(features)
+        # features_max = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
+        # features = torch.cat([features, features_max[unq_inv, :]], dim=1)
+        # features = self.linear2(features)
+        # features = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
 
         batch_dict['voxel_features'] = batch_dict['pillar_features'] = features
-        batch_dict['voxel_coords'] = voxel_coords
         return batch_dict
 
 

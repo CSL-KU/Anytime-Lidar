@@ -1,6 +1,7 @@
 #!/bin/bash
 
-for period in "100" "150" "200" "250"
+#for period in "350" "300" #"100" "150" "200" "250"
+for period in "500"
 do
 	TABLES_PATH="nusc_tables_and_dicts/$period"
 	mkdir -p "$TABLES_PATH/tables"

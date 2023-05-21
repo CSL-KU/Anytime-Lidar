@@ -7,16 +7,33 @@ class CenterPointAnytime(AnytimeTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
-        self.vfe, self.backbone_3d, self.map_to_bev, self.backbone_2d, \
-                self.dense_head = self.module_list
-        self.update_time_dict( {
-                'VFE': [],
-                'Sched': [],
-                'Backbone3D':[],
-                'MapToBEV': [],
-                'Backbone2D': [],
-                'CenterHead': [],
-                'Projection': []})
+        if self.model_cfg.get('BACKBONE_3D', None) is None:
+            #pillar
+            self.is_voxel_enc=False
+            self.vfe, self.map_to_bev, self.backbone_2d, \
+                    self.dense_head = self.module_list
+            self.update_time_dict( {
+                    'VFE': [],
+                    'Sched': [],
+                    'MapToBEV': [],
+                    'Backbone2D': [],
+                    'CenterHead': [],
+                    'Projection': []})
+        else:
+            #voxel
+            self.is_voxel_enc=True
+            self.vfe, self.backbone_3d, self.map_to_bev, self.backbone_2d, \
+                    self.dense_head = self.module_list
+            self.update_time_dict( {
+                    'VFE': [],
+                    'Sched': [],
+                    'Backbone3D':[],
+                    'MapToBEV': [],
+                    'Backbone2D': [],
+                    'CenterHead': [],
+                    'Projection': []})
+
+
 
     def produce_reduce_mask(self, data_dict):
         tile_coords = data_dict['chosen_tile_coords']
@@ -39,9 +56,10 @@ class CenterPointAnytime(AnytimeTemplate):
         #with torch.cuda.stream(self.reduce_mask_stream):
         #    batch_dict['reduce_mask'] = self.produce_reduce_mask(batch_dict)
 
-        self.measure_time_start('Backbone3D')
-        batch_dict = self.backbone_3d(batch_dict)
-        self.measure_time_end('Backbone3D')
+        if self.is_voxel_enc:
+            self.measure_time_start('Backbone3D')
+            batch_dict = self.backbone_3d(batch_dict)
+            self.measure_time_end('Backbone3D')
 
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
@@ -72,5 +90,6 @@ class CenterPointAnytime(AnytimeTemplate):
             return batch_dict
 
     def calibrate(self):
-        super().calibrate("calib_raw_data_centerpoint.json")
+        s = ('voxel' if self.is_voxel_enc else 'pillar')
+        super().calibrate(f"calib_raw_data_centerpoint_{s}.json")
         return None

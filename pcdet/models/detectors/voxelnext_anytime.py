@@ -14,8 +14,6 @@ class VoxelNeXtAnytime(AnytimeTemplate):
                 'VoxelHead': [],
                 'Projection': []})
 
-        self.add_dict['PostSched_mid'] = []
-
     def forward(self, batch_dict):
         self.projection_init(batch_dict)
 
@@ -26,9 +24,6 @@ class VoxelNeXtAnytime(AnytimeTemplate):
         self.measure_time_start('Backbone3D')
         batch_dict = self.backbone_3d(batch_dict)
         self.measure_time_end('Backbone3D')
-
-        torch.cuda.synchronize()
-        self.add_dict['PostSched_mid'].append(time.time() - self.psched_start_time)
 
         self.measure_time_start('VoxelHead')
         batch_dict = self.dense_head(batch_dict)

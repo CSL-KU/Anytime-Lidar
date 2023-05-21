@@ -63,9 +63,10 @@ class AnytimeTemplate(Detector3DTemplate):
         for k in ('voxel_counts', 'num_tiles', 'PostSched'):
             self.add_dict[k] = []
 
-        # these values needs calibration
-        self.time_pred_coeffs = []
-        self.pred_net_time_stats = []
+        self.time_pred_coeffs_1 = torch.zeros(6, device='cuda')
+        self.time_pred_coeffs_ALL = torch.zeros(6)
+        self.pred_net_time_stats_1 = {'99perc': 0.0,}
+        self.pred_net_time_stats_ALL = {'avrg': 0.0,}
 
         self.calib_num_tiles = -1
         self.skip_projection=False
@@ -77,10 +78,10 @@ class AnytimeTemplate(Detector3DTemplate):
 
         self.sched_algo = self.model_cfg.METHOD
 
-        self.aft_prj_nms_conf = copy.deepcopy(\
-                self.model_cfg.DENSE_HEAD.POST_PROCESSING.NMS_CONFIG)
-        self.aft_prj_nms_conf.NMS_PRE_MAXSIZE = 9999
-        self.aft_prj_nms_conf.NMS_POST_MAXSIZE = 300
+#        self.aft_prj_nms_conf = copy.deepcopy(\
+#                self.model_cfg.DENSE_HEAD.POST_PROCESSING.NMS_CONFIG)
+#        self.aft_prj_nms_conf.NMS_PRE_MAXSIZE = 9999
+#        self.aft_prj_nms_conf.NMS_POST_MAXSIZE = 300
 
         self.past_detections = {'num_dets': []}
         self.det_timeout_limit = int(0.6 * 1000000) # in microseconds
@@ -185,14 +186,15 @@ class AnytimeTemplate(Detector3DTemplate):
 
         pred_dicts = batch_dict['final_box_dicts']
         if self.enable_projection:
-            # First, remove the outdated detections
-            num_dets, dets_to_rm = self.past_detections['num_dets'], []
+            if self.skip_projection:
+                self.projection_reset()
 
-            while num_dets:
-                # timestamp comparison
-                if (self.cur_ts[0] - self.past_ts[len(dets_to_rm)]) <= self.det_timeout_limit:
-                    break
-                dets_to_rm.append(num_dets.pop(0))
+            # The limit is 500 objest per sample
+            num_dets = pred_dicts[0]['pred_labels'].size(0)
+            num_past_dets, dets_to_rm = self.past_detections['num_dets'], []
+            while sum(num_past_dets) + num_dets > 500:
+                dets_to_rm.append(num_past_dets.pop(0))
+
             if dets_to_rm:
                 self.past_poses = self.past_poses[len(dets_to_rm):]
                 self.past_ts = self.past_ts[len(dets_to_rm):]
@@ -203,7 +205,6 @@ class AnytimeTemplate(Detector3DTemplate):
 
             projected_boxes=None
             if self.past_detections['pred_boxes'].size(0) > 0 and not self.skip_projection:
-
                 projected_boxes = cuda_projection.project_past_detections(
                         self.past_detections['pred_boxes'],
                         self.past_detections['pose_idx'],
@@ -216,7 +217,6 @@ class AnytimeTemplate(Detector3DTemplate):
                 projected_labels = self.past_detections['pred_labels']
 
             # Second, append new detections
-            num_dets = pred_dicts[0]['pred_labels'].size(0)
             self.past_detections['num_dets'].append(num_dets)
             # Append the current pose
             self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
@@ -240,18 +240,18 @@ class AnytimeTemplate(Detector3DTemplate):
 
                 batch_dict['final_box_dicts'] = pred_dicts
 
-        if not self.skip_projection:
-            # Run the final NMS
-            selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                box_scores=pred_dicts[0]['pred_scores'], box_preds=pred_dicts[0]['pred_boxes'],
-                nms_config=self.aft_prj_nms_conf, score_thresh=None
-            )
-
-            pred_dicts[0]['pred_boxes'] = pred_dicts[0]['pred_boxes'][selected]
-            pred_dicts[0]['pred_scores'] = selected_scores
-            pred_dicts[0]['pred_labels'] = pred_dicts[0]['pred_labels'][selected]
-
-            batch_dict['final_box_dicts'] = pred_dicts
+#        if not self.skip_projection:
+#            # Run the final NMS
+#            selected, selected_scores = model_nms_utils.class_agnostic_nms(
+#                box_scores=pred_dicts[0]['pred_scores'], box_preds=pred_dicts[0]['pred_boxes'],
+#                nms_config=self.aft_prj_nms_conf, score_thresh=None
+#            )
+#
+#            pred_dicts[0]['pred_boxes'] = pred_dicts[0]['pred_boxes'][selected]
+#            pred_dicts[0]['pred_scores'] = selected_scores
+#            pred_dicts[0]['pred_labels'] = pred_dicts[0]['pred_labels'][selected]
+#
+#            batch_dict['final_box_dicts'] = pred_dicts
 
         self.skip_projection=False
 
@@ -271,26 +271,47 @@ class AnytimeTemplate(Detector3DTemplate):
         self.measure_time_start('Sched')
         voxel_coords = batch_dict['voxel_coords']
         voxel_tile_coords, netc, netc_vcounts= self.get_nonempty_tiles(voxel_coords)
-
+        batch_dict['mask'] = None
         if self.training:
             batch_dict['chosen_tile_coords'] = netc
             return
+        torch.cuda.synchronize()
+        self.psched_start_time = time.time()
+        rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
 
         num_nonempty_tiles = netc.size(0)
-        if self.sched_algo == self.RoundRobin:
+        x1, y1 = batch_dict['voxel_coords'].size(0), num_nonempty_tiles
+        XY = torch.tensor((1., x1, y1, x1*y1, x1**2, y1**2))
+        tpred_all = torch.dot(XY, self.time_pred_coeffs_ALL)
+        rt = rem_time - self.pred_net_time_stats_ALL['avrg'] # aggresive
 
+        calibrating_all_tiles = (self.calibrating_now and \
+                self.calib_num_tiles == num_nonempty_tiles)
+        if calibrating_all_tiles or (not self.calibrating_now and tpred_all < rt):
+            # If we can simply process all tiles, no need for scheduling
+            idx = num_nonempty_tiles
+            chosen_tile_coords = netc
+            self.last_tile_coord = -1
+            self.skip_projection=True
+        elif self.sched_algo == self.RoundRobin:
             # Here I need to run the scheduling algorithm
-            # find the index+1 of the last tile that was processed in the previous round
-            # if it doesn't exist, find the one that is smaller closest
+            # If it is not going to process all tiles, then process at most
+            # half of the tiles
+
             tile_begin_idx = \
                     (netc > self.last_tile_coord).type(torch.uint8).argmax()
-            tl_end = tile_begin_idx + num_nonempty_tiles
-            ntc = netc.expand(2, num_nonempty_tiles).flatten()
-            netc = ntc[tile_begin_idx:tl_end].contiguous()
+#            tl_end = tile_begin_idx + num_nonempty_tiles
+#            ntc = netc.expand(2, num_nonempty_tiles).flatten()
+#            netc = ntc[tile_begin_idx:tl_end].contiguous()
+            tl_end = min(tile_begin_idx + num_nonempty_tiles//2+1, num_nonempty_tiles)
+            netc = netc[tile_begin_idx:tl_end]
 
-            num_tiles = torch.arange(1, netc.size(0)+1, device=netc_vcounts.device).float()
-            cnts = netc_vcounts.expand(2, netc_vcounts.size(0)).flatten()
-            cnts = cnts[tile_begin_idx:tl_end].contiguous()
+#            num_tiles = torch.arange(1, netc.size(0)+1, device=netc_vcounts.device).float()
+            num_tiles = torch.arange(1, tl_end-tile_begin_idx+1, \
+                    device=netc_vcounts.device).float()
+#            cnts = netc_vcounts.expand(2, netc_vcounts.size(0)).flatten()
+#            cnts = cnts[tile_begin_idx:tl_end].contiguous()
+            cnts = netc_vcounts[tile_begin_idx:tl_end]
             cnts_cumsum = torch.cumsum(cnts, dim=0).float()
 
         elif self.sched_algo == self.AgingWithDistance:
@@ -311,64 +332,69 @@ class AnytimeTemplate(Detector3DTemplate):
             num_tiles = torch.arange(1, netc.size(0)+1, device=netc_vcounts.device).float()
             cnts_cumsum = torch.cumsum(netc_vcounts, dim=0).float()
 
+#<<<<<<< Updated upstream
         elif self.sched_algo == self.ProjectionOnly:
             batch_dict['chosen_tile_coords'] = netc
             self.measure_time_end('Sched')
             return batch_dict
 
-        # Get execution time predictions
-        if self.time_pred_coeffs:
-            coeffs = self.time_pred_coeffs
-            pred_time_stats = self.pred_net_time_stats
-        else:
-            # do it 2 for worst case
-            coeffs = [torch.zeros(6, device='cuda')] * 2
-            pred_time_stats = [{'95perc':0.0, '99perc':0.0, 'max': 0.0}] * 2
-
-        tpreds = []
-        for C in coeffs:
-            #tpreds = C[0]*cnts_cumsum + C[1]*num_tiles + C[2]
+#        # Get execution time predictions
+#        if self.time_pred_coeffs:
+#            coeffs = self.time_pred_coeffs
+#            pred_time_stats = self.pred_net_time_stats
+#        else:
+#            # do it 2 for worst case
+#            coeffs = [torch.zeros(6, device='cuda')] * 2
+#            pred_time_stats = [{'95perc':0.0, '99perc':0.0, 'max': 0.0}] * 2
+#
+#        tpreds = []
+#        for C in coeffs:
+#            #tpreds = C[0]*cnts_cumsum + C[1]*num_tiles + C[2]
+#=======
+        if not self.skip_projection:
+            # We will do partial execution, get execution time predictions
+#            tpreds = []
+            C = self.time_pred_coeffs_1
+#>>>>>>> Stashed changes
             x1, y1 = cnts_cumsum, num_tiles
             XY = torch.stack((torch.ones(x1.size(0), device='cuda'), x1, y1, \
                     x1*y1, x1**2, y1**2), dim=1)
-            tpreds.append(torch.matmul(XY, C))
+            tpreds = torch.matmul(XY, C)
+            rem_time -= self.pred_net_time_stats_1['99perc']
 
-        tpreds = sum(tpreds)
-        torch.cuda.synchronize()
-        self.psched_start_time = time.time()
-        rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
-        for pt_stats in pred_time_stats:
-            rem_time -= pt_stats['99perc']
+            diffs = (tpreds < rem_time).cpu()
+            idx = torch.sum(diffs).item()
+            if idx == 0: # Try to meet the deadline as fast as possible
+                idx = int(num_tiles[0])
 
-        diffs = (tpreds < rem_time).cpu()
-        idx = torch.sum(diffs).item()
+            if self. calibrating_now:
+                if self.sched_algo == self.RoundRobin:
+                    idx = int(min(num_tiles[-1], self.calib_num_tiles))
+                else:
+                    idx = self.calib_num_tiles
 
-        if self.calibrating_now:
-            idx = self.calib_num_tiles
-        elif idx < 1:
-            idx = int(num_tiles[0])
-
-        if idx == num_nonempty_tiles:
-            # Use all tiles
-            self.skip_projection=True
-            chosen_tile_coords = netc
-            self.last_tile_coord = -1
-        else:
             # Voxel filtering is needed
             chosen_tile_coords = netc[:idx]
             self.last_tile_coord = chosen_tile_coords[-1]
             tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                     chosen_tile_coords)
-            batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter].contiguous()
+            batch_dict['mask'] = tile_filter
+            if 'voxel_features' in batch_dict:
+                batch_dict['voxel_features'] = \
+                        batch_dict['voxel_features'][tile_filter].contiguous()
             batch_dict['voxel_coords'] = voxel_coords[tile_filter].contiguous()
-            self.tile_ages += 1
-        
-        self.tile_ages[chosen_tile_coords] = 1
-        batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
+            if self.sched_algo == self.AgingWithDistance:
+                self.tile_ages += 1
+
+        if self.sched_algo == self.AgingWithDistance:
+            self.tile_ages[chosen_tile_coords] = 1
+
+        batch_dict['chosen_tile_coords'] = chosen_tile_coords
         self.add_dict['voxel_counts'].append(\
                 batch_dict['voxel_coords'].size(0))
         self.add_dict['num_tiles'].append(batch_dict['chosen_tile_coords'].size(0))
+
 
         self.measure_time_end('Sched')
 
@@ -439,18 +465,21 @@ class AnytimeTemplate(Detector3DTemplate):
         C,_,_,_ = scipy.linalg.lstsq(A, z1)
         plane_z = np.dot(np.c_[np.ones(x1.shape), x1, y1, x1*y1, x1**2, y1**2], C)
 
-        self.time_pred_coeffs.append(torch.from_numpy(C).float().cuda())
-        print('self.time_pred_coeffs', self.time_pred_coeffs)
+        time_pred_coeffs = torch.from_numpy(C).float().cuda()
+        print('time_pred_coeffs', time_pred_coeffs)
 
         diff = z1 - plane_z
         perc95 = np.percentile(diff, 95, method='lower')
         perc99 = np.percentile(diff, 99, method='lower')
-        self.pred_net_time_stats.append({
+        pred_net_time_stats = {
             'min': float(min(diff)),
             'avrg': float(sum(diff)/len(diff)),
             '95perc': float(perc95),
             '99perc': float(perc99),
-            'max': float(max(diff))})
+            'max': float(max(diff))}
+        print('time_pred_stats', pred_net_time_stats)
+
+        return time_pred_coeffs, pred_net_time_stats
 
     def calibrate(self, fname='calib_raw_data.json'):
         super().calibrate(1)
@@ -477,14 +506,22 @@ class AnytimeTemplate(Detector3DTemplate):
                 tile_coords = calib_dict["chosen_tile_coords"]
                 num_tiles = [len(tc) for tc in tile_coords]
 
+            num_ALL_samples = calib_dict['calib_dataset_len']
+            num_voxels_ALL = num_voxels[-num_ALL_samples:]
+            num_tiles_ALL = num_tiles[-num_ALL_samples:]
+
+            num_voxels = num_voxels[:-num_ALL_samples]
+            num_tiles = num_tiles[:-num_ALL_samples]
+
             psched_time = calib_dict["PostSched"]
-            if 'PostSched_mid' in calib_dict:
-                psched_until_head = calib_dict['PostSched_mid']
-                psched_after_head = np.array(psched_time) - np.array(psched_until_head)
-                self.calc_time_pred_coeffs(num_voxels, num_tiles, psched_until_head)
-                self.calc_time_pred_coeffs(num_voxels, num_tiles, psched_after_head)
-            else:
-                self.calc_time_pred_coeffs(num_voxels, num_tiles, psched_time)
+            psched_time_ALL = psched_time[-num_ALL_samples:]
+            psched_time = psched_time[:-num_ALL_samples]
+
+            self.time_pred_coeffs_1, self.pred_net_time_stats_1 = \
+                    self.calc_time_pred_coeffs(num_voxels, num_tiles, psched_time)
+            self.time_pred_coeffs_ALL, self.pred_net_time_stats_ALL = \
+                    self.calc_time_pred_coeffs(num_voxels_ALL, num_tiles_ALL, psched_time_ALL)
+            self.time_pred_coeffs_ALL = self.time_pred_coeffs_ALL.cpu()
 
         except FileNotFoundError:
             print(f'Calibration file {fname} not found, running calibration')
@@ -492,33 +529,45 @@ class AnytimeTemplate(Detector3DTemplate):
             self.calibration_procedure(fname)
             sys.exit()
 
-        print('Time prediction stats:')
-        print(self.pred_net_time_stats)
-
         return None
 
     def calibration_procedure(self, fname="calib_raw_data.json"):
         gc.disable()
         all_max_num_tiles = []
+
+        pc_range = torch.from_numpy(self.dataset.point_cloud_range).cuda()[[0, 1]]
+        voxel_size = torch.tensor(self.dataset.voxel_size).cuda()[[0, 1]]
+        grid_size = torch.from_numpy(self.dataset.grid_size).cuda()[[0, 1]]
         for i in range(len(self.dataset)):
             data_dict = self.dataset.getitem_pre(i)
             data_dict = self.dataset.getitem_post(data_dict)
             data_dict = self.dataset.collate_batch([data_dict])
             load_data_to_gpu(data_dict)
+    
+            if 'voxel_coords' not in data_dict:
+                points = data_dict['points']
+                #print(pc_range, voxel_size, grid_size)
+                #print(points[-10:])
+                points_coords = torch.floor( \
+                    (points[:, [1, 2]] - pc_range) / voxel_size).int()
+                mask = ((points_coords >= 0) & (points_coords < grid_size)).all(dim=1)
+                #print(points_coords[-10:])
+                data_dict['voxel_coords'] = points_coords[mask][:, [1,0]]
 
             _, nonempty_tile_coords, _ = self.get_nonempty_tiles(data_dict['voxel_coords'])
             max_num_tiles = nonempty_tile_coords.size(0)
             all_max_num_tiles.append(max_num_tiles)
 
-        print(min(all_max_num_tiles), max(all_max_num_tiles))
+        mit, mat = min(all_max_num_tiles), max(all_max_num_tiles)
+        print(f'Min num tiles: {mit}, Max num tiles: {mat}')
         torch.cuda.empty_cache()
         gc.collect()
 
-        # 10 different tiles should be enough
-        for num_tiles in range(1, max(all_max_num_tiles)+1, min(all_max_num_tiles)//10):
+        # 10 different num of tiles should be enough
+        for num_tiles in range(1, mat, mat//10):
             print('Num tiles:', num_tiles)
             for i in range(len(self.dataset)):
-                if num_tiles <= all_max_num_tiles[i]:
+                if num_tiles < all_max_num_tiles[i]:
                     self.calib_num_tiles = num_tiles
                     with torch.no_grad():
                         pred_dicts, ret_dict = self([i])
@@ -533,8 +582,10 @@ class AnytimeTemplate(Detector3DTemplate):
 
         gc.enable()
         self.add_dict['tcount'] = self.tcount
+        self.add_dict['method'] = self.sched_algo
         self.add_dict['exec_times'] = self.get_time_dict()
         self.add_dict['exec_time_stats'] = self.get_time_dict_stats()
+        self.add_dict['calib_dataset_len'] = len(self.dataset)
         print('Time calibration Complete')
         with open(fname, 'w') as handle:
             json.dump(self.add_dict, handle, indent=4)

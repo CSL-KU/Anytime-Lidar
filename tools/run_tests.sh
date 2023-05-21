@@ -41,8 +41,8 @@ fi
 #CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_12_5_data.pth"
 
 # Centerpoint-pointpillar-anytime
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
-#CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
+CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
+CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
 
 # Centerpoint-voxel01
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml"
@@ -64,14 +64,13 @@ fi
 # VoxelNeXt
 #NDS:     0.5501 End-to-end,202.77,315.00,347.92,354.18,363.76,22.32
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml"
-CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml"
-CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml"
+#CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
 
 #TASKSET="taskset -c 2-3"
 #export OMP_NUM_THREADS=2
 TASKSET="taskset -c 4-7"
 export OMP_NUM_THREADS=4
-
 
 #DATASET="nuscenes_dataset.yaml"
 #DATASET="nuscenes_mini_dataset.yaml"
@@ -97,17 +96,23 @@ elif [ $1 == 'methods' ]; then
     mkdir -p $OUT_DIR
 
     CFG_FILES=( \
-            "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml" \
-            "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml")
-#            "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml" \
-#            "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml")
-#        "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16x16.yaml" )
+            "./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml" \
+	    "./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml")
+#           "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml" \
+#	    "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml")
+#           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml" \
+#	    "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
+#	    "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml")
+#           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
     CKPT_FILES=( \
-            "../models/voxelnext_nuscenes_kernel1.pth" \
-            "../models/voxelnext_nuscenes_kernel1.pth")
-#            "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" \
-#            "../models/cbgs_voxel01_centerpoint_nds_6454.pth")
-#        "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth" )
+	    "../models/cbgs_dyn_pp_centerpoint_12_5_data.pth" \
+	    "../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth")
+#           "../models/voxelnext_nuscenes_kernel1.pth" \
+#           "../models/voxelnext_nuscenes_kernel1.pth")
+#           "../models/voxelnext_nuscenes_kernel1.pth" \
+#           "../models/cbgs_voxel01_centerpoint_nds_6454.pth" \
+#	    "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth")
+#	    "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth")
 
     for m in ${!CFG_FILES[@]}
     do
