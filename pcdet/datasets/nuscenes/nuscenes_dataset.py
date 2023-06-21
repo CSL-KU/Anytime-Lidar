@@ -169,6 +169,8 @@ class NuScenesDataset(DatasetTemplate):
             'use_map': False,
             'use_external': False,
         }
+        if 'nusc_annos_outp' in kwargs:
+            kwargs['nusc_annos_outp'].update(nusc_annos)
 
         output_path = Path(kwargs['output_path'])
         output_path.mkdir(exist_ok=True, parents=True)
@@ -211,6 +213,30 @@ class NuScenesDataset(DatasetTemplate):
 
         result_str, result_dict = nuscenes_utils.format_nuscene_results(metrics, self.class_names, version=eval_version)
         return result_str, result_dict
+
+    def tracking_evaluation(self, output_path, res_path, **kwargs):
+        from nuscenes.eval.tracking.evaluate import TrackingEval
+        from nuscenes.eval.common.config import config_factory as track_configs
+
+        cfg = track_configs("tracking_nips_2019")
+
+        eval_set_map = {
+            'v1.0-mini': 'mini_val',
+            'v1.0-trainval': 'val',
+            'v1.0-test': 'test'
+        }
+
+        nusc_eval = TrackingEval(
+            config=cfg,
+            result_path=res_path,
+            eval_set=eval_set_map[self.dataset_cfg.VERSION],
+            output_dir=str(output_path),
+            verbose=True,
+            nusc_version=self.dataset_cfg.VERSION,
+            nusc_dataroot=str(self.root_path),
+        )
+        metrics_summary = nusc_eval.main()
+
 
     def create_groundtruth_database(self, used_classes=None, max_sweeps=10):
         import torch

@@ -1,4 +1,5 @@
 import pickle
+import json
 import time
 import gc
 
@@ -8,6 +9,8 @@ import tqdm
 
 from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
+
+from eval_utils.centerpoint_tracker import CenterpointTracker as Tracker
 
 speed_test = False
 visualize = False
@@ -161,11 +164,90 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     with open(result_dir / 'result.pkl', 'wb') as f:
         pickle.dump(det_annos, f)
 
-    result_str, result_dict = dataset.evaluation(
-        det_annos, class_names,
-        eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
-        output_path=final_output_dir
-    )
+    if dataset.dataset_cfg.DATASET != 'NuScenesDataset':
+        result_str, result_dict = dataset.evaluation(
+            det_annos, class_names,
+            eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+            output_path=final_output_dir,
+        )
+    else:
+        nusc_annos = {}
+        result_str, result_dict = dataset.evaluation(
+            det_annos, class_names,
+            eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+            output_path=final_output_dir,
+            nusc_annos_outp=nusc_annos
+        )
+
+        ## NUSC TRACKING START
+        tracker = Tracker(max_age=6, hungarian=False)
+        predictions = nusc_annos['results']
+        with open('frames_meta.json', 'rb') as f:
+            frames=json.load(f)['frames']
+
+        nusc_trk_annos = {
+            "results": {},
+            "meta": None,
+        }
+        size = len(frames)
+
+        print("Begin Tracking\n")
+        start = time.time()
+        for i in range(size):
+            token = frames[i]['token']
+
+            # reset tracking after one video sequence
+            if frames[i]['first']:
+                # use this for sanity check to ensure your token order is correct
+                # print("reset ", i)
+                tracker.reset()
+                last_time_stamp = frames[i]['timestamp']
+
+            time_lag = (frames[i]['timestamp'] - last_time_stamp)
+            last_time_stamp = frames[i]['timestamp']
+
+            preds = predictions[token]
+
+            outputs = tracker.step_centertrack(preds, time_lag)
+            annos = []
+
+            for item in outputs:
+                if item['active'] == 0:
+                    continue
+                nusc_anno = {
+                    "sample_token": token,
+                    "translation": item['translation'],
+                    "size": item['size'],
+                    "rotation": item['rotation'],
+                    "velocity": item['velocity'],
+                    "tracking_id": str(item['tracking_id']),
+                    "tracking_name": item['detection_name'],
+                    "tracking_score": item['detection_score'],
+                }
+                annos.append(nusc_anno)
+            nusc_trk_annos["results"].update({token: annos})
+        end = time.time()
+        second = (end-start)
+        speed=size / second
+        print("The speed is {} FPS".format(speed))
+        nusc_trk_annos["meta"] = {
+            "use_camera": False,
+            "use_lidar": True,
+            "use_radar": False,
+            "use_map": False,
+            "use_external": False,
+        }
+
+        with open('tracking_result.json', "w") as f:
+            json.dump(nusc_trk_annos, f)
+
+        #result is nusc_annos
+        dataset.tracking_evaluation(
+            output_path=final_output_dir,
+            res_path='tracking_result.json'
+        )
+
+        ## NUSC TRACKING END
 
     logger.info(result_str)
     ret_dict.update(result_dict)
