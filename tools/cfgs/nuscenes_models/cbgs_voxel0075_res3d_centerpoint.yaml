@@ -137,8 +137,6 @@ MODEL:
         EVAL_METRIC: kitti
 
     DEADLINE_SEC: 9999.9
-    #    TILE_COUNT: [16]
-    #    METHOD: 0
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4

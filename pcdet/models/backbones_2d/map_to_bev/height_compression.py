@@ -18,7 +18,7 @@ class HeightCompression(nn.Module):
 
         """
         encoded_spconv_tensor = batch_dict['encoded_spconv_tensor']
-        if 'chosen_tile_coords' in batch_dict: # Network is gonna use sbnet
+        if 'use_sbnet' in batch_dict: # Network is gonna use sbnet
             encoded_spconv_tensor.spatial_shape = encoded_spconv_tensor.spatial_shape[::-1]
             inds = encoded_spconv_tensor.indices
             inds = stack((inds[...,0], inds[...,2], inds[...,3], inds[...,1]), dim=1)

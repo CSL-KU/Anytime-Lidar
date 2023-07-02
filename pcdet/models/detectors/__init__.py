@@ -1,5 +1,4 @@
 from .detector3d_template import Detector3DTemplate
-from .anytime_template import AnytimeTemplate
 from .PartA2_net import PartA2Net
 from .point_rcnn import PointRCNN
 from .pointpillar import PointPillar
@@ -9,7 +8,8 @@ from .second_net_iou import SECONDNetIoU
 from .caddn import CaDDN
 from .voxel_rcnn import VoxelRCNN
 from .centerpoint import CenterPoint
-from .centerpoint_anytime import CenterPointAnytime
+from .centerpoint_anytime_v1 import CenterPointAnytimeV1
+from .centerpoint_anytime_v2 import CenterPointAnytimeV2
 from .pv_rcnn_plusplus import PVRCNNPlusPlus
 from .mppnet import MPPNet
 from .mppnet_e2e import MPPNetE2E
@@ -19,7 +19,6 @@ from .voxelnext_anytime import VoxelNeXtAnytime
 
 __all__ = {
     'Detector3DTemplate': Detector3DTemplate,
-    'AnytimeTemplate': AnytimeTemplate,
     'SECONDNet': SECONDNet,
     'PartA2Net': PartA2Net,
     'PVRCNN': PVRCNN,
@@ -29,7 +28,8 @@ __all__ = {
     'CaDDN': CaDDN,
     'VoxelRCNN': VoxelRCNN,
     'CenterPoint': CenterPoint,
-    'CenterPointAnytime': CenterPointAnytime,
+    'CenterPointAnytimeV1': CenterPointAnytimeV1,
+    'CenterPointAnytimeV2': CenterPointAnytimeV2,
     'PVRCNNPlusPlus': PVRCNNPlusPlus,
     'PillarNet': PillarNet,
     'MPPNet': MPPNet,

@@ -95,6 +95,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if visualize:
             V.draw_scenes(
                 points=batch_dict['points'][:, 1:], ref_boxes=pred_dicts[0]['pred_boxes'],
+                gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
                 ref_scores=pred_dicts[0]['pred_scores'], ref_labels=pred_dicts[0]['pred_labels'],
                 tile_coords=(batch_dict['reduce_mask'].active_block_indices \
                         if 'reduce_mask' in batch_dict else None)

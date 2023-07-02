@@ -16,7 +16,7 @@ from .. import load_data_to_gpu
 
 #os.environ["CUBLAS_WORKSPACE_CONFIG"]=":4096:8"
 
-class AnytimeTemplate(Detector3DTemplate):
+class AnytimeTemplateV1(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         if 'BACKBONE_2D' in self.model_cfg:

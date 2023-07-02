@@ -1,8 +1,8 @@
-from .anytime_template import AnytimeTemplate
+from .anytime_template_v1 import AnytimeTemplateV1
 import torch
 import time
 
-class VoxelNeXtAnytime(AnytimeTemplate):
+class VoxelNeXtAnytime(AnytimeTemplateV1):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 

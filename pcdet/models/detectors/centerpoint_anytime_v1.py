@@ -1,9 +1,9 @@
-from .anytime_template import AnytimeTemplate
+from .anytime_template_v1 import AnytimeTemplateV1
 
 import torch
 from sbnet.layers import ReduceMask
 
-class CenterPointAnytime(AnytimeTemplate):
+class CenterPointAnytimeV1(AnytimeTemplateV1):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
@@ -46,6 +46,7 @@ class CenterPointAnytime(AnytimeTemplate):
         return ReduceMask(inds, counts)
 
     def forward(self, batch_dict):
+        batch_dict['use_sbnet'] = True
         self.projection_init(batch_dict)
 
         self.measure_time_start('VFE')
