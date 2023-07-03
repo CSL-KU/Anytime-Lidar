@@ -437,9 +437,10 @@ class CenterHeadGroupSliced(nn.Module):
                 if projections is not None:
                     # get the projections that match and cat them for NMS
                     #NOTE The operations in here on the GPU can be cumbersome
-                    mask = torch.zeros((projections['boxes'].size(0),), dtype=torch.bool)
+                    mask = torch.zeros((projections['pred_boxes'].size(0),),
+                            dtype=torch.bool, device='cuda')
                     for cls_id in cls_id_map:
-                        mask = torch.logical_or(mask, projections['labels'] == cls_id)
+                        mask = torch.logical_or(mask, projections['pred_labels'] == cls_id)
                     for k in projections.keys():
                         final_dict[k] = torch.cat((final_dict[k], projections[k][mask]), dim=0)
                 selected, selected_scores = model_nms_utils.class_agnostic_nms(
@@ -590,7 +591,7 @@ class CenterHeadGroupSliced(nn.Module):
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
         heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
 
-        #pred_dicts = [{'hm' : self.sigmoid(hm)} for hm in heatmaps]
+        pred_dicts = [{'hm' : hm} for hm in heatmaps]
 
         ##########
         # For each heatmap, do slicing and forwarding
@@ -649,9 +650,8 @@ class CenterHeadGroupSliced(nn.Module):
                     outp_slices_split.append(outp_slices[idx:(idx+num_slc)])
                     idx += num_slc
                 pd[name] = outp_slices_split
-        projections = None
         pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], pred_dicts, batch_dict['projections']
+            data_dict['batch_size'], pred_dicts, data_dict['projections']
         )
         data_dict['final_box_dicts'] = pred_dicts
 
