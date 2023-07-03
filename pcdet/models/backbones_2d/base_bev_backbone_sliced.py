@@ -100,6 +100,7 @@ class BaseBEVBackboneSliced(nn.Module):
             x = spatial_features[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)]
         else:
             # Two chunks, find the point of switching
+            # Following piece of code take 0.6 ms in jetson agx
             i = 0
             while ctc[i] < ctc[i+1]:
                 i += 1

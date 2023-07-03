@@ -38,25 +38,26 @@ def get_num_tiles(ctc): # chosen tile coords
 @numba.jit(nopython=True)
 def round_robin_sched_helper(netc, last_tile_coord, tcount, netc_vcounts):
     num_nonempty_tiles = netc.shape[0]
+    tile_begin_idx=0
     for i in range(num_nonempty_tiles):
         if netc[i] > last_tile_coord:
             tile_begin_idx = i
             break
 
-    netc = np.concatenate((netc[tile_begin_idx:], netc[:tile_begin_idx]))
-    net_vcounts = np.concatenate((netc_vcounts[tile_begin_idx:],
+    netc_flip = np.concatenate((netc[tile_begin_idx:], netc[:tile_begin_idx]))
+    netc_vcounts_flip = np.concatenate((netc_vcounts[tile_begin_idx:],
         netc_vcounts[:tile_begin_idx]))
 
-    vcounts_all = np.zeros((netc.shape[0], tcount), dtype=np.float32)
-    num_tiles = np.empty((netc.shape[0],), dtype=np.int32)
+    vcounts_all = np.zeros((num_nonempty_tiles, tcount), dtype=np.float32)
+    num_tiles = np.empty((num_nonempty_tiles,), dtype=np.int32)
 
     for i in range(vcounts_all.shape[0]):
-        ctc = netc[:i+1]
+        ctc = netc_flip[:i+1]
         num_tiles[i] = get_num_tiles(ctc)
         for j in range(i+1):
-            vcounts_all[i, ctc[j]] = netc_vcounts[j]
+            vcounts_all[i, ctc[j]] = netc_vcounts_flip[j]
 
-    return num_tiles, vcounts_all, tile_begin_idx
+    return num_tiles, vcounts_all, netc_flip
 
 
 class AnytimeTemplateV2(Detector3DTemplate):
@@ -105,8 +106,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         #self.calibrating_now = False
         self.add_dict = self._eval_dict['additional']
-        for k in ('voxel_counts', 'num_tiles', 'PostSched'):
-            self.add_dict[k] = []
+        #for k in ('voxel_counts', 'num_tiles', 'PostSched'):
+        #    self.add_dict[k] = []
 
 
         self.bb3d_time_pred_model = self.define_bb3d_time_pred_model(self.tcount)
@@ -265,10 +266,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
 #            self.last_tile_coord = -1
 #        elif self.sched_algo == self.RoundRobin:
         if self.sched_algo == self.RoundRobin:
-            num_tiles, vcounts_all, tile_begin_idx = round_robin_sched_helper(
+            num_tiles, vcounts_all, netc_flip= round_robin_sched_helper(
                     netc.numpy(), self.last_tile_coord, self.tcount,
                     netc_vcounts.cpu().numpy())
-
             # Let's try no using cuda and see the performance
             vcounts_all = torch.from_numpy(vcounts_all)
             num_tiles = torch.from_numpy(num_tiles)
@@ -284,18 +284,21 @@ class AnytimeTemplateV2(Detector3DTemplate):
             diffs = tpreds < rem_time
             tiles_idx = torch.sum(diffs).item()
             ##### MANUAL OVERRIDE
-            #tiles_idx = tiles_idx // 2
+            #tiles_to_run = 4
+            #for idx, nt in enumerate(num_tiles):
+            #    if nt >= tiles_to_run:
+            #        tiles_idx = idx + 1
+            #        break
             #####
             if tiles_idx == diffs.size(0):
                 chosen_tile_coords = netc
             else:
                 # Voxel filtering is needed
-
-                netc = torch.cat((netc[tile_begin_idx:], netc[:tile_begin_idx]), dim=0)
-                chosen_tile_coords = netc[:tiles_idx]
+                num_tiles = num_tiles[:tiles_idx]
+                chosen_tile_coords = netc_flip[:tiles_idx]
                 self.last_tile_coord = chosen_tile_coords[-1].item()
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
-                        chosen_tile_coords.cuda())
+                        torch.from_numpy(chosen_tile_coords).cuda())
                 batch_dict['mask'] = tile_filter
                 if 'voxel_features' in batch_dict:
                     batch_dict['voxel_features'] = \
@@ -306,10 +309,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
             self.measure_time_end('Sched')
             return batch_dict
-
+        #print(chosen_tile_coords)
+        batch_dict['num_tiles'] = num_tiles
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
-        self.add_dict['voxel_counts'].append(batch_dict['voxel_coords'].size(0))
-        self.add_dict['num_tiles'].append(batch_dict['chosen_tile_coords'].size(0))
+        #self.add_dict['voxel_counts'].append(batch_dict['voxel_coords'].size(0))
+        #self.add_dict['num_tiles'].append(batch_dict['chosen_tile_coords'].size(0))
 
         self.measure_time_end('Sched')
 
@@ -320,13 +324,19 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def schedule_after_bb3d(self, batch_dict):
         ctc = batch_dict['chosen_tile_coords']
-        num_tiles = get_num_tiles(ctc.numpy())
+        num_tiles = batch_dict['num_tiles']
         torch.cuda.synchronize()
         rem_time = batch_dict['abs_deadline_sec'] - time.time()
 
-        while num_tiles > 1 and self.post_bb3d_times_ms[num_tiles-1] > rem_time:
-            num_tiles -= 1
-        batch_dict['chosen_tile_coords'] = ctc[:num_tiles]
+        i = -1
+        while i >= -num_tiles.size(0) and self.post_bb3d_times_ms[num_tiles[i]-1] > rem_time:
+            i -= 1
+        if i < -num_tiles.size(0):
+            ctc = ctc[:1]
+        elif i < -1:
+            ctc = ctc[:i+1]
+
+        batch_dict['chosen_tile_coords'] = ctc
         self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
 
         return batch_dict
@@ -383,8 +393,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.enable_projection = True
         self.projection_reset()
 
-        for l in self.add_dict.values():
-            l.clear()
+        #for l in self.add_dict.values():
+        #    l.clear()
 
         return None
 #        if self.sched_algo == self.ProjectionOnly:
