@@ -60,10 +60,7 @@ class CenterpointTracker(object):
     self.tracks = []
 
   def step_centertrack(self, results, time_lag):
-    if len(results) == 0:
-      self.tracks = []
-      return []
-    else:
+    if len(results) > 0:
       temp = []
       for det in results:
         # filter out classes not evaluated for tracking 
@@ -76,6 +73,10 @@ class CenterpointTracker(object):
         temp.append(det)
 
       results = temp
+
+    if len(results) == 0:
+      self.tracks = []
+      return []
 
     N = len(results)
     M = len(self.tracks)
