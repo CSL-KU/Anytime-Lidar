@@ -115,7 +115,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.bb3d_model_mean = 0.0
         self.bb3d_model_std = 1.0
 
-        self.proj_time_limit_musec = 1000000 # 1 sec
+        self.proj_time_limit_musec = 1600000 # 1.6 sec
 
         self.RoundRobin = 1
         self.ProjectionOnly, self.projLastNth = 2, 1

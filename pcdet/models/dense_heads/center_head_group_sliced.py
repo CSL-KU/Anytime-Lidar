@@ -399,8 +399,19 @@ class CenterHeadGroupSliced(nn.Module):
         } # for k in range(batch_size)]
         for idx, pred_dict in enumerate(pred_dicts):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
+            cls_id_map = self.class_id_mapping_each_head[idx]
             if pred_dict['is_empty']:
+                if projections is not None:
+                    # Add the projections if they exist
+                    # No need for NMS
+                    mask = torch.zeros((projections['pred_boxes'].size(0),),
+                            dtype=torch.bool, device='cuda')
+                    for cls_id in cls_id_map:
+                        mask = torch.logical_or(mask, projections['pred_labels'] == cls_id)
+                    for k in projections.keys():
+                        ret_dict[k].append(projections[k][mask])
                 continue
+
             if 'topk_outp' in pred_dict:
                 batch_hm = pred_dict['hm']
             else:
@@ -431,12 +442,12 @@ class CenterHeadGroupSliced(nn.Module):
 
             # Assume batch size is 1
             final_dict = final_pred_dicts[0]
-            cls_id_map = self.class_id_mapping_each_head[idx]
             final_dict['pred_labels'] = cls_id_map[final_dict['pred_labels'].long()]
             if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
                 if projections is not None:
                     # get the projections that match and cat them for NMS
                     #NOTE The operations in here on the GPU can be cumbersome
+                    #NOTE it takes 0.6 ms on jetson-agx
                     mask = torch.zeros((projections['pred_boxes'].size(0),),
                             dtype=torch.bool, device='cuda')
                     for cls_id in cls_id_map:
@@ -640,6 +651,8 @@ class CenterHeadGroupSliced(nn.Module):
             xs_cat = torch.cat([to[4] for to in topk_outp])
             indices = torch.stack((b_id_cat, ys_cat.short(), xs_cat.short()), dim=1)
             slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
+            # Kinda undeterministic 1.5 ms to 3 ms
+            # It becomes deterministic with cudnn benchmarking enabled
             outp = det_head(slices)
 
             # finally, split the output according to the batches they belong
@@ -650,6 +663,8 @@ class CenterHeadGroupSliced(nn.Module):
                     outp_slices_split.append(outp_slices[idx:(idx+num_slc)])
                     idx += num_slc
                 pd[name] = outp_slices_split
+
+
         pred_dicts = self.generate_predicted_boxes_eval(
             data_dict['batch_size'], pred_dicts, data_dict['projections']
         )
