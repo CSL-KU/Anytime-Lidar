@@ -400,44 +400,29 @@ class CenterHeadGroupSliced(nn.Module):
         for idx, pred_dict in enumerate(pred_dicts):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
             cls_id_map = self.class_id_mapping_each_head[idx]
-            if pred_dict['is_empty']:
+            if 'center' not in pred_dict:
+                # did not run the attr convolutions
                 if projections is not None:
-                    # Add the projections if they exist
-                    # No need for NMS
-                    mask = torch.zeros((projections['pred_boxes'].size(0),),
-                            dtype=torch.bool, device='cuda')
-                    for cls_id in cls_id_map:
-                        mask = torch.logical_or(mask, projections['pred_labels'] == cls_id)
-                    for k in projections.keys():
-                        ret_dict[k].append(projections[k][mask])
+                    # Add the projections if they exis, no need for NMS
+                    for k in projections[idx].keys():
+                        ret_dict[k].append(projections[idx][k])
                 continue
 
-            if 'topk_outp' in pred_dict:
-                batch_hm = pred_dict['hm']
-            else:
-                batch_hm = pred_dict['hm'].sigmoid()
-            batch_center = pred_dict['center']
-            batch_center_z = pred_dict['center_z']
-            batch_dim = [d.exp() for d in pred_dict['dim']]
-
-            # This part might not work
-            #batch_rot_cos = pred_dict['rot'][:, 0].unsqueeze(dim=1)
-            #batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
-            batch_rot_cos = [r[..., 0].unsqueeze(dim=-1) for r in pred_dict['rot']]
-            batch_rot_sin = [r[..., 1].unsqueeze(dim=-1) for r in pred_dict['rot']]
-
-            batch_vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
+            vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
 
             final_pred_dicts = centernet_utils.decode_bbox_from_heatmap_sliced(
-                heatmap=batch_hm, rot_cos=batch_rot_cos, rot_sin=batch_rot_sin,
-                center=batch_center, center_z=batch_center_z, dim=batch_dim, vel=batch_vel,
+                heatmap=pred_dict['hm'],
+                rot_cos=pred_dict['rot'][..., 0].unsqueeze(dim=-1),
+                rot_sin=pred_dict['rot'][..., 1].unsqueeze(dim=-1),
+                center=pred_dict['center'], center_z=pred_dict['center_z'],
+                dim=pred_dict['dim'].exp(), vel=vel,
                 point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
                 feature_map_stride=self.feature_map_stride,
                 K=post_process_cfg.MAX_OBJ_PER_SAMPLE,
                 circle_nms=(post_process_cfg.NMS_CONFIG.NMS_TYPE == 'circle_nms'),
                 score_thresh=post_process_cfg.SCORE_THRESH,
                 post_center_limit_range=post_center_limit_range,
-                topk_outp=(pred_dict['topk_outp'] if 'topk_outp' in pred_dict else None)
+                topk_outp=pred_dict['topk_outp']
             )
 
             # Assume batch size is 1
@@ -446,14 +431,8 @@ class CenterHeadGroupSliced(nn.Module):
             if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
                 if projections is not None:
                     # get the projections that match and cat them for NMS
-                    #NOTE The operations in here on the GPU can be cumbersome
-                    #NOTE it takes 0.6 ms on jetson-agx
-                    mask = torch.zeros((projections['pred_boxes'].size(0),),
-                            dtype=torch.bool, device='cuda')
-                    for cls_id in cls_id_map:
-                        mask = torch.logical_or(mask, projections['pred_labels'] == cls_id)
-                    for k in projections.keys():
-                        final_dict[k] = torch.cat((final_dict[k], projections[k][mask]), dim=0)
+                    for k in projections[idx].keys():
+                        final_dict[k] = torch.cat((final_dict[k], projections[idx][k]), dim=0)
                 selected, selected_scores = model_nms_utils.class_agnostic_nms(
                     box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
                     nms_config=post_process_cfg.NMS_CONFIG,
@@ -592,6 +571,9 @@ class CenterHeadGroupSliced(nn.Module):
         return data_dict
 
     def forward_eval(self, data_dict):
+        return self.forward_eval_post(self.forward_eval_pre(data_dict))
+
+    def forward_eval_pre(self, data_dict):
         assert data_dict['batch_size'] == 1
         x = data_dict['spatial_features_2d']
 
@@ -612,44 +594,42 @@ class CenterHeadGroupSliced(nn.Module):
         p = pad_size = self.slice_size//2
         shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], [shr_conv_outp])[0]
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
-        padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
-        for det_head, pd in zip(self.det_heads, pred_dicts):
-            heatmap = pd['hm']
+        data_dict['padded_x'] = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
+        for pd in pred_dicts:
             topk_score, topk_inds, topk_classes, topk_ys, topk_xs = \
-                    centernet_utils._topk(heatmap, K=self.max_obj_per_sample, \
+                    centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample, \
                     using_slicing=True)
-
-            final_outputs, topk_outp, batch_id_tensors = [], [], []
-
-            masks = topk_score > score_thres
-            # This loop runs for each batch, and there is only one batch
-            #for scores, classes, ys, xs, mask in zip(\
-            #        topk_score, topk_classes, topk_ys, topk_xs, masks):
-            scores, classes, ys, xs, mask = \
-                    topk_score[0], topk_classes[0], topk_ys[0], topk_xs[0], masks[0]
             # stack all of these and then apply the mask
-            topk_vals = torch.stack((scores, classes, ys, xs))
-            masked_topk_vals = topk_vals[:,mask]
+            pd['topk_outp'] = torch.stack((topk_score[0], topk_classes[0], topk_ys[0], topk_xs[0]))
+            pd['mask'] = topk_score[0] > score_thres
+
+        for pd in pred_dicts:
+            masked_topk_vals = pd['topk_outp'][:, pd['mask']]
             tensors = torch.chunk(masked_topk_vals, 4)
-            scores, classes, ys, xs = (t.flatten() for t in tensors)
-            batch_id_tensors.append(torch.full((scores.size(0),),
-                len(batch_id_tensors), dtype=torch.short, device=scores.device))
-            topk_outp.append((scores, None, classes, ys, xs))
+            pd['topk_outp'] = [t.flatten() for t in tensors]
+            pd['predict_attr'] = False # TODO
 
-            pd['topk_outp'] = topk_outp
+        # Code is synched here due to masks
 
-            # Slice for all batches
-            num_slc_per_batch = [t.size(0) for t in batch_id_tensors]
-            no_inp = all([num_slc == 0 for num_slc in num_slc_per_batch])
-            pd['is_empty'] = no_inp
-            if no_inp:
+        data_dict['pred_dicts'] = pred_dicts
+
+        return data_dict
+
+    def forward_eval_post(self, data_dict):
+        padded_x = data_dict['padded_x']
+        for det_head, pd in zip(self.det_heads, data_dict['pred_dicts']):
+            # We will skip some heads here to meet the deadline in case needed
+            # The prioritization to skip is as follows:
+            # 3 (barrier) > 5 (ped, t_c) > 4 (motorc, bicy) > 0 (car) > 1 > 2
+            topk_outp = pd['topk_outp']
+            scores = topk_outp[0]
+            num_slc = scores.size(0)
+            if num_slc == 0 or pd['predict_attr']:
                 continue
-
-            b_id_cat = torch.cat(batch_id_tensors)
             # thanks to padding, xs and ys now give us the corner position instead of center
-            ys_cat = torch.cat([to[3] for to in topk_outp])
-            xs_cat = torch.cat([to[4] for to in topk_outp])
-            indices = torch.stack((b_id_cat, ys_cat.short(), xs_cat.short()), dim=1)
+            # which is required by the slice and batch kernel
+            b_id = torch.full((num_slc,), 0, dtype=torch.short, device=scores.device) # since batch size is 1
+            indices = torch.stack((b_id, topk_outp[2].short(), topk_outp[3].short()), dim=1)
             slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
             # Kinda undeterministic 1.5 ms to 3 ms
             # It becomes deterministic with cudnn benchmarking enabled
@@ -657,16 +637,10 @@ class CenterHeadGroupSliced(nn.Module):
 
             # finally, split the output according to the batches they belong
             for name, attr in zip(self.attr_conv_names, outp):
-                outp_slices = attr.flatten(-3)
-                outp_slices_split, idx = [], 0
-                for num_slc in num_slc_per_batch:
-                    outp_slices_split.append(outp_slices[idx:(idx+num_slc)])
-                    idx += num_slc
-                pd[name] = outp_slices_split
-
+                pd[name] = attr.flatten(-3)
 
         pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], pred_dicts, data_dict['projections']
+            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections']
         )
         data_dict['final_box_dicts'] = pred_dicts
 

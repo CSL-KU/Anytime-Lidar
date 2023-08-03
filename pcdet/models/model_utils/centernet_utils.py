@@ -172,7 +172,8 @@ def _topk(scores, K=40, using_slicing=False):
 
 def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z, dim,
                              point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, K=100,
-                             circle_nms=False, score_thresh=None, post_center_limit_range=None, topk_outp=None):
+                             circle_nms=False, score_thresh=None, post_center_limit_range=None, topk_outp=None, average_dims=None):
+    #global average_dims
     batch_size, num_class, _, _ = heatmap.size()
 
     assert topk_outp is not None
@@ -183,34 +184,38 @@ def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z,
         heatmap = _nms(heatmap)
 
     ret_pred_dicts = []
-    for k in range(batch_size):
-        (scores, _, class_ids, ys, xs) = topk_outp[k]
+    #for k in range(batch_size):
+    scores, class_ids, ys, xs = topk_outp
 
-        angle = torch.atan2(rot_sin[k], rot_cos[k])
-        xs = xs + center[k][:, 0]
-        ys = ys + center[k][:, 1]
+    angle = torch.atan2(rot_sin, rot_cos)
+    # Find the average dim during per class during calibration, rest can be set to 0 for now
 
-        xs = xs * feature_map_stride * voxel_size[0] + point_cloud_range[0]
-        ys = ys * feature_map_stride * voxel_size[1] + point_cloud_range[1]
+    #print(class_ids[0], center[0][0, 0], center[0][0, 1], center_z[0][0])
+    #print(dim[0][0], angle[0][0])
+    #print('*****')
+    xs = xs + center[:, 0]
+    ys = ys + center[:, 1]
 
-        box_part_list = [xs.unsqueeze(dim=-1), ys.unsqueeze(dim=-1), center_z[k], dim[k], angle]
+    xs = xs * feature_map_stride * voxel_size[0] + point_cloud_range[0]
+    ys = ys * feature_map_stride * voxel_size[1] + point_cloud_range[1]
 
-        if vel is not None:
-            box_part_list.append(vel[k])
+    box_part_list = [xs.unsqueeze(dim=-1), ys.unsqueeze(dim=-1), center_z, dim, angle]
+    if vel is not None:
+        box_part_list.append(vel)
 
-        box_preds = torch.cat((box_part_list), dim=-1)
+    box_preds = torch.cat((box_part_list), dim=-1)
 
-        assert post_center_limit_range is not None
-        mask = (box_preds[..., :3] >= post_center_limit_range[:3]).all(1)
-        mask &= (box_preds[..., :3] <= post_center_limit_range[3:]).all(1)
+    assert post_center_limit_range is not None
+    mask = (box_preds[..., :3] >= post_center_limit_range[:3]).all(1)
+    mask &= (box_preds[..., :3] <= post_center_limit_range[3:]).all(1)
 
-        #mask &= scores > score_thresh
+    #mask &= scores > score_thresh
 
-        ret_pred_dicts.append({
-            'pred_boxes': box_preds[mask],
-            'pred_scores': scores[mask],
-            'pred_labels': class_ids.int()[mask]
-        })
+    ret_pred_dicts.append({
+        'pred_boxes': box_preds[mask],
+        'pred_scores': scores[mask],
+        'pred_labels': class_ids.int()[mask]
+    })
     return ret_pred_dicts
 
 

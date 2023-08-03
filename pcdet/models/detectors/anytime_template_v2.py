@@ -81,7 +81,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # This number will be determined by the scheduling algorithm initially for each input
         self.last_tile_coord = -1
-        #self.reduce_mask_stream = torch.cuda.Stream()
+        self.projection_stream = torch.cuda.Stream()
 
         # divide the tiles in X axis only
         self.tile_size_voxels = torch.tensor(\
@@ -136,6 +136,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.post_bb3d_times_ms = torch.tensor([1.0] * self.tcount, dtype=torch.float)
         self.score_thresh = self.model_cfg.DENSE_HEAD.POST_PROCESSING.SCORE_THRESH
 
+        total_num_classes = sum([m.size(0) for m in self.dense_head.class_id_mapping_each_head])
+        self.cls_id_to_det_head_idx_map = torch.zeros((total_num_classes,), dtype=torch.int)
+        self.num_det_heads = len(self.dense_head.class_id_mapping_each_head)
+        for i, cls_ids in enumerate(self.dense_head.class_id_mapping_each_head):
+            for cls_id in cls_ids:
+                self.cls_id_to_det_head_idx_map[cls_id] = i
+        self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
+
     def define_bb3d_time_pred_model(self, num_tiles):
         inp_size = num_tiles
         outp_size = 1 # Execution time
@@ -163,52 +171,63 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if not self.enable_projection:
             return batch_dict
 
-        latest_token = batch_dict['metadata'][0]['token']
-        scene_token = self.token_to_scene[latest_token]
-        self.cur_pose = self.token_to_pose[latest_token]
-        self.cur_ts = self.token_to_ts[latest_token]
+        with torch.cuda.stream(self.projection_stream):
+            # Do post processing of previous sample here to facilitate calculating
+            # remaning time to dealdine
+            self.projection_post()
 
-        if scene_token != self.prev_scene_token:
-            self.projection_reset()
-            self.prev_scene_token = scene_token
+            latest_token = batch_dict['metadata'][0]['token']
+            scene_token = self.token_to_scene[latest_token]
+            self.cur_pose = self.token_to_pose[latest_token]
+            self.cur_ts = self.token_to_ts[latest_token]
 
+            if scene_token != self.prev_scene_token:
+                self.projection_reset()
+                self.prev_scene_token = scene_token
 
-        if self.sched_algo == self.ProjectionOnly:
-            return self.projection_for_test(batch_dict)
+            if self.sched_algo == self.ProjectionOnly:
+                return self.projection_for_test(batch_dict)
+            # Clear unuseful dets
+            if self.past_ts.size(0) > 0 and self.cur_ts - self.past_ts[0] > self.proj_time_limit_musec:
+                self.past_poses = self.past_poses[1:]
+                self.past_ts = self.past_ts[1:]
+                nd = self.past_detections['num_dets'].pop(0)
+                for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
+                    self.past_detections[k] = self.past_detections[k][nd:]
+                self.past_detections['pose_idx'] -= 1
 
-        # Clear unuseful dets
-        if self.past_ts.size(0) > 0 and self.cur_ts - self.past_ts[0] > self.proj_time_limit_musec:
-            self.past_poses = self.past_poses[1:]
-            self.past_ts = self.past_ts[1:]
-            nd = self.past_detections['num_dets'].pop(0)
-            for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
-                self.past_detections[k] = self.past_detections[k][nd:]
-            self.past_detections['pose_idx'] -= 1
+            # Assign the scores in a way to favor fresh objects
+            self.past_detections['pred_scores'] = self.score_thresh - \
+                    (self.score_thresh / (self.past_detections['pose_idx'] + 2))
 
-        # Assign the scores in a way to favor fresh objects
-        self.past_detections['pred_scores'] = self.score_thresh - \
-                (self.score_thresh / (self.past_detections['pose_idx'] + 2))
+            if self.past_detections['pred_boxes'].size(0) > 0:
+                proj_dict = {}
+                proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
+                        self.past_detections['pred_boxes'],
+                        self.past_detections['pose_idx'],
+                        self.past_poses.cuda(),
+                        self.cur_pose.cuda(),
+                        self.past_ts.cuda(),
+                        self.cur_ts.item())
 
-        if self.past_detections['pred_boxes'].size(0) > 0:
-            proj_dict = {}
-            proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
-                    self.past_detections['pred_boxes'],
-                    self.past_detections['pose_idx'],
-                    self.past_poses.cuda(),
-                    self.cur_pose.cuda(),
-                    self.past_ts.cuda(),
-                    self.cur_ts.item())
+                proj_dict['pred_scores'] = self.past_detections['pred_scores']
+                proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
 
-            proj_dict['pred_scores'] = self.past_detections['pred_scores']
-            proj_dict['pred_labels'] = self.past_detections['pred_labels'] - 1
-            batch_dict['projections'] = proj_dict
+                proj_dicts = cuda_projection.split_projections(
+                        proj_dict['pred_boxes'],
+                        proj_dict['pred_scores'],
+                        proj_dict['pred_labels'],
+                        self.cls_id_to_det_head_idx_map,
+                        self.num_det_heads)
+                batch_dict['projections'] = proj_dicts
 
         return batch_dict
 
 
-    def projection_post(self, batch_dict):
-        if not self.enable_projection:
-            return batch_dict
+    def projection_post(self):
+        batch_dict = self.latest_batch_dict
+        if not self.enable_projection or batch_dict is None or self.cur_pose is None:
+            return
 
         pred_dict = batch_dict['final_box_dicts'][0]
 
@@ -269,6 +288,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             num_tiles, vcounts_all, netc_flip= round_robin_sched_helper(
                     netc.numpy(), self.last_tile_coord, self.tcount,
                     netc_vcounts.cpu().numpy())
+            self.projection_stream.synchronize()
             # Let's try no using cuda and see the performance
             vcounts_all = torch.from_numpy(vcounts_all)
             num_tiles = torch.from_numpy(num_tiles)
@@ -375,6 +395,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def projection_reset(self):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
+        self.cur_pose, self.cur_ts = None, None
         if self.sched_algo == self.ProjectionOnly:
             for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx', 'num_dets'):
                 self.past_detections[k] = []
@@ -393,148 +414,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.enable_projection = True
         self.projection_reset()
 
+        #calibrator = AnytimeCalibrator(self)
+
         #for l in self.add_dict.values():
         #    l.clear()
 
         return None
-#        if self.sched_algo == self.ProjectionOnly:
-#            print('Projection test is running.')
-#            return None
-#
-#        # check if the wcet pred file is there
-#        try:
-#            with open(fname, 'r') as handle:
-#                calib_dict = json.load(handle)
-#
-#            num_voxels = calib_dict["voxel_counts"]
-#
-#            if 'num_tiles' in calib_dict and calib_dict['num_tiles']:
-#                num_tiles = calib_dict['num_tiles']
-#            else:
-#                tile_coords = calib_dict["chosen_tile_coords"]
-#                num_tiles = [len(tc) for tc in tile_coords]
-#
-#            num_ALL_samples = calib_dict['calib_dataset_len']
-#            num_voxels_ALL = num_voxels[-num_ALL_samples:]
-#            num_tiles_ALL = num_tiles[-num_ALL_samples:]
-#
-#            num_voxels = num_voxels[:-num_ALL_samples]
-#            num_tiles = num_tiles[:-num_ALL_samples]
-#
-#            psched_time = calib_dict["PostSched"]
-#            psched_time_ALL = psched_time[-num_ALL_samples:]
-#            psched_time = psched_time[:-num_ALL_samples]
-#
-#            self.time_pred_coeffs_1, self.pred_net_time_stats_1 = \
-#                    self.calc_time_pred_coeffs(num_voxels, num_tiles, psched_time)
-#            self.time_pred_coeffs_ALL, self.pred_net_time_stats_ALL = \
-#                    self.calc_time_pred_coeffs(num_voxels_ALL, num_tiles_ALL, psched_time_ALL)
-#            self.time_pred_coeffs_ALL = self.time_pred_coeffs_ALL.cpu()
-#
-#        except FileNotFoundError:
-#            print(f'Calibration file {fname} not found, running calibration')
-#            self.calibrating_now = True # time calibration!
-#            self.calibration_procedure(fname)
-#            sys.exit()
-#
-#        return None
-#
-#    def calibrate_after_bb3d(self, spatial_features):
-#        self.calibrated = True
-#        # Create a timing model for different tile sizes
-#        # taking the worst case into account
-#
-#        def get_worst_case_tiles(num_tiles, tcount):
-#            # Now exactly sure if this would be the worst case
-#            # but probably very close
-#            if num_tiles == 1:
-#                return [0]
-#
-#            num_tiles_l = num_tiles // 2
-#            num_tiles_r = num_tiles - num_tiles_l
-#
-#            r_list = list(range(tcount - num_tiles_r, tcount))
-#            l_list = list(range(num_tiles_l))
-#
-#            return r_list + l_list
-#
-#        for num_tiles in range(1, self.tcount+1):
-#            # NOTE Slice in W dimension, I think it corresponds to x
-#            # if it is not, when change it to H
-#            # Warmup first
-#            self.forward({'spatial_features': spatial_features,
-#                'chosen_tile_coords': get_worst_case_tiles(num_tiles, self.tcount)})
-#            reps=3
-#            torch.cuda.synchronize()
-#            t0 = time.time()
-#            for j in range(reps):
-#                self.forward({'spatial_features': spatial_features,
-#                    'chosen_tile_coords': get_worst_case_tiles(num_tiles, self.tcount)})
-#            torch.cuda.synchronize()
-#            t_elapsed = time.time() - t0
-#            self.slc_time_ms[num_tiles-1] = round(t_elapsed*1000/reps, 3)
-#        print('BB2D Pred times:', self.slc_time_ms)
-#
-#
-#    def calibration_procedure(self, fname="calib_raw_data.json"):
-#        gc.disable()
-#        all_max_num_tiles = []
-#
-#        pc_range = torch.from_numpy(self.dataset.point_cloud_range).cuda()[[0, 1]]
-#        voxel_size = torch.tensor(self.dataset.voxel_size).cuda()[[0, 1]]
-#        grid_size = torch.from_numpy(self.dataset.grid_size).cuda()[[0, 1]]
-#        for i in range(len(self.dataset)):
-#            data_dict = self.dataset.getitem_pre(i)
-#            data_dict = self.dataset.getitem_post(data_dict)
-#            data_dict = self.dataset.collate_batch([data_dict])
-#            load_data_to_gpu(data_dict)
-#    
-#            if 'voxel_coords' not in data_dict:
-#                points = data_dict['points']
-#                #print(pc_range, voxel_size, grid_size)
-#                #print(points[-10:])
-#                points_coords = torch.floor( \
-#                    (points[:, [1, 2]] - pc_range) / voxel_size).int()
-#                mask = ((points_coords >= 0) & (points_coords < grid_size)).all(dim=1)
-#                #print(points_coords[-10:])
-#                data_dict['voxel_coords'] = points_coords[mask][:, [1,0]]
-#
-#            _, nonempty_tile_coords, _ = self.get_nonempty_tiles(data_dict['voxel_coords'])
-#            max_num_tiles = nonempty_tile_coords.size(0)
-#            all_max_num_tiles.append(max_num_tiles)
-#
-#        mit, mat = min(all_max_num_tiles), max(all_max_num_tiles)
-#        print(f'Min num tiles: {mit}, Max num tiles: {mat}')
-#        torch.cuda.empty_cache()
-#        gc.collect()
-#
-#        # 10 different num of tiles should be enough
-#        for num_tiles in range(1, mat, mat//10):
-#            print('Num tiles:', num_tiles)
-#            for i in range(len(self.dataset)):
-#                if num_tiles < all_max_num_tiles[i]:
-#                    self.calib_num_tiles = num_tiles
-#                    with torch.no_grad():
-#                        pred_dicts, ret_dict = self([i])
-#                    gc.collect()
-#
-#        print('Num tiles: ALL')
-#        for i in range(len(self.dataset)):
-#            self.calib_num_tiles = all_max_num_tiles[i]
-#            with torch.no_grad():
-#                pred_dicts, ret_dict = self([i])
-#            gc.collect()
-#
-#        gc.enable()
-#        self.add_dict['tcount'] = self.tcount
-#        self.add_dict['method'] = self.sched_algo
-#        self.add_dict['exec_times'] = self.get_time_dict()
-#        self.add_dict['exec_time_stats'] = self.get_time_dict_stats()
-#        self.add_dict['calib_dataset_len'] = len(self.dataset)
-#        print('Time calibration Complete')
-#        with open(fname, 'w') as handle:
-#            json.dump(self.add_dict, handle, indent=4)
-#
+
     def post_eval(self):
         self.add_dict['tcount'] = self.tcount
         print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")

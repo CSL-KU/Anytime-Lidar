@@ -33,7 +33,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'CenterHead': [],
                     'Projection': []})
 
-
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
         # dense head can use its results for NMS
@@ -63,7 +62,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_start('CenterHead')
         batch_dict = self.dense_head(batch_dict)
         self.measure_time_end('CenterHead')
-        batch_dict = self.projection_post(batch_dict)
 
         return batch_dict
 
