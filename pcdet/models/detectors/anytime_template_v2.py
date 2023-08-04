@@ -70,7 +70,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.benchmark_limit = 0
-        orch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
