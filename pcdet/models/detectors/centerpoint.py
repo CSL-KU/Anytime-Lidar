@@ -4,11 +4,12 @@ import torch
 class CenterPoint(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
-        self.module_list = self.build_networks()
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
+        self.module_list = self.build_networks()
 
         if self.model_cfg.get('BACKBONE_3D', None) is None:
             #pillar
@@ -98,4 +99,4 @@ class CenterPoint(Detector3DTemplate):
         return final_pred_dict, recall_dict
 
     def calibrate(self, batch_size=1):
-        return super().calibrate()
+        return super().calibrate(1)

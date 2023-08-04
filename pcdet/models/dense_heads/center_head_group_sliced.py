@@ -14,9 +14,8 @@ import time
 # Divides input channels equally to convolutions
 # Produces some useless output channels for the sake of efficiency
 class AdaptiveGroupConv(nn.Module):
-    conv_id_counter = 0
     def __init__(self, input_channels, output_channels_list, ksize,
-            stride, padding, bias, max_batch_size=1):
+            stride, padding, bias):
         super().__init__()
 
         self.outp_ch_l = output_channels_list
@@ -26,12 +25,6 @@ class AdaptiveGroupConv(nn.Module):
         self.conv = nn.Conv2d(input_channels, max_ch * self.num_outp,
                 kernel_size=ksize,stride=stride,
                 padding=padding, groups=self.num_outp, bias=bias)
-        self.calibrated=False
-        self.max_batch_size = max_batch_size
-        self.conv_id = AdaptiveGroupConv.conv_id_counter
-        AdaptiveGroupConv.conv_id_counter += 1
-
-        #self.size_set = set()
 
     def fill_bias(self, bias):
         m = self.conv
@@ -45,36 +38,15 @@ class AdaptiveGroupConv(nn.Module):
             nn.init.constant_(m.bias, 0)
 
     def forward(self, inp):
-        if not self.calibrated:
-            self.calibrate_for_cudnn_benchmarking(inp)
-
         outp = [None] * self.num_outp
         max_ch = max(self.outp_ch_l)
 
-        #if str(inp.size()) not in self.size_set:
-        #    print('UNCALIBRATED SIZE: ', inp.size())
-
         y = self.conv(inp)
-        #self.size_set.add(str(inp.size()))
 
         for i, ch in enumerate(self.outp_ch_l):
             outp[i] = y[:,(i*max_ch):(i*max_ch+ch)]
 
         return outp
-
-    def calibrate_for_cudnn_benchmarking(self, inp):
-        print(f'Calibrating AdaptiveGroupConv {self.conv_id} for cudnn benchmarking,',
-                ' max batch size:', self.max_batch_size, ' ...')
-        N, C, H, W = inp.size()
-        dummy_inp = torch.rand((self.max_batch_size, C, H, W), dtype=inp.dtype, device=inp.device)
-        for n in range(1, self.max_batch_size+1):
-            x = dummy_inp[:n, ...]
-            self.conv(x)
-            #self.size_set.add(str(x.size()))
-
-        self.calibrated=True
-        print('done.')
-
 
 class CenterHeadGroupSliced(nn.Module):
     def __init__(self, model_cfg, input_channels, num_class, class_names, grid_size, point_cloud_range, voxel_size,
@@ -184,8 +156,7 @@ class CenterHeadGroupSliced(nn.Module):
                 outp_channels = inp_channels
 
             attr_list.append(AdaptiveGroupConv(outp_channels, attr_outp_channels, \
-                    ksize, stride=1, padding=0, bias=True,
-                    max_batch_size=self.max_obj_per_sample))
+                    ksize, stride=1, padding=0, bias=True))
 
             attr_convs = nn.Sequential(*attr_list)
             if head_idx == 0:
@@ -199,6 +170,7 @@ class CenterHeadGroupSliced(nn.Module):
             attr_convs[-1].init_kaiming()
 
             self.det_heads.append(attr_convs)
+        self.calibrated = [False] * num_heads
 
         self.predict_boxes_when_training = predict_boxes_when_training
         self.forward_ret_dict = {}
@@ -212,8 +184,6 @@ class CenterHeadGroupSliced(nn.Module):
 
         self.attr_skip_events = [None] * num_heads
         self.attr_skip_gains_ms = [9999.9] * num_heads
-        #self.attr_skip_gains_ms = [list() for _ in range(num_heads)]
-        #self.attr_skip_num_slices = [list() for _ in range(num_heads)]
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -679,8 +649,11 @@ class CenterHeadGroupSliced(nn.Module):
             b_id = torch.full((num_slc,), 0, dtype=torch.short, device=scores.device) # since batch size is 1
             indices = torch.stack((b_id, topk_outp[2].short(), topk_outp[3].short()), dim=1)
             slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
-            # Kinda undeterministic 1.5 ms to 3 ms
-            # It becomes deterministic with cudnn benchmarking enabled
+
+            if not self.calibrated[det_idx]:
+                self.calibrate_for_cudnn_benchmarking(slices, det_idx)
+
+            # It becomes deterministic with cudnn benchmarking enabled, ~1ms
             outp = det_head(slices)
 
             # finally, split the output according to the batches they belong
@@ -690,8 +663,6 @@ class CenterHeadGroupSliced(nn.Module):
             if record:
                 e2.record()
                 self.attr_skip_events[det_idx] = (e1,e2)
-            #self.attr_skip_gains_ms = [[]] * num_heads
-            #self.attr_skip_num_slices[det_idx].append(num_slc)
 
         data_dict['dethead_indexes'] = np.array(processed_det_head_indexes)
 
@@ -708,7 +679,6 @@ class CenterHeadGroupSliced(nn.Module):
             if se is not None:
                 time_ms = se[0].elapsed_time(se[1])
                 self.attr_skip_gains_ms[i] = min(self.attr_skip_gains_ms[i], time_ms)
-            #print(i, self.attr_skip_gains_ms[i])
 
     def get_attr_skip_gains(self):
         return self.attr_skip_gains_ms
@@ -718,3 +688,17 @@ class CenterHeadGroupSliced(nn.Module):
         for k,v in self.det_dict_copy.items():
             det_dict[k] = v.clone().detach()
         return det_dict
+
+    def calibrate_for_cudnn_benchmarking(self, inp, idx):
+        max_batch_size = self.max_obj_per_sample
+        print(f'Calibrating detection head {idx+1} for cudnn benchmarking,',
+                ' max batch size:', max_batch_size, ' ...')
+
+        N, C, H, W = inp.size()
+        dummy_inp = torch.rand((max_batch_size, C, H, W), dtype=inp.dtype, device=inp.device)
+        for n in range(1, max_batch_size+1):
+            x = dummy_inp[:n, ...]
+            self.det_heads[idx](x)
+
+        self.calibrated[idx]=True
+        print('done.')

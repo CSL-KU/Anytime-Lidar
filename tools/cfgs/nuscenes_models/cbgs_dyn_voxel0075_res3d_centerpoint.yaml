@@ -61,7 +61,7 @@ DATA_CONFIG:
 
 
 MODEL:
-    NAME: CenterPointAnytimeV2
+    NAME: CenterPoint
 
     VFE:
         NAME: DynMeanVFE
@@ -74,7 +74,7 @@ MODEL:
         NUM_BEV_FEATURES: 256
 
     BACKBONE_2D:
-        NAME: BaseBEVBackboneSliced
+        NAME: BaseBEVBackbone
 
         LAYER_NUMS: [5, 5]
         LAYER_STRIDES: [1, 2]
@@ -83,7 +83,7 @@ MODEL:
         NUM_UPSAMPLE_FILTERS: [256, 256]
 
     DENSE_HEAD:
-        NAME: CenterHeadGroupSliced
+        NAME: CenterHead
         CLASS_AGNOSTIC: False
 
         CLASS_NAMES_EACH_HEAD: [
@@ -137,8 +137,6 @@ MODEL:
         EVAL_METRIC: kitti
 
     DEADLINE_SEC: 9999.9
-    TILE_COUNT: 18
-    METHOD: 1
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4
