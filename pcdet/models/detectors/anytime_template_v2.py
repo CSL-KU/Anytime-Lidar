@@ -1,4 +1,5 @@
 from .detector3d_template import Detector3DTemplate
+from .anytime_calibrator import AnytimeCalibrator
 import torch
 from nuscenes.nuscenes import NuScenes
 import time
@@ -67,11 +68,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
-        self.module_list = self.build_networks()
-        torch.backends.cudnn.benchmark = False # TODO, we can allow this
-        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark_limit = 0
+        orch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
+        self.module_list = self.build_networks()
 #        torch.use_deterministic_algorithms(True)
 
         ################################################################################
@@ -342,25 +344,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
-    def schedule_after_bb3d(self, batch_dict):
-        ctc = batch_dict['chosen_tile_coords']
-        num_tiles = batch_dict['num_tiles']
-        torch.cuda.synchronize()
-        rem_time = batch_dict['abs_deadline_sec'] - time.time()
-
-        i = -1
-        while i >= -num_tiles.size(0) and self.post_bb3d_times_ms[num_tiles[i]-1] > rem_time:
-            i -= 1
-        if i < -num_tiles.size(0):
-            ctc = ctc[:1]
-        elif i < -1:
-            ctc = ctc[:i+1]
-
-        batch_dict['chosen_tile_coords'] = ctc
-        self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
-
-        return batch_dict
-
     def get_training_loss(self):
         disp_dict = {}
 
@@ -410,11 +393,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.last_tile_coord = -1
 
     def calibrate(self, fname='calib_raw_data.json'):
+        score_threshold = self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH
+        # this temporary threshold will allow us to do calibrate cudnn benchmarking
+        # of all detection heads, preventing to skip any of them
+        self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = 0.0001
         super().calibrate(1)
+        self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
         self.enable_projection = True
         self.projection_reset()
 
-        #calibrator = AnytimeCalibrator(self)
+        calibrator = AnytimeCalibrator(self)
+        #calibrator.collect_data()
 
         #for l in self.add_dict.values():
         #    l.clear()

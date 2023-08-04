@@ -692,15 +692,15 @@ class Detector3DTemplate(nn.Module):
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
 
         #Print full tensor sizes
-        print('\ndata_dict after forward:')
-        self.print_dict(self.latest_batch_dict)
+        #print('\ndata_dict after forward:')
+        #self.print_dict(self.latest_batch_dict)
 
-        print('\nDetections:')
-        for pd in pred_dicts:
-            self.print_dict(pd)
+        #print('\nDetections:')
+        #for pd in pred_dicts:
+        #    self.print_dict(pd)
 
-        print('\nRecall dict:')
-        self.print_dict(recall_dict)
+        #print('\nRecall dict:')
+        #self.print_dict(recall_dict)
 
         if isinstance(pred_dicts, list):
             det = pred_dicts[0]

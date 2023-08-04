@@ -1,7 +1,6 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 
 import torch
-from sbnet.layers import ReduceMask
 
 class CenterPointAnytimeV2(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -32,6 +31,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'Backbone2D': [],
                     'CenterHead': [],
                     'Projection': []})
+        self.calibrated = False
 
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
@@ -48,19 +48,25 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_start('VFE')
         batch_dict = self.vfe(batch_dict, model=self)
         self.measure_time_end('VFE')
+        batch_dict = self.schedule(batch_dict)
         if self.is_voxel_enc:
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d(batch_dict)
             self.measure_time_end('Backbone3D')
-        batch_dict = self.schedule_after_bb3d(batch_dict)
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
         self.measure_time_end('MapToBEV')
+
+        if not self.calibrated:
+            self.calibrate_for_cudnn_benchmarking(batch_dict)
+
         self.measure_time_start('Backbone2D')
         batch_dict = self.backbone_2d(batch_dict)
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
-        batch_dict = self.dense_head(batch_dict)
+        batch_dict = self.dense_head.forward_eval_pre(batch_dict)
+        #torch.cuda.synchronize()
+        batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead')
 
         return batch_dict
@@ -79,7 +85,15 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         }
         return ret_dict, tb_dict, disp_dict
 
-    #def calibrate(self):
-    #    s = ('voxel' if self.is_voxel_enc else 'pillar')
-    #    super().calibrate(f"calib_raw_data_centerpoint_{s}.json")
-    #    return None
+
+    def calibrate_for_cudnn_benchmarking(self, batch_dict):
+        print('Calibrating bb2d and det head pre for cudnn benchmarking, max num tiles is',
+                self.tcount, ' ...')
+        # Try out all different chosen tile sizes
+        dummy_dict = {'batch_size':1, 'spatial_features': batch_dict['spatial_features']}
+        for i in range(1, self.tcount+1):
+            dummy_dict['chosen_tile_coords'] = torch.arange(i)
+            dummy_dict = self.backbone_2d(dummy_dict)
+            self.dense_head.forward_eval_pre(dummy_dict)
+        print('done.')
+        self.calibrated = True

@@ -14,7 +14,9 @@ import time
 # Divides input channels equally to convolutions
 # Produces some useless output channels for the sake of efficiency
 class AdaptiveGroupConv(nn.Module):
-    def __init__(self, input_channels, output_channels_list, ksize, stride, padding, bias):
+    conv_id_counter = 0
+    def __init__(self, input_channels, output_channels_list, ksize,
+            stride, padding, bias, max_batch_size=1):
         super().__init__()
 
         self.outp_ch_l = output_channels_list
@@ -24,6 +26,12 @@ class AdaptiveGroupConv(nn.Module):
         self.conv = nn.Conv2d(input_channels, max_ch * self.num_outp,
                 kernel_size=ksize,stride=stride,
                 padding=padding, groups=self.num_outp, bias=bias)
+        self.calibrated=False
+        self.max_batch_size = max_batch_size
+        self.conv_id = AdaptiveGroupConv.conv_id_counter
+        AdaptiveGroupConv.conv_id_counter += 1
+
+        #self.size_set = set()
 
     def fill_bias(self, bias):
         m = self.conv
@@ -37,13 +45,35 @@ class AdaptiveGroupConv(nn.Module):
             nn.init.constant_(m.bias, 0)
 
     def forward(self, inp):
+        if not self.calibrated:
+            self.calibrate_for_cudnn_benchmarking(inp)
+
         outp = [None] * self.num_outp
         max_ch = max(self.outp_ch_l)
+
+        #if str(inp.size()) not in self.size_set:
+        #    print('UNCALIBRATED SIZE: ', inp.size())
+
         y = self.conv(inp)
+        #self.size_set.add(str(inp.size()))
+
         for i, ch in enumerate(self.outp_ch_l):
             outp[i] = y[:,(i*max_ch):(i*max_ch+ch)]
 
         return outp
+
+    def calibrate_for_cudnn_benchmarking(self, inp):
+        print(f'Calibrating AdaptiveGroupConv {self.conv_id} for cudnn benchmarking,',
+                ' max batch size:', self.max_batch_size, ' ...')
+        N, C, H, W = inp.size()
+        dummy_inp = torch.rand((self.max_batch_size, C, H, W), dtype=inp.dtype, device=inp.device)
+        for n in range(1, self.max_batch_size+1):
+            x = dummy_inp[:n, ...]
+            self.conv(x)
+            #self.size_set.add(str(x.size()))
+
+        self.calibrated=True
+        print('done.')
 
 
 class CenterHeadGroupSliced(nn.Module):
@@ -154,7 +184,8 @@ class CenterHeadGroupSliced(nn.Module):
                 outp_channels = inp_channels
 
             attr_list.append(AdaptiveGroupConv(outp_channels, attr_outp_channels, \
-                    ksize, stride=1, padding=0, bias=True))
+                    ksize, stride=1, padding=0, bias=True,
+                    max_batch_size=self.max_obj_per_sample))
 
             attr_convs = nn.Sequential(*attr_list)
             if head_idx == 0:
@@ -178,6 +209,11 @@ class CenterHeadGroupSliced(nn.Module):
             "pred_scores": torch.zeros([0], dtype=torch.float,device='cuda'),
             "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
         }
+
+        self.attr_skip_events = [None] * num_heads
+        self.attr_skip_gains_ms = [9999.9] * num_heads
+        #self.attr_skip_gains_ms = [list() for _ in range(num_heads)]
+        #self.attr_skip_num_slices = [list() for _ in range(num_heads)]
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -400,7 +436,7 @@ class CenterHeadGroupSliced(nn.Module):
         for idx, pred_dict in enumerate(pred_dicts):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
             cls_id_map = self.class_id_mapping_each_head[idx]
-            if 'center' not in pred_dict:
+            if 'center' not in pred_dict and not pred_dict['skip_attr']:
                 # did not run the attr convolutions
                 if projections is not None:
                     # Add the projections if they exis, no need for NMS
@@ -601,13 +637,13 @@ class CenterHeadGroupSliced(nn.Module):
                     using_slicing=True)
             # stack all of these and then apply the mask
             pd['topk_outp'] = torch.stack((topk_score[0], topk_classes[0], topk_ys[0], topk_xs[0]))
-            pd['mask'] = topk_score[0] > score_thres
+            pd['score_mask'] = topk_score[0] > score_thres
 
         for pd in pred_dicts:
-            masked_topk_vals = pd['topk_outp'][:, pd['mask']]
+            masked_topk_vals = pd['topk_outp'][:, pd['score_mask']]
             tensors = torch.chunk(masked_topk_vals, 4)
             pd['topk_outp'] = [t.flatten() for t in tensors]
-            pd['predict_attr'] = False # TODO
+            pd['skip_attr'] = False # TODO
 
         # Code is synched here due to masks
 
@@ -617,15 +653,27 @@ class CenterHeadGroupSliced(nn.Module):
 
     def forward_eval_post(self, data_dict):
         padded_x = data_dict['padded_x']
-        for det_head, pd in zip(self.det_heads, data_dict['pred_dicts']):
-            # We will skip some heads here to meet the deadline in case needed
-            # The prioritization to skip is as follows:
-            # 3 (barrier) > 5 (ped, t_c) > 4 (motorc, bicy) > 0 (car) > 1 > 2
+        self.attr_skip_events = [None] * len(self.attr_skip_events)
+        record = data_dict['record'] if 'record' in data_dict else False
+        processed_det_head_indexes = []
+        for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
             topk_outp = pd['topk_outp']
             scores = topk_outp[0]
             num_slc = scores.size(0)
-            if num_slc == 0 or pd['predict_attr']:
+            if num_slc == 0 or pd['skip_attr']:
+                # We can skip some heads here to meet the deadline in case needed
+                # The prioritization to skip is as follows:
+                # 3 (barrier) > 5 (ped, t_c) > 4 (motorc, bicy) > 0 (car) > 1 > 2
+                # We can assume that the following part of the code will be skipped only
+                # when we predict the attributes instead of calculating them with convolutions
                 continue
+
+            processed_det_head_indexes.append(det_idx)
+            if record:
+                e1 = torch.cuda.Event(enable_timing=True)
+                e2 = torch.cuda.Event(enable_timing=True)
+                e1.record()
+
             # thanks to padding, xs and ys now give us the corner position instead of center
             # which is required by the slice and batch kernel
             b_id = torch.full((num_slc,), 0, dtype=torch.short, device=scores.device) # since batch size is 1
@@ -639,12 +687,31 @@ class CenterHeadGroupSliced(nn.Module):
             for name, attr in zip(self.attr_conv_names, outp):
                 pd[name] = attr.flatten(-3)
 
+            if record:
+                e2.record()
+                self.attr_skip_events[det_idx] = (e1,e2)
+            #self.attr_skip_gains_ms = [[]] * num_heads
+            #self.attr_skip_num_slices[det_idx].append(num_slc)
+
+        data_dict['dethead_indexes'] = np.array(processed_det_head_indexes)
+
         pred_dicts = self.generate_predicted_boxes_eval(
             data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections']
         )
         data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict
+
+    def calc_skip_times(self):
+        # should be synchronized by now
+        for i, se in enumerate(self.attr_skip_events):
+            if se is not None:
+                time_ms = se[0].elapsed_time(se[1])
+                self.attr_skip_gains_ms[i] = min(self.attr_skip_gains_ms[i], time_ms)
+            #print(i, self.attr_skip_gains_ms[i])
+
+    def get_attr_skip_gains(self):
+        return self.attr_skip_gains_ms
 
     def get_empty_det_dict(self):
         det_dict = {}

@@ -32,7 +32,7 @@ class MeanVFE(VFETemplate):
         points_mean = points_mean / normalizer
         batch_dict['voxel_features'] = points_mean.contiguous()
 
-        if 'model' in kwargs:
-            batch_dict = kwargs['model'].schedule(batch_dict)
+        #if 'model' in kwargs:
+        #    batch_dict = kwargs['model'].schedule(batch_dict)
 
         return batch_dict
