@@ -16,13 +16,6 @@ from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
 
-#os.environ["CUBLAS_WORKSPACE_CONFIG"]=":4096:8"
-def transform(x, m, s):
-    x -= m
-    x /= s
-
-    return x
-
 @numba.jit(nopython=True)
 def get_num_tiles(ctc): # chosen tile coords
     ctc_s, ctc_e = ctc[0], ctc[-1]
@@ -59,7 +52,6 @@ def round_robin_sched_helper(netc, last_tile_coord, tcount, netc_vcounts):
             vcounts_all[i, ctc[j]] = netc_vcounts_flip[j]
 
     return num_tiles, vcounts_all, netc_flip
-
 
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -112,11 +104,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #    self.add_dict[k] = []
 
 
-        self.bb3d_time_pred_model = self.define_bb3d_time_pred_model(self.tcount)
-        # TODO assign the right numbers to these two using json
-        self.bb3d_model_mean = 0.0
-        self.bb3d_model_std = 1.0
-
         self.proj_time_limit_musec = 1600000 # 1.6 sec
 
         self.RoundRobin = 1
@@ -135,7 +122,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.past_ts = torch.zeros([0], dtype=torch.long)
 
         # Needs to be calibrated
-        self.post_bb3d_times_ms = torch.tensor([1.0] * self.tcount, dtype=torch.float)
         self.score_thresh = self.model_cfg.DENSE_HEAD.POST_PROCESSING.SCORE_THRESH
 
         total_num_classes = sum([m.size(0) for m in self.dense_head.class_id_mapping_each_head])
@@ -145,24 +131,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
         self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
-
-    def define_bb3d_time_pred_model(self, num_tiles):
-        inp_size = num_tiles
-        outp_size = 1 # Execution time
-        possibilities = inp_size * (inp_size +1) // 2
-        model = torch.nn.Sequential(
-            torch.nn.Linear(inp_size, possibilities),
-            torch.nn.ReLU(),
-            torch.nn.Linear(possibilities, outp_size)) #.cuda()
-        return model 
-
-    # The input will have all
-    def pred_completion_time(self, vcounts_all, num_tiles):
-        vcounts_all -= self.bb3d_model_mean
-        vcounts_all /= self.bb3d_model_std
-        self.bb3d_time_pred_model = self.bb3d_time_pred_model.cpu()
-        times = self.bb3d_time_pred_model(vcounts_all).flatten()
-        return times + self.post_bb3d_times_ms[num_tiles-1]
 
     # When projecting, set the pred scores to a number below 0.3.
     # After running nms, remove the dets that are projected using their
@@ -271,7 +239,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     sorted=True, return_counts=True)
             return voxel_tile_coords, nonempty_tile_coords, voxel_counts
 
-    def schedule(self, batch_dict):
+    def schedule1(self, batch_dict):
         voxel_coords = batch_dict['voxel_coords']
         if self.training:
             batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords)
@@ -281,11 +249,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         netc = netc.cpu() # sync
         batch_dict['mask'] = None
 
-#        if self.calibrating_now and self.calib_num_tiles == netc.size(0):
-#            # Simply process all tiles, no need for scheduling
-#            chosen_tile_coords = netc
-#            self.last_tile_coord = -1
-#        elif self.sched_algo == self.RoundRobin:
         if self.sched_algo == self.RoundRobin:
             num_tiles, vcounts_all, netc_flip= round_robin_sched_helper(
                     netc.numpy(), self.last_tile_coord, self.tcount,
@@ -294,17 +257,22 @@ class AnytimeTemplateV2(Detector3DTemplate):
             # Let's try no using cuda and see the performance
             vcounts_all = torch.from_numpy(vcounts_all)
             num_tiles = torch.from_numpy(num_tiles)
-            tpreds = self.pred_completion_time(vcounts_all, num_tiles)
+
+            #TODO should also consider the time spent in this calculation ~1 ms
+            tpreds = self.calibrator.pred_total_req_time_ms(vcounts_all, netc_flip)
 
             self.psched_start_time = time.time()
-            rem_time = batch_dict['abs_deadline_sec'] - self.psched_start_time
+            rem_time_ms = (batch_dict['abs_deadline_sec'] - self.psched_start_time) * 1000
 
             # Choose configuration that can meet the deadline, that's it
             # NOTE The following code assumes there is going to be a 
             # second syncronization after bb3d, which will do further scheduling if
             # deadline cannot be met
-            diffs = tpreds < rem_time
+            diffs = tpreds < rem_time_ms
             tiles_idx = torch.sum(diffs).item()
+            if tiles_idx == 0:
+                tiles_idx = 1
+
             ##### MANUAL OVERRIDE
             #tiles_to_run = 4
             #for idx, nt in enumerate(num_tiles):
@@ -331,17 +299,21 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
             self.measure_time_end('Sched')
             return batch_dict
-        #print(chosen_tile_coords)
         batch_dict['num_tiles'] = num_tiles
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
-        #self.add_dict['voxel_counts'].append(batch_dict['voxel_coords'].size(0))
-        #self.add_dict['num_tiles'].append(batch_dict['chosen_tile_coords'].size(0))
 
         self.measure_time_end('Sched')
 
-        #print('chosen_tile_coords')
-        #print(chosen_tile_coords)
 
+        return batch_dict
+
+
+    def schedule2(self, batch_dict):
+        rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
+        req_time_ms = self.calibrator.pred_final_req_time_ms(batch_dict['dethead_indexes'])
+        tdiff = rem_time_ms - req_time_ms
+        if tdiff < 0:
+            print('Mispredicted time:', tdiff)
         return batch_dict
 
     def get_training_loss(self):
@@ -392,7 +364,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.past_ts = torch.zeros([0], dtype=torch.long)
         self.last_tile_coord = -1
 
-    def calibrate(self, fname='calib_raw_data.json'):
+    def calibrate(self):
+        self.calibrator = AnytimeCalibrator(self)
+
         score_threshold = self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH
         # this temporary threshold will allow us to do calibrate cudnn benchmarking
         # of all detection heads, preventing to skip any of them
@@ -402,11 +376,23 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.enable_projection = True
         self.projection_reset()
 
-        calibrator = AnytimeCalibrator(self)
-        #calibrator.collect_data()
+        if self.training:
+            return None
 
-        #for l in self.add_dict.values():
-        #    l.clear()
+        try:
+            self.calibrator.read_calib_data()
+        except OSError:
+            self.calibrator.collect_data()
+
+        try:
+            self.calibrator.load_time_pred_model()
+        except FileNotFoundError:
+            print('********************************************')
+            print('ERROR! Couldn\'t load time prediction model!')
+            print('Please train the model if needed by running')
+            print('anytime_calibrator.py script directly.')
+            print('********************************************')
+            # Can't train from here, need to execute the training script seperately
 
         return None
 

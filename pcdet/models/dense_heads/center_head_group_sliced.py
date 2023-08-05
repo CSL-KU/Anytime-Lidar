@@ -609,15 +609,20 @@ class CenterHeadGroupSliced(nn.Module):
             pd['topk_outp'] = torch.stack((topk_score[0], topk_classes[0], topk_ys[0], topk_xs[0]))
             pd['score_mask'] = topk_score[0] > score_thres
 
-        for pd in pred_dicts:
+        nonempty_det_head_indexes = []
+        for idx, pd in enumerate(pred_dicts):
             masked_topk_vals = pd['topk_outp'][:, pd['score_mask']]
             tensors = torch.chunk(masked_topk_vals, 4)
             pd['topk_outp'] = [t.flatten() for t in tensors]
+            if pd['topk_outp'][0].size(0) > 0:
+                nonempty_det_head_indexes.append(idx)
+
             pd['skip_attr'] = False # TODO
 
         # Code is synched here due to masks
 
         data_dict['pred_dicts'] = pred_dicts
+        data_dict['dethead_indexes'] = np.array(nonempty_det_head_indexes)
 
         return data_dict
 
@@ -625,7 +630,6 @@ class CenterHeadGroupSliced(nn.Module):
         padded_x = data_dict['padded_x']
         self.attr_skip_events = [None] * len(self.attr_skip_events)
         record = data_dict['record'] if 'record' in data_dict else False
-        processed_det_head_indexes = []
         for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
             topk_outp = pd['topk_outp']
             scores = topk_outp[0]
@@ -638,7 +642,6 @@ class CenterHeadGroupSliced(nn.Module):
                 # when we predict the attributes instead of calculating them with convolutions
                 continue
 
-            processed_det_head_indexes.append(det_idx)
             if record:
                 e1 = torch.cuda.Event(enable_timing=True)
                 e2 = torch.cuda.Event(enable_timing=True)
@@ -664,7 +667,6 @@ class CenterHeadGroupSliced(nn.Module):
                 e2.record()
                 self.attr_skip_events[det_idx] = (e1,e2)
 
-        data_dict['dethead_indexes'] = np.array(processed_det_head_indexes)
 
         pred_dicts = self.generate_predicted_boxes_eval(
             data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections']
