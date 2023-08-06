@@ -53,6 +53,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d(batch_dict)
             self.measure_time_end('Backbone3D')
+        batch_dict = self.schedule2(batch_dict)
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
         self.measure_time_end('MapToBEV')
@@ -66,7 +67,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_start('CenterHead')
         batch_dict = self.dense_head.forward_eval_pre(batch_dict)
         #torch.cuda.synchronize()
-        batch_dict = self.schedule2(batch_dict)
+        batch_dict = self.schedule3(batch_dict)
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead')
 

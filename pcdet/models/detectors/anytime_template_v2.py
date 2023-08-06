@@ -258,9 +258,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
             vcounts_all = torch.from_numpy(vcounts_all)
             num_tiles = torch.from_numpy(num_tiles)
 
-            #TODO should also consider the time spent in this calculation ~1 ms
-            tpreds = self.calibrator.pred_total_req_time_ms(vcounts_all, netc_flip)
-
+            bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(vcounts_all, netc_flip)
+            batch_dict['post_bb3d_times'] = post_bb3d_times
+            tpreds = bb3d_times + post_bb3d_times
             self.psched_start_time = time.time()
             rem_time_ms = (batch_dict['abs_deadline_sec'] - self.psched_start_time) * 1000
 
@@ -269,9 +269,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
             # second syncronization after bb3d, which will do further scheduling if
             # deadline cannot be met
             diffs = tpreds < rem_time_ms
-            tiles_idx = torch.sum(diffs).item()
-            if tiles_idx == 0:
-                tiles_idx = 1
+            #tiles_idx = torch.sum(diffs).item()
+            #if tiles_idx == 0:
+            #    tiles_idx = 1
+
 
             ##### MANUAL OVERRIDE
             #tiles_to_run = 4
@@ -280,16 +281,21 @@ class AnytimeTemplateV2(Detector3DTemplate):
             #        tiles_idx = idx + 1
             #        break
             #####
-            if tiles_idx == diffs.size(0):
-                chosen_tile_coords = netc
+            batch_dict['netc_flip'] = netc_flip
+            if diffs[-1]:
+                chosen_tile_coords = netc.numpy()
             else:
+                tiles_idx=1
+                while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
+                    tiles_idx += 1
+
                 # Voxel filtering is needed
-                num_tiles = num_tiles[:tiles_idx]
+                #num_tiles = num_tiles[:tiles_idx]
                 chosen_tile_coords = netc_flip[:tiles_idx]
-                self.last_tile_coord = chosen_tile_coords[-1].item()
+                #self.last_tile_coord = chosen_tile_coords[-1].item()
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
-                batch_dict['mask'] = tile_filter
+                #batch_dict['mask'] = tile_filter
                 if 'voxel_features' in batch_dict:
                     batch_dict['voxel_features'] = \
                             batch_dict['voxel_features'][tile_filter].contiguous()
@@ -299,16 +305,35 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
             self.measure_time_end('Sched')
             return batch_dict
-        batch_dict['num_tiles'] = num_tiles
+        #batch_dict['num_tiles'] = num_tiles
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
         self.measure_time_end('Sched')
 
+        return batch_dict
+
+    # Recalculate chosen tiles based on the time spent on bb3d
+    def schedule2(self, batch_dict):
+        torch.cuda.synchronize()
+        post_bb3d_times = batch_dict['post_bb3d_times']
+        rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
+        diffs = post_bb3d_times < rem_time_ms
+
+        #if diffs[-1] and :
+        #    batch_dict['chosen_tile_coords'] = batch_dict['netc_flip']
+        #else:
+        if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1]:
+            tiles_idx=1
+            while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
+                tiles_idx += 1
+
+            chosen_tile_coords = batch_dict['netc_flip'][:tiles_idx]
+            self.last_tile_coord = chosen_tile_coords[-1].item()
+            batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
         return batch_dict
 
-
-    def schedule2(self, batch_dict):
+    def schedule3(self, batch_dict):
         rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
         req_time_ms = self.calibrator.pred_final_req_time_ms(batch_dict['dethead_indexes'])
         tdiff = rem_time_ms - req_time_ms
