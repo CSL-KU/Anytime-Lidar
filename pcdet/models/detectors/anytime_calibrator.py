@@ -101,16 +101,17 @@ class AnytimeCalibrator():
         self.bb3d_time_model.cpu()
         self.std_scaler.cpu()
 
-    def pred_total_req_time_ms(self, vcounts, tile_coords):
+    def pred_req_times_ms(self, vcounts, tile_coords):
         x = self.std_scaler.transform(vcounts)
-        bb3d_times = self.bb3d_time_model(x)
-        total_req_times = self.filtering_wcet_ms + bb3d_times
+        bb3d_times = self.bb3d_time_model(x).flatten().numpy() * 1000.0
+        bb3d_times += self.filtering_wcet_ms
 
+        post_bb3d_times = np.empty((tile_coords.shape[0],), dtype=float)
         for i in range(tile_coords.shape[0]):
             tid = tile_coords_to_id(tile_coords[:i+1])
-            total_req_times[i] += self.combined_bb2d_dhpre_times_ms[tid]
+            post_bb3d_times[i] = self.combined_bb2d_dhpre_times_ms[tid]
 
-        return total_req_times + self.det_head_post_times_ms[-1] # wcet
+        return bb3d_times, post_bb3d_times + self.det_head_post_times_ms[-1] # wcet
 
     def pred_final_req_time_ms(self, dethead_indexes):
         hid = tile_coords_to_id(dethead_indexes)
@@ -160,7 +161,6 @@ class AnytimeCalibrator():
                 cuda_events[0].record()
             tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
-            batch_dict['mask'] = tile_filter
             for k in ('voxel_features', 'voxel_coords'):
                 batch_dict[k] = batch_dict[k][tile_filter].contiguous()
 
@@ -168,6 +168,7 @@ class AnytimeCalibrator():
                 cuda_events[1].record()
 
             batch_dict = self.model.backbone_3d(batch_dict)
+            torch.cuda.synchronize()
 
             if record:
                 cuda_events[2].record()
@@ -244,7 +245,7 @@ class AnytimeCalibrator():
         scene_tokens = []
 
         print('Number of samples:', len(self.dataset))
-        for sample_idx in range(2): #len(self.dataset)):
+        for sample_idx in range(len(self.dataset)):
             print(f'Processing sample {sample_idx}', end='')
             time_begin = time.time()
 
@@ -372,9 +373,9 @@ class AnytimeCalibrator():
 
         d = 'cuda'
         vcounts = torch.tensor(vcounts, dtype=torch.float, device=d)
-        exec_times_ms = torch.tensor(exec_times_ms, dtype=torch.float,
-                device=d).unsqueeze(-1)
-        dataset = TensorDataset(vcounts, exec_times_ms)
+        exec_times_sec = torch.tensor(exec_times_ms, dtype=torch.float,
+                device=d).unsqueeze(-1) / 1000.0
+        dataset = TensorDataset(vcounts, exec_times_sec)
 
         #train_dset, test_dset = torch.utils.data.random_split(dataset, [0.85, 0.15])
         dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
@@ -388,7 +389,7 @@ class AnytimeCalibrator():
         # Train the network.
         self.bb3d_time_model.train()
         print('Training start')
-        for epoch in range(500):
+        for epoch in range(300):
             running_loss = 0.0
             for i, data in enumerate(dataloader):
                 inputs, labels = data
@@ -433,10 +434,10 @@ class AnytimeCalibrator():
             vc = vc.cuda().float()
             vc = self.std_scaler.transform(vc)
             with torch.no_grad():
-                et_ms_predicted = model(vc)
+                et_sec_predicted = model(vc)
 
             plt.scatter(vc_sum, et_ms, label="actual")
-            et_ms_predicted = et_ms_predicted.cpu()
+            et_ms_predicted = et_sec_predicted.cpu() * 1000.0
             plt.scatter(vc_sum, et_ms_predicted.numpy(), label="predicted")
             plt.legend()
             plt.savefig(f'/root/Anytime-Lidar/tools/plots/sample{i}.png')
