@@ -64,11 +64,24 @@ class TorchStandardScaler():
 class TimePredNet(torch.nn.Module):
     def __init__(self, inp_size, outp_size):
         super().__init__()
-        neurons = inp_size * (inp_size +1) // 2
-        self.mdl = torch.nn.Sequential(
-            torch.nn.Linear(inp_size, neurons),
-            torch.nn.ReLU(),
-            torch.nn.Linear(neurons, outp_size))
+        #neurons = inp_size * (inp_size +1) // 2
+        #self.mdl = torch.nn.Sequential(
+        #    torch.nn.Linear(inp_size, neurons),
+        #    torch.nn.ReLU(),
+        #    torch.nn.Linear(neurons, outp_size))
+
+        conv_list = []
+        #18 16 14 12 10 8 6 4 2
+        #max conv number: 8
+        for i in range(3):
+            conv_list.append(torch.nn.Conv1d(1,1,3,stride=1))
+            conv_list.append(torch.nn.ReLU())
+        conv_list.append(torch.nn.Flatten())
+        conv_list.append(torch.nn.Linear(12, 1))
+
+        # 3 and 12 is good
+
+        self.mdl = torch.nn.Sequential(*conv_list)
 
     def forward(self, x):
         return self.mdl(x)
@@ -103,7 +116,7 @@ class AnytimeCalibrator():
 
     def pred_req_times_ms(self, vcounts, tile_coords):
         x = self.std_scaler.transform(vcounts)
-        bb3d_times = self.bb3d_time_model(x).flatten().numpy() * 1000.0
+        bb3d_times = self.bb3d_time_model(x.unsqueeze(1)).flatten().numpy() * 1000.0
         bb3d_times += self.filtering_wcet_ms
 
         post_bb3d_times = np.empty((tile_coords.shape[0],), dtype=float)
@@ -373,6 +386,7 @@ class AnytimeCalibrator():
 
         d = 'cuda'
         vcounts = torch.tensor(vcounts, dtype=torch.float, device=d)
+        vcounts = self.std_scaler.fit_transform(vcounts)
         exec_times_sec = torch.tensor(exec_times_ms, dtype=torch.float,
                 device=d).unsqueeze(-1) / 1000.0
         dataset = TensorDataset(vcounts, exec_times_sec)
@@ -389,31 +403,32 @@ class AnytimeCalibrator():
         # Train the network.
         self.bb3d_time_model.train()
         print('Training start')
-        for epoch in range(300):
+        for epoch in range(20):
             running_loss = 0.0
             for i, data in enumerate(dataloader):
                 inputs, labels = data
 
                 optimizer.zero_grad()
 
-                inputs = self.std_scaler.fit_transform(inputs)
-
-                outputs = self.bb3d_time_model.forward(inputs)
+                #inputs = self.std_scaler.fit_transform(inputs)
+                #print(inputs.size())
+                outputs = self.bb3d_time_model.forward(inputs.unsqueeze(1))
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
                 running_loss += loss.item()
 
-            if epoch % 5 == 0:
+            if epoch % 2 == 0:
                 l =  running_loss/len(dataloader)
                 print(f'Epoch {epoch} loss {l}')
+                self.test_time_pred_model(plot=False)
 
         sd = self.bb3d_time_model.state_dict()
         fname = '/root/Anytime-Lidar/tools/time_pred_model.pt'
         torch.save(sd, fname)
 
-    def test_time_pred_model(self):
+    def test_time_pred_model(self, plot=True):
         model = self.bb3d_time_model
         model.cuda()
         model.eval()
@@ -428,30 +443,39 @@ class AnytimeCalibrator():
         vcounts = torch.tensor(vcounts, dtype=torch.float, device='cuda')
         vcounts = self.std_scaler.fit_transform(vcounts)
 
+        mins, means, maxs = [], [], []
         for i, (vc, et_ms) in enumerate(zip(vcounts_samples, exec_times_ms_samples)):
             vc = torch.tensor(vc)
             vc_sum = vc.sum(dim=1).numpy()
             vc = vc.cuda().float()
             vc = self.std_scaler.transform(vc)
             with torch.no_grad():
-                et_sec_predicted = model(vc)
+                et_sec_predicted = model(vc.unsqueeze(1))
 
-            plt.scatter(vc_sum, et_ms, label="actual")
             et_ms_predicted = et_sec_predicted.cpu() * 1000.0
-            plt.scatter(vc_sum, et_ms_predicted.numpy(), label="predicted")
-            plt.legend()
-            plt.savefig(f'/root/Anytime-Lidar/tools/plots/sample{i}.png')
-            plt.clf()
+            if plot:
+                plt.scatter(vc_sum, et_ms, label="actual")
+                plt.scatter(vc_sum, et_ms_predicted.numpy(), label="predicted")
+                plt.legend()
+                plt.savefig(f'/root/Anytime-Lidar/tools/plots/sample{i}.png')
+                plt.clf()
             diff = (et_ms_predicted - torch.tensor(et_ms)).flatten()
-            print(f'Sample {i} exec time diff mean', torch.mean(diff).item(),
-                    'min', torch.min(diff).item(), 'max', torch.max(diff).item())
+            mins.append(torch.min(diff).item())
+            means.append(torch.mean(diff).item())
+            maxs.append(torch.max(diff).item())
+            print(f'Sample {i} exec time diff mean', means[-1], 'min', mins[-1],
+                    'max', maxs[-1])
+        print('Average mins:', np.mean(np.array(mins)))
+        print('Average means:', np.mean(np.array(means)))
+        print('Average maxs:', np.mean(np.array(maxs)))
+        #print([round(m,1) for m in mins])
 
 # This is to train
 if __name__ == "__main__":
     calibrator = AnytimeCalibrator(None)
     calibrator.read_calib_data('/root/Anytime-Lidar/tools/calib_data.json')
     calibrator.train_time_pred_model()
-    calibrator.test_time_pred_model()
+    calibrator.test_time_pred_model(plot=False)
 
 #def remove_flipping_data(calib_data_dict):
 #    chosen_tc_samples = calib_data_dict["chosen_tile_coords"]
