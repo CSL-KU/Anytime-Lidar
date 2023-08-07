@@ -64,24 +64,21 @@ class TorchStandardScaler():
 class TimePredNet(torch.nn.Module):
     def __init__(self, inp_size, outp_size):
         super().__init__()
-        #neurons = inp_size * (inp_size +1) // 2
-        #self.mdl = torch.nn.Sequential(
-        #    torch.nn.Linear(inp_size, neurons),
-        #    torch.nn.ReLU(),
-        #    torch.nn.Linear(neurons, outp_size))
+        neurons = inp_size * (inp_size +1) // 2
+        self.mdl = torch.nn.Sequential(
+            torch.nn.Linear(inp_size, neurons),
+            torch.nn.ReLU(),
+            torch.nn.Linear(neurons, outp_size))
 
-        conv_list = []
+        #conv_list = []
         #18 16 14 12 10 8 6 4 2
         #max conv number: 8
-        for i in range(3):
-            conv_list.append(torch.nn.Conv1d(1,1,3,stride=1))
-            conv_list.append(torch.nn.ReLU())
-        conv_list.append(torch.nn.Flatten())
-        conv_list.append(torch.nn.Linear(12, 1))
-
-        # 3 and 12 is good
-
-        self.mdl = torch.nn.Sequential(*conv_list)
+        #for i in range(3):
+        #    conv_list.append(torch.nn.Conv1d(1,1,3,stride=1))
+        #    conv_list.append(torch.nn.ReLU())
+        #conv_list.append(torch.nn.Flatten())
+        #conv_list.append(torch.nn.Linear(12, 1))
+        #self.mdl = torch.nn.Sequential(*conv_list)
 
     def forward(self, x):
         return self.mdl(x)
@@ -116,7 +113,7 @@ class AnytimeCalibrator():
 
     def pred_req_times_ms(self, vcounts, tile_coords):
         x = self.std_scaler.transform(vcounts)
-        bb3d_times = self.bb3d_time_model(x.unsqueeze(1)).flatten().numpy() * 1000.0
+        bb3d_times = self.bb3d_time_model(x).flatten().numpy() * 1000.0
         bb3d_times += self.filtering_wcet_ms
 
         post_bb3d_times = np.empty((tile_coords.shape[0],), dtype=float)
@@ -403,7 +400,7 @@ class AnytimeCalibrator():
         # Train the network.
         self.bb3d_time_model.train()
         print('Training start')
-        for epoch in range(20):
+        for epoch in range(50):
             running_loss = 0.0
             for i, data in enumerate(dataloader):
                 inputs, labels = data
@@ -412,7 +409,7 @@ class AnytimeCalibrator():
 
                 #inputs = self.std_scaler.fit_transform(inputs)
                 #print(inputs.size())
-                outputs = self.bb3d_time_model.forward(inputs.unsqueeze(1))
+                outputs = self.bb3d_time_model.forward(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -450,7 +447,7 @@ class AnytimeCalibrator():
             vc = vc.cuda().float()
             vc = self.std_scaler.transform(vc)
             with torch.no_grad():
-                et_sec_predicted = model(vc.unsqueeze(1))
+                et_sec_predicted = model(vc)
 
             et_ms_predicted = et_sec_predicted.cpu() * 1000.0
             if plot:
@@ -463,8 +460,8 @@ class AnytimeCalibrator():
             mins.append(torch.min(diff).item())
             means.append(torch.mean(diff).item())
             maxs.append(torch.max(diff).item())
-            print(f'Sample {i} exec time diff mean', means[-1], 'min', mins[-1],
-                    'max', maxs[-1])
+            #print(f'Sample {i} exec time diff mean', means[-1], 'min', mins[-1],
+            #        'max', maxs[-1])
         print('Average mins:', np.mean(np.array(mins)))
         print('Average means:', np.mean(np.array(means)))
         print('Average maxs:', np.mean(np.array(maxs)))
