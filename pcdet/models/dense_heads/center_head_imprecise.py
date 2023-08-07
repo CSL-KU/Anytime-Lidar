@@ -43,7 +43,7 @@ class SeparateHead(nn.Module):
         return ret_dict
 
     def forward_cls_preds(self, spatial_features_2d):
-        d = {'hm': self.__getattr__('hm')(x)}
+        d = {'hm': self.__getattr__('hm')(spatial_features_2d)}
         d['cls_preds'] = d['hm'] # alias for code compability, maybe unneccesary
         return d
 
@@ -85,10 +85,10 @@ class CenterHeadMultiImprecise(nn.Module):
         num_rpn_blocks = len(input_channels)
         self.shared_conv_alternatives = nn.ModuleList()
         self.rpn_head_alternatives = nn.ModuleList() # rename this later
-        for inp_ch in input_channels:
+        for i in range(len(input_channels)):
             self.shared_conv_alternatives.append(nn.Sequential(
                 nn.Conv2d(
-                    inp_ch, self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
+                    sum(input_channels[:i+1]), self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
                     bias=self.model_cfg.get('USE_BIAS_BEFORE_NORM', False)
                 ),
                 nn.BatchNorm2d(self.model_cfg.SHARED_CONV_CHANNEL),
@@ -349,7 +349,7 @@ class CenterHeadMultiImprecise(nn.Module):
         return rois, roi_scores, roi_labels
 
     def forward(self, data_dict):
-        return forward_remaining_preds(forward_cls_preds(data_dict))
+        return self.forward_remaining_preds(self.forward_cls_preds(data_dict))
 
     def forward_cls_preds(self, data_dict):
         cur_stg = data_dict["stages_executed"]
@@ -362,9 +362,17 @@ class CenterHeadMultiImprecise(nn.Module):
                 data_dict[f'spatial_features_2d_{cur_stg}'] = torch.cat(uplist, dim=1)
 
         spatial_features_2d = data_dict[f'spatial_features_2d_{cur_stg}']
+        if self.training and data_dict["stages_executed"] == 1:
+            target_dict = self.assign_targets(
+                data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
+                feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
+            )
+            self.forward_ret_dict['target_dicts'] = target_dict
+
         if len(self.shared_conv_alternatives) > 0:
             spatial_features_2d = self.shared_conv_alternatives[cur_stg-1](spatial_features_2d)
         data_dict[f'shared_conv_out_{cur_stg}'] = spatial_features_2d
+
 
         pred_dicts = []
         if 'heads_to_run' not in data_dict:
@@ -400,12 +408,6 @@ class CenterHeadMultiImprecise(nn.Module):
 
         #data_dict['box_preds'] = ret['box_preds']
 
-        if self.training and data_dict["stages_executed"] == 1:
-            target_dict = self.assign_targets(
-                data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
-                feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
-            )
-            self.forward_ret_dict['target_dicts'] = target_dict
         self.forward_ret_dict['pred_dicts'] = pred_dicts
  
 

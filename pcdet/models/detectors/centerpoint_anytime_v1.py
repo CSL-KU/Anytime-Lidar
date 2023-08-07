@@ -370,7 +370,7 @@ class CenterPointAnytimeV1(Detector3DTemplate):
                 losses.append(loss)
             # Tried to implement training method in ABC paper
             # THIS PART ASSUMES THERE ARE TWO RPN STAGES
-            tperc = self.dataset.cur_epochs / self.dataset.total_epochs
+            tperc = self.cur_epoch / self.total_epochs
             if tperc <= 0.25:
                 weights = [0.985, 0.015]
             elif tperc <= 0.5:

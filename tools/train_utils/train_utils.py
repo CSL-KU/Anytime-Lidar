@@ -28,7 +28,10 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         losses_m = common_utils.AverageMeter()
 
     end = time.time()
+
+    model.total_epochs = total_epochs
     for cur_it in range(start_it, total_it_each_epoch):
+        model.cur_epoch = int(cur_it / total_it_each_epoch)
         try:
             batch = next(dataloader_iter)
         except StopIteration:
