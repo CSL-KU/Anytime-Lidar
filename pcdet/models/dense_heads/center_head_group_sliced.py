@@ -653,7 +653,7 @@ class CenterHeadGroupSliced(nn.Module):
             indices = torch.stack((b_id, topk_outp[2].short(), topk_outp[3].short()), dim=1)
             slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
 
-            if not self.calibrated[det_idx]:
+            if not self.calibrated[det_idx] and torch.backends.cudnn.benchmark:
                 self.calibrate_for_cudnn_benchmarking(slices, det_idx)
 
             # It becomes deterministic with cudnn benchmarking enabled, ~1ms

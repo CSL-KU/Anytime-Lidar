@@ -58,7 +58,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         batch_dict = self.map_to_bev(batch_dict)
         self.measure_time_end('MapToBEV')
 
-        if not self.calibrated:
+        if not self.calibrated and torch.backends.cudnn.benchmark:
             self.calibrate_for_cudnn_benchmarking(batch_dict)
 
         self.measure_time_start('Backbone2D')
@@ -66,8 +66,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
         batch_dict = self.dense_head.forward_eval_pre(batch_dict)
-        #torch.cuda.synchronize()
-        batch_dict = self.schedule3(batch_dict)
+        #batch_dict = self.schedule3(batch_dict)
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead')
 

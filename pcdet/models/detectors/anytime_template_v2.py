@@ -225,12 +225,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def get_nonempty_tiles(self, voxel_coords):
         # Calculate where each voxel resides in which tile
-        #tile_coords = torch.div(voxel_coords[:, -2:], self.tile_size_voxels, \
-        #        rounding_mode='trunc').long()
         voxel_tile_coords = torch.div(voxel_coords[:, -1], self.tile_size_voxels, \
                 rounding_mode='trunc').long()
 
-        #voxel_tile_coords = tile_coords[:, 1] * self.tcount[1] + tile_coords[:, 0]
         if self.training:
             nonempty_tile_coords = torch.unique(voxel_tile_coords, sorted=True)
             return nonempty_tile_coords
@@ -265,14 +262,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             rem_time_ms = (batch_dict['abs_deadline_sec'] - self.psched_start_time) * 1000
 
             # Choose configuration that can meet the deadline, that's it
-            # NOTE The following code assumes there is going to be a 
-            # second syncronization after bb3d, which will do further scheduling if
-            # deadline cannot be met
             diffs = tpreds < rem_time_ms
-            #tiles_idx = torch.sum(diffs).item()
-            #if tiles_idx == 0:
-            #    tiles_idx = 1
-
 
             ##### MANUAL OVERRIDE
             #tiles_to_run = 4
@@ -290,9 +280,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     tiles_idx += 1
 
                 # Voxel filtering is needed
-                #num_tiles = num_tiles[:tiles_idx]
                 chosen_tile_coords = netc_flip[:tiles_idx]
-                #self.last_tile_coord = chosen_tile_coords[-1].item()
+                self.last_tile_coord = chosen_tile_coords[-1].item()
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
                 #batch_dict['mask'] = tile_filter
@@ -318,10 +307,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         post_bb3d_times = batch_dict['post_bb3d_times']
         rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
         diffs = post_bb3d_times < rem_time_ms
-
-        #if diffs[-1] and :
-        #    batch_dict['chosen_tile_coords'] = batch_dict['netc_flip']
-        #else:
         if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1]:
             tiles_idx=1
             while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
@@ -333,12 +318,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
+    # NOTE this is just a sanity check, not actual scheduling
     def schedule3(self, batch_dict):
         rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
         req_time_ms = self.calibrator.pred_final_req_time_ms(batch_dict['dethead_indexes'])
         tdiff = rem_time_ms - req_time_ms
         if tdiff < 0:
-            print('Mispredicted time:', tdiff)
+            print('Remaining and requires time (ms):', rem_time_ms, req_time_ms)
         return batch_dict
 
     def get_training_loss(self):
@@ -392,6 +378,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def calibrate(self):
         self.calibrator = AnytimeCalibrator(self)
 
+        collect_data = False
+        try:
+            self.calibrator.read_calib_data()
+        except OSError:
+            collect_data = True
+
         score_threshold = self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH
         # this temporary threshold will allow us to do calibrate cudnn benchmarking
         # of all detection heads, preventing to skip any of them
@@ -404,20 +396,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.training:
             return None
 
-        try:
-            self.calibrator.read_calib_data()
-        except OSError:
+        if collect_data:
             self.calibrator.collect_data()
-
-        try:
-            self.calibrator.load_time_pred_model()
-        except FileNotFoundError:
-            print('********************************************')
-            print('ERROR! Couldn\'t load time prediction model!')
-            print('Please train the model if needed by running')
-            print('anytime_calibrator.py script directly.')
-            print('********************************************')
-            # Can't train from here, need to execute the training script seperately
 
         return None
 

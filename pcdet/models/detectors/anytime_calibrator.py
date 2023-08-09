@@ -2,91 +2,33 @@ import torch
 import time
 import json
 import numpy as np
+import numba
+import gc
 import matplotlib.pyplot as plt
 from easydict import EasyDict as edict
 from torch.utils.data import TensorDataset, DataLoader
-import numba
+from sklearn.linear_model import LinearRegression
 
 if __name__ != "__main__":
     from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
-
-#from sklearn.linear_model import LinearRegression
-#from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    #from ...ops.cuda_voxel_nb_count import cuda_voxel_nb_count
 
 def calc_grid_size(pc_range, voxel_size):
     return np.array([ int((pc_range[i+3]-pc_range[i]) / vs)
             for i, vs in enumerate(voxel_size)])
 
-@numba.jit(nopython=True)
+@numba.njit()
 def tile_coords_to_id(tile_coords):
     tid = 0
     for tc in tile_coords:
         tid += 2 ** tc
     return int(tid)
 
-def cleanup_dataset(calib_data_dict):
-    scene_tokens = calib_data_dict["scene_tokens"]
-
-    prev_st = ''
-    mask = np.ones((len(scene_tokens),), dtype=bool)
-    for i, st in enumerate(scene_tokens):
-        if prev_st != st:
-            mask[i] = False
-        prev_st = st
-
-    for key in ('voxel_counts', 'bb3d_time_ms', 'chosen_tile_coords', 'scene_tokens'):
-        arr = calib_data_dict[key]
-        calib_data_dict[key] = [a for i, a in enumerate(arr) if mask[i]]
-
-    return calib_data_dict
-
-class TorchStandardScaler():
-    def __init__(self):
-        self.mean = 0.
-        self.stddev = 1.
-
-    def fit_transform(self, x):
-        self.mean = x.mean(0, keepdim=True)
-        self.stddev = x.std(0, unbiased=False, keepdim=True)
-        x -= self.mean
-        x /= self.stddev
-        return x
-
-    def transform(self, x):
-        x -= self.mean
-        x /= self.stddev
-        return x
-
-    def cpu():
-        self.mean.cpu()
-        self.stddev.cpu()
-
-class TimePredNet(torch.nn.Module):
-    def __init__(self, inp_size, outp_size):
-        super().__init__()
-        neurons = inp_size * (inp_size +1) // 2
-        self.mdl = torch.nn.Sequential(
-            torch.nn.Linear(inp_size, neurons),
-            torch.nn.ReLU(),
-            torch.nn.Linear(neurons, outp_size))
-
-        #conv_list = []
-        #18 16 14 12 10 8 6 4 2
-        #max conv number: 8
-        #for i in range(3):
-        #    conv_list.append(torch.nn.Conv1d(1,1,3,stride=1))
-        #    conv_list.append(torch.nn.ReLU())
-        #conv_list.append(torch.nn.Flatten())
-        #conv_list.append(torch.nn.Linear(12, 1))
-        #self.mdl = torch.nn.Sequential(*conv_list)
-
-    def forward(self, x):
-        return self.mdl(x)
-
 class AnytimeCalibrator():
     def __init__(self, model):
         self.model = model
-        if model == None:
+        self.calib_data_dict = None
+        if model is None:
             self.dataset = None
             self.num_det_heads = 6
             self.num_tiles = 18
@@ -101,19 +43,17 @@ class AnytimeCalibrator():
         self.det_head_post_times_ms = np.zeros((2**self.num_det_heads,), dtype=float)
         self.combined_bb2d_dhpre_times_ms = self.bb2d_times_ms + self.det_head_pre_times_ms
 
-        # Neural network for bb3d time detection
-        inp_size, outp_size = self.num_tiles, 1
-        self.bb3d_time_model = TimePredNet(inp_size, outp_size)
-        self.calib_data_dict = None
-        self.std_scaler = TorchStandardScaler()
-
-    def cpu(self):
-        self.bb3d_time_model.cpu()
-        self.std_scaler.cpu()
+        self.min_bb3d_time_ms = 9999.9
+        self.max_exec_time_model = LinearRegression().fit(
+                [np.arange(self.num_tiles)], [1])
 
     def pred_req_times_ms(self, vcounts, tile_coords):
-        x = self.std_scaler.transform(vcounts)
-        bb3d_times = self.bb3d_time_model(x).flatten().numpy() * 1000.0
+        num_voxels = vcounts.sum(1, keepdims=True)
+
+        ets_predicted = self.max_exec_time_model.predict(vcounts[-1, None])
+        # Ax + b = exec_time
+        A = (ets_predicted - self.min_bb3d_time_ms) / num_voxels[-1]
+        bb3d_times = (A * num_voxels + self.min_bb3d_time_ms).flatten()
         bb3d_times += self.filtering_wcet_ms
 
         post_bb3d_times = np.empty((tile_coords.shape[0],), dtype=float)
@@ -132,13 +72,20 @@ class AnytimeCalibrator():
         self.calib_data_dict = json.load(f)
         f.close()
 
-        #using the data, load the standard scaler
+        # Fit the linear model for bb3
         vcounts_samples = self.calib_data_dict['voxel_counts']
-        vcounts = []
-        for v in vcounts_samples:
-            vcounts.extend(v)
-        vcounts = torch.tensor(vcounts, dtype=torch.float)
-        vcounts = self.std_scaler.fit_transform(vcounts)
+        exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
+        n = len(vcounts_samples)
+        max_ets = np.empty((n,1), dtype=int)
+        vcounts_all = np.empty((n, len(vcounts_samples[0][0])), dtype=float)
+        glob_min_et = 9999.9
+        for i in range(n):
+            vcounts_all[i] = vcounts_samples[i][-1]
+            max_ets[i,0] = exec_times_ms_samples[i][-1]
+            glob_min_et = min(min(exec_times_ms_samples[i]), glob_min_et)
+
+        self.min_bb3d_time_ms = glob_min_et
+        self.max_exec_time_model = LinearRegression().fit(vcounts_all, max_ets)
 
         self.filtering_times_ms = self.calib_data_dict['filtering_times_ms']
         self.filtering_wcet_ms = np.percentile(self.filtering_times_ms, 99, method='lower')
@@ -149,10 +96,6 @@ class AnytimeCalibrator():
 
         self.det_head_post_times_ms = np.array(self.calib_data_dict['det_head_post_times_ms'])
 
-
-    def load_time_pred_model(self, fname='time_pred_model.pt'):
-        sd = torch.load(fname)
-        self.bb3d_time_model.load_state_dict(sd)
 
     def get_points(self, index):
         batch_dict = self.dataset.collate_batch([self.dataset[index]])
@@ -251,9 +194,9 @@ class AnytimeCalibrator():
         voxel_counts_series = []
         chosen_tc_series = []
         bb3d_time_series = []
-        model_coeffs = []
         scene_tokens = []
 
+        gc.disable()
         print('Number of samples:', len(self.dataset))
         for sample_idx in range(len(self.dataset)):
             print(f'Processing sample {sample_idx}', end='')
@@ -306,15 +249,16 @@ class AnytimeCalibrator():
             vcounts = torch.zeros((self.num_tiles,), dtype=torch.long, device='cuda')
             vcounts[nonempty_tile_coords] = voxel_counts
             voxel_counts_series[-1].append(vcounts)
-            
+
             time_end = time.time()
             print(f' took {round(time_end-time_begin, 2)} seconds.')
+            gc.collect()
+        gc.enable()
 
         for i, vc_l in enumerate(voxel_counts_series):
             for j, vc in enumerate(vc_l):
                 voxel_counts_series[i][j] = vc.cpu().tolist()
                 chosen_tc_series[i][j] = chosen_tc_series[i][j].cpu().tolist()
-
 
         self.calib_data_dict = {
                 "voxel_counts": voxel_counts_series,
@@ -333,160 +277,60 @@ class AnytimeCalibrator():
         with open(fname, "w") as outfile:
             json.dump(self.calib_data_dict, outfile, indent=4)
 
-    def plot_data(num_samples_to_compare=2):
+
+    def plot_data(self):
         vcounts_samples = self.calib_data_dict['voxel_counts']
         exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
 
-        colors='rgbcmyk'
-        for i in range(len(vcounts_samples) - num_samples_to_compare + 1):
-            sample_ids = ''
-            for j in range(num_samples_to_compare):
-                sample_idx = i + j
-                vcounts = np.array(vcounts_samples[sample_idx])
-                num_voxels = vcounts.sum(1)
-                exec_times = np.array(exec_times_ms_samples[sample_idx])
+        # First, let's see if we can predict the max execution time
+        n = len(vcounts_samples)
+        ets_max = np.empty((n,1), dtype=int)
+        vcounts_all = np.empty((n, len(vcounts_samples[0][0])), dtype=float)
+        min_et = 9999.9
+        for i in range(n):
+            vcounts_all[i] = vcounts_samples[i][-1]
+            ets_max[i,0] = exec_times_ms_samples[i][-1]
+            min_et = min(min(exec_times_ms_samples[i]), min_et)
+        vcounts_all = np.array(vcounts_all)
 
-                #model = LinearRegression()
-                #x = num_voxels.reshape((-1, 1))
-                #xvals = np.hstack((x,x**2))
-                #model.fit(xvals, pct)
-                #pct_pred = model.predict(xvals)
-                #if i == 0:
-                #    print('Model params:', model.coef_, model.intercept_)
-                #    model_coeffs.append((model.coef_, model.intercept_))
-                #p = plt.plot(nv, pct_pred, label=f"Sample {num}", c=colors[num%len(colors)])
-                plt.scatter(num_voxels, exec_times, label=f"Sample {sample_idx}",
-                        c=colors[sample_idx%len(colors)])
-                sample_ids += '_' + str(sample_idx)
+        def get_stats(np_arr):
+            min_, max_, mean_ = np.min(np_arr), np.max(np_arr), np.mean(np_arr)
+            perc95_ = np.percentile(np_arr, 95, method='lower')
+            perc99_ = np.percentile(np_arr, 99, method='lower')
+            print("Min\tMean\t95Perc\t99Perc\tMax")
+            print(f'{min_:.2f}\t{mean_:.2f}\t{perc95_:.2f}\t{perc99_:.2f}\t{max_:.2f}')
+            return min_, mean_, perc95_, perc99_, max_
+
+        reg = LinearRegression().fit(vcounts_all, ets_max)
+        ets_predicted = reg.predict(vcounts_all)
+        diff = ets_max - ets_predicted
+        get_stats(diff)
+
+        colors='rgbcmyk'
+        for sample_idx in range(len(vcounts_samples)):
+            vcounts = np.array(vcounts_samples[sample_idx])
+            num_voxels = vcounts.sum(1, keepdims=True)
+
+            ets_predicted = reg.predict(vcounts[-1, None])
+            A = (ets_predicted - min_et) / num_voxels[-1]
+
+            pred_exec_times = A * num_voxels + min_et
+            pred_exec_times = np.squeeze(pred_exec_times)
+            gt_exec_times = np.array(exec_times_ms_samples[sample_idx])
+            diff = pred_exec_times - gt_exec_times
+            get_stats(diff)
+            plt.scatter(num_voxels, gt_exec_times, label="Actual")
+            plt.scatter(num_voxels, pred_exec_times, label="Predicted")
             plt.xlim([0, 100000])
             plt.ylim([0, 200])
             plt.xlabel('Number of voxels')
             plt.ylabel('Execution time (ms)')
             plt.legend()
-            plt.savefig(f'/root/Anytime-Lidar/tools/plots/data{sample_ids}.png')
+            plt.savefig(f'/root/Anytime-Lidar/tools/plots/data{sample_idx}.png')
             plt.clf()
 
-    def train_time_pred_model(self):
-        self.calib_data_dict = cleanup_dataset(self.calib_data_dict)
-        # First, remove the samples which has less number of sweeps than max
-        vcounts_samples = self.calib_data_dict['voxel_counts']
-        exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
-        chosen_tc_samples = self.calib_data_dict["chosen_tile_coords"]
-        scene_tokens = self.calib_data_dict["scene_tokens"]
-
-        # Second, extend the data to be able to turn it into a tensor
-        vcounts, exec_times_ms, chosen_tc = [], [], []
-        for v, e, c in zip(vcounts_samples, exec_times_ms_samples, chosen_tc_samples):
-            vcounts.extend(v)
-            exec_times_ms.extend(e)
-            chosen_tc.extend(c)
-
-        d = 'cuda'
-        vcounts = torch.tensor(vcounts, dtype=torch.float, device=d)
-        vcounts = self.std_scaler.fit_transform(vcounts)
-        exec_times_sec = torch.tensor(exec_times_ms, dtype=torch.float,
-                device=d).unsqueeze(-1) / 1000.0
-        dataset = TensorDataset(vcounts, exec_times_sec)
-
-        #train_dset, test_dset = torch.utils.data.random_split(dataset, [0.85, 0.15])
-        dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
-
-        # Create the loss function and optimizer.
-        self.bb3d_time_model.cuda()
-        criterion = torch.nn.MSELoss()
-        optimizer = torch.optim.AdamW(self.bb3d_time_model.parameters(), lr=0.001)
-        #optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-
-        # Train the network.
-        self.bb3d_time_model.train()
-        print('Training start')
-        for epoch in range(50):
-            running_loss = 0.0
-            for i, data in enumerate(dataloader):
-                inputs, labels = data
-
-                optimizer.zero_grad()
-
-                #inputs = self.std_scaler.fit_transform(inputs)
-                #print(inputs.size())
-                outputs = self.bb3d_time_model.forward(inputs)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-
-                running_loss += loss.item()
-
-            if epoch % 2 == 0:
-                l =  running_loss/len(dataloader)
-                print(f'Epoch {epoch} loss {l}')
-                self.test_time_pred_model(plot=False)
-
-        sd = self.bb3d_time_model.state_dict()
-        fname = '/root/Anytime-Lidar/tools/time_pred_model.pt'
-        torch.save(sd, fname)
-
-    def test_time_pred_model(self, plot=True):
-        model = self.bb3d_time_model
-        model.cuda()
-        model.eval()
-
-        vcounts_samples = self.calib_data_dict['voxel_counts']
-        exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
-        chosen_tc_samples = self.calib_data_dict["chosen_tile_coords"]
-
-        vcounts = []
-        for v in vcounts_samples:
-            vcounts.extend(v)
-        vcounts = torch.tensor(vcounts, dtype=torch.float, device='cuda')
-        vcounts = self.std_scaler.fit_transform(vcounts)
-
-        mins, means, maxs = [], [], []
-        for i, (vc, et_ms) in enumerate(zip(vcounts_samples, exec_times_ms_samples)):
-            vc = torch.tensor(vc)
-            vc_sum = vc.sum(dim=1).numpy()
-            vc = vc.cuda().float()
-            vc = self.std_scaler.transform(vc)
-            with torch.no_grad():
-                et_sec_predicted = model(vc)
-
-            et_ms_predicted = et_sec_predicted.cpu() * 1000.0
-            if plot:
-                plt.scatter(vc_sum, et_ms, label="actual")
-                plt.scatter(vc_sum, et_ms_predicted.numpy(), label="predicted")
-                plt.legend()
-                plt.savefig(f'/root/Anytime-Lidar/tools/plots/sample{i}.png')
-                plt.clf()
-            diff = (et_ms_predicted - torch.tensor(et_ms)).flatten()
-            mins.append(torch.min(diff).item())
-            means.append(torch.mean(diff).item())
-            maxs.append(torch.max(diff).item())
-            #print(f'Sample {i} exec time diff mean', means[-1], 'min', mins[-1],
-            #        'max', maxs[-1])
-        print('Average mins:', np.mean(np.array(mins)))
-        print('Average means:', np.mean(np.array(means)))
-        print('Average maxs:', np.mean(np.array(maxs)))
-        #print([round(m,1) for m in mins])
-
-# This is to train
 if __name__ == "__main__":
     calibrator = AnytimeCalibrator(None)
     calibrator.read_calib_data('/root/Anytime-Lidar/tools/calib_data.json')
-    calibrator.train_time_pred_model()
-    calibrator.test_time_pred_model(plot=False)
-
-#def remove_flipping_data(calib_data_dict):
-#    chosen_tc_samples = calib_data_dict["chosen_tile_coords"]
-#    for i, ctcs_of_sample in enumerate(chosen_tc_samples):
-#        #Using chosen tile coords, determine the indexes of exec times in the outp tensor
-#        mask = np.ones((len(ctcs_of_sample),), dtype=bool)
-#        for j, chosen_tile_coords in enumerate(ctcs_of_sample):
-#            s = chosen_tile_coords[0]
-#            e = chosen_tile_coords[-1]
-#            mask[j] = (e >= s)
-#        for key in ('voxel_counts', 'bb3d_time_ms', 'chosen_tile_coords'):
-#            arr = calib_data_dict[key][i]
-#            calib_data_dict[key][i] = [a for j, a in enumerate(arr) if mask[j]]
-#
-#    return calib_data_dict
-#
+    calibrator.plot_data()
 
