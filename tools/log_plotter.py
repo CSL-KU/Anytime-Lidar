@@ -140,7 +140,7 @@ m_to_c_ls = [(method_colors[i], linestyles[i]) for i in range(len(method_colors)
 
 method_num_to_str = [
   #      '3PointPillars-1',
-        '1CenterPoint-Pillar',
+        '1CenterPoint',
         '2Anytime',
 #        '3Anytime-AD',
 #        '3Anytime-NoPrj',
@@ -291,7 +291,7 @@ for exp_name, evals in exps_dict.items():
 print(exps_dict.keys())
 plot_sets=[]
 plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'CenterPoint-Pillar',
+        'CenterPoint',
         'Anytime',
 #        'Anytime-AD',
 #        'Anytime-NoPrj',
