@@ -1,5 +1,6 @@
 from .detector3d_template import Detector3DTemplate
 from .anytime_calibrator import AnytimeCalibrator
+from .anytime_calibrator import get_num_tiles
 import torch
 from nuscenes.nuscenes import NuScenes
 import time
@@ -15,19 +16,6 @@ from ..model_utils import model_nms_utils
 from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
-
-@numba.jit(nopython=True)
-def get_num_tiles(ctc): # chosen tile coords
-    ctc_s, ctc_e = ctc[0], ctc[-1]
-    if ctc_s <= ctc_e:
-        num_tiles = ctc_e - ctc_s + 1
-    else:
-        j = 0
-        while ctc[j] < ctc[j+1]:
-            j += 1
-        num_tiles = ctc[j] - ctc_s + 1 + ctc_e - ctc[j+1] + 1
-
-    return num_tiles
 
 @numba.jit(nopython=True)
 def round_robin_sched_helper(netc, last_tile_coord, tcount, netc_vcounts):
@@ -251,11 +239,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     netc.numpy(), self.last_tile_coord, self.tcount,
                     netc_vcounts.cpu().numpy())
             self.projection_stream.synchronize()
-            # Let's try no using cuda and see the performance
+
             vcounts_all = torch.from_numpy(vcounts_all)
             num_tiles = torch.from_numpy(num_tiles)
-
-            bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(vcounts_all, netc_flip)
+            bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(vcounts_all, num_tiles)
             batch_dict['post_bb3d_times'] = post_bb3d_times
             tpreds = bb3d_times + post_bb3d_times
             self.psched_start_time = time.time()
@@ -284,7 +271,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.last_tile_coord = chosen_tile_coords[-1].item()
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
-                #batch_dict['mask'] = tile_filter
                 if 'voxel_features' in batch_dict:
                     batch_dict['voxel_features'] = \
                             batch_dict['voxel_features'][tile_filter].contiguous()
@@ -294,7 +280,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
             self.measure_time_end('Sched')
             return batch_dict
-        #batch_dict['num_tiles'] = num_tiles
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
 
         self.measure_time_end('Sched')

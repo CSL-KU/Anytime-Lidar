@@ -64,8 +64,9 @@ def post_forward_hook(module, inp_args, outp_args):
 
     dl_missed = (tdiff > 0)
 
+   # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
     if dl_missed:
-        print('Deadline missed!', tdiff)
+        print('Deadline missed!', tdiff * 1000.0, 'ms')
         module._eval_dict['deadlines_missed'] += 1
         if module._use_empty_det_dict_for_eval:
             pred_dicts = [ module.get_empty_det_dict() for p in pred_dicts ]
