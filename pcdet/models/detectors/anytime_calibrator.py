@@ -91,15 +91,19 @@ class AnytimeCalibrator():
         self.min_bb3d_time_ms = glob_min_et
         self.max_exec_time_model = LinearRegression().fit(vcounts_all, max_ets)
 
-        bb2_time_data = self.calib_data_dict['bb2d_time_ms']
-        for i, arr in enumerate(bb2d_time_data):
-            bb2_time_data[i] = np.percentile(arr, 99, method='lower')
-        self.bb2d_times_ms = np.array(bb2_time_data)
+        bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
+        bb2d_time_data[0].append(0.)
+        self.bb2d_times_ms = np.array([np.percentile(arr, 99, method='lower') \
+                for arr in bb2d_time_data])
 
-        dh_post_time_data = self.calib_data_dict['det_head_time_post_ms']
-        for i, arr in enumerate(dh_post_time_data):
-           dh_post_time_data[i] = np.percentile(arr, 99, method='lower')
-        self.det_head_post_times_ms = np.array(dh_post_time_data)
+        print('bb2d_times_ms')
+        print(self.bb2d_times_ms)
+        dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
+        self.det_head_post_times_ms = np.array([np.percentile(arr, 99, method='lower') \
+                for arr in dh_post_time_data])
+
+        print('det_head_post_times_ms')
+        print(self.det_head_post_times_ms)
 
     def get_points(self, index):
         batch_dict = self.dataset.collate_batch([self.dataset[index]])
