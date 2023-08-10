@@ -74,6 +74,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
 
     def forward_train(self, batch_dict):
         batch_dict = self.vfe(batch_dict, model=self)
+        batch_dict = self.schedule1(batch_dict)
         if self.is_voxel_enc:
             batch_dict = self.backbone_3d(batch_dict)
         batch_dict = self.map_to_bev(batch_dict)
