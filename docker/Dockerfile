@@ -11,7 +11,7 @@ RUN /bin/bash -c 'cd; \
         pip install dist/*'
 
 RUN /bin/bash -c 'cd; \
-        git clone -b v2.3.5 https://github.com/traveller59/spconv.git; \
+        git clone -b v2.3.6 https://github.com/traveller59/spconv.git; \
         cd spconv; \
         MAX_JOBS=$(nproc) CUMM_CUDA_ARCH_LIST=$CUDA_ARCH SPCONV_DISABLE_JIT="1" python setup.py bdist_wheel; \
         pip install dist/*'
@@ -24,7 +24,7 @@ RUN /bin/bash -c 'cd; \
 RUN /bin/bash -c 'cd; \
         git clone https://github.com/ahmedius2/sbnet.git; \
         cd sbnet/sbnet_pytorch/; \
-        pip install -v .'
+        MAX_JOBS=$(nproc) TORCH_CUDA_ARCH_LIST=$CUDA_ARCH pip install -v .'
 
 RUN /bin/bash -c 'cd; \
         git clone https://github.com/CSL-KU/Anytime-Lidar; \
@@ -42,4 +42,5 @@ RUN /bin/bash -c 'cd; \
 	source ~/.bashrc'
 
 RUN /bin/bash -c 'apt purge opencv-python; \
-	pip install numpy==1.23.0'
+	pip install numpy==1.23.0; \
+	pip install kornia==0.6.12'
