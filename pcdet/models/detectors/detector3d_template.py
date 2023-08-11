@@ -66,10 +66,11 @@ def post_forward_hook(module, inp_args, outp_args):
 
    # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
     if dl_missed:
-        print('Deadline missed!', tdiff * 1000.0, 'ms')
         module._eval_dict['deadlines_missed'] += 1
-        if module._use_empty_det_dict_for_eval:
-            pred_dicts = [ module.get_empty_det_dict() for p in pred_dicts ]
+        print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
+                module._eval_dict['deadlines_missed'])
+        if module._det_dict_copy is not None:
+            pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
 
     tm = module.finish_time - module.psched_start_time
     module._eval_dict['additional']['PostSched'].append(tm)
@@ -114,7 +115,7 @@ class Detector3DTemplate(nn.Module):
         # To be filled by the child class, in case needed
         self._eval_dict['additional'] = {'PostSched':[]}
 
-        self._use_empty_det_dict_for_eval = False
+        self._det_dict_copy = None
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)
         self.post_hook_handle = self.register_forward_hook(post_forward_hook)
         self.hooks_binded = True
@@ -653,13 +654,22 @@ class Detector3DTemplate(nn.Module):
             "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype,
             device=det_dict_example["pred_labels"].device),
         }
-        self._use_empty_det_dict_for_eval = True
 
     def get_empty_det_dict(self):
         det_dict = {}
         for k,v in self._det_dict_copy.items():
             det_dict[k] = v.clone().detach()
         return det_dict
+
+    def get_dummy_det_dict(self):
+        det_dict = {}
+        for k,v in self._det_dict_copy.items():
+            dims = [1]
+            for d in v.size()[1:]:
+                dims.append(d)
+            det_dict[k] = torch.ones(dims, dtype=v.dtype, device=v.device)
+        return det_dict
+
 
     def print_dict(self, d):
         for k, v in d.items():
