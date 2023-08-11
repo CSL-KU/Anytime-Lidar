@@ -92,14 +92,15 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             # use ms to measure inference time
             disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
 
-        if visualize:
+        if visualize and 'chosen_tile_coords' in batch_dict:
+            # Can infer which detections are projection from the scores
+            # -x -y -z +x +y +z
             V.draw_scenes(
                 points=batch_dict['points'][:, 1:], ref_boxes=pred_dicts[0]['pred_boxes'],
-                gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
+                #gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
                 ref_scores=pred_dicts[0]['pred_scores'], ref_labels=pred_dicts[0]['pred_labels'],
-                tile_coords=(batch_dict['reduce_mask'].active_block_indices \
-                        if 'reduce_mask' in batch_dict else None)
-            )
+                max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                tile_coords=batch_dict['chosen_tile_coords'])
 
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
@@ -165,6 +166,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     with open(result_dir / 'result.pkl', 'wb') as f:
         pickle.dump(det_annos, f)
 
+    do_tracking=False
     if dataset.dataset_cfg.DATASET != 'NuScenesDataset':
         result_str, result_dict = dataset.evaluation(
             det_annos, class_names,
@@ -180,75 +182,76 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             nusc_annos_outp=nusc_annos
         )
 
-        ## NUSC TRACKING START
-        tracker = Tracker(max_age=6, hungarian=False)
-        predictions = nusc_annos['results']
-        with open('frames_meta.json', 'rb') as f:
-            frames=json.load(f)['frames']
+        if do_tracking:
+            ## NUSC TRACKING START
+            tracker = Tracker(max_age=6, hungarian=False)
+            predictions = nusc_annos['results']
+            with open('frames_meta.json', 'rb') as f:
+                frames=json.load(f)['frames']
 
-        nusc_trk_annos = {
-            "results": {},
-            "meta": None,
-        }
-        size = len(frames)
+            nusc_trk_annos = {
+                "results": {},
+                "meta": None,
+            }
+            size = len(frames)
 
-        print("Begin Tracking\n")
-        start = time.time()
-        for i in range(size):
-            token = frames[i]['token']
+            print("Begin Tracking\n")
+            start = time.time()
+            for i in range(size):
+                token = frames[i]['token']
 
-            # reset tracking after one video sequence
-            if frames[i]['first']:
-                # use this for sanity check to ensure your token order is correct
-                # print("reset ", i)
-                tracker.reset()
+                # reset tracking after one video sequence
+                if frames[i]['first']:
+                    # use this for sanity check to ensure your token order is correct
+                    # print("reset ", i)
+                    tracker.reset()
+                    last_time_stamp = frames[i]['timestamp']
+
+                time_lag = (frames[i]['timestamp'] - last_time_stamp)
                 last_time_stamp = frames[i]['timestamp']
 
-            time_lag = (frames[i]['timestamp'] - last_time_stamp)
-            last_time_stamp = frames[i]['timestamp']
+                preds = predictions[token]
 
-            preds = predictions[token]
+                outputs = tracker.step_centertrack(preds, time_lag)
+                annos = []
 
-            outputs = tracker.step_centertrack(preds, time_lag)
-            annos = []
+                for item in outputs:
+                    if item['active'] == 0:
+                        continue
+                    nusc_anno = {
+                        "sample_token": token,
+                        "translation": item['translation'],
+                        "size": item['size'],
+                        "rotation": item['rotation'],
+                        "velocity": item['velocity'],
+                        "tracking_id": str(item['tracking_id']),
+                        "tracking_name": item['detection_name'],
+                        "tracking_score": item['detection_score'],
+                    }
+                    annos.append(nusc_anno)
+                nusc_trk_annos["results"].update({token: annos})
+            end = time.time()
+            second = (end-start)
+            speed=size / second
+            print("The speed is {} FPS".format(speed))
+            nusc_trk_annos["meta"] = {
+                "use_camera": False,
+                "use_lidar": True,
+                "use_radar": False,
+                "use_map": False,
+                "use_external": False,
+            }
 
-            for item in outputs:
-                if item['active'] == 0:
-                    continue
-                nusc_anno = {
-                    "sample_token": token,
-                    "translation": item['translation'],
-                    "size": item['size'],
-                    "rotation": item['rotation'],
-                    "velocity": item['velocity'],
-                    "tracking_id": str(item['tracking_id']),
-                    "tracking_name": item['detection_name'],
-                    "tracking_score": item['detection_score'],
-                }
-                annos.append(nusc_anno)
-            nusc_trk_annos["results"].update({token: annos})
-        end = time.time()
-        second = (end-start)
-        speed=size / second
-        print("The speed is {} FPS".format(speed))
-        nusc_trk_annos["meta"] = {
-            "use_camera": False,
-            "use_lidar": True,
-            "use_radar": False,
-            "use_map": False,
-            "use_external": False,
-        }
+            with open('tracking_result.json', "w") as f:
+                json.dump(nusc_trk_annos, f)
 
-        with open('tracking_result.json', "w") as f:
-            json.dump(nusc_trk_annos, f)
+            #result is nusc_annos
+            dataset.tracking_evaluation(
+                output_path=final_output_dir,
+                res_path='tracking_result.json'
+            )
 
-        #result is nusc_annos
-        dataset.tracking_evaluation(
-            output_path=final_output_dir,
-            res_path='tracking_result.json'
-        )
-
-        ## NUSC TRACKING END
+            ## NUSC TRACKING END
 
     logger.info(result_str)
     ret_dict.update(result_dict)
