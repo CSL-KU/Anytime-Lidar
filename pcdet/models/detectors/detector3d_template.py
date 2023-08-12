@@ -20,7 +20,7 @@ import std_msgs.msg
 import sensor_msgs.point_cloud2 as pcl2
 from sensor_msgs.msg import PointCloud2, PointField
 
-def numpy_to_ros_pointcloud(numpy_cloud, frame_id='lidar'):
+def numpy_to_ros_pointcloud(numpy_cloud, frame_id='velodyne'):
     pc2_header = std_msgs.msg.Header()
     pc2_header.frame_id = frame_id
 
@@ -62,12 +62,13 @@ def pre_forward_hook(module, inp_args):
     module.measure_time_start('End-to-end')
     module.measure_time_start('PreProcess')
 
-    # We can get the most recent sweep and publish it to the gpu clustering ros node
-    pts = data_dicts[0]['points']
-    mr_sweep_points = pts[pts[:, -1] == 0., :4] # timestamp 0. sweep, x y z i
-    mr_sweep_points = mr_sweep_points[mr_sweep_points[:,1] < 0] # cut the point cloud into half
-    pc2_msg = numpy_to_ros_pointcloud(mr_sweep_points)
-    module.pcl_pub.publish(pc2_msg)
+    if not rospy.is_shutdown():
+        # We can get the most recent sweep and publish it to the gpu clustering ros node
+        pts = data_dicts[0]['points']
+        mr_sweep_points = pts[pts[:, -1] == 0., :4] # timestamp 0. sweep, x y z i
+        mr_sweep_points = mr_sweep_points[mr_sweep_points[:,1] >= 0] # cut the point cloud into half
+        pc2_msg = numpy_to_ros_pointcloud(mr_sweep_points)
+        module.pcl_pub.publish(pc2_msg)
 
     #module.measure_time_start('GetitemPost')
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
@@ -161,7 +162,7 @@ class Detector3DTemplate(nn.Module):
         self.latest_batch_dict = None
         self.psched_start_time = 0
 
-        rospy.init_node('lidar_detector')
+        rospy.init_node('lidar_detector', disable_signals=True)
         self.pcl_pub = rospy.Publisher("/velodyne_points", PointCloud2, queue_size=1)
 
     def train(self, mode=True):
