@@ -15,6 +15,36 @@ from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
 
+import rospy
+import std_msgs.msg
+import sensor_msgs.point_cloud2 as pcl2
+from sensor_msgs.msg import PointCloud2, PointField
+
+def numpy_to_ros_pointcloud(numpy_cloud, frame_id='lidar'):
+    pc2_header = std_msgs.msg.Header()
+    pc2_header.frame_id = frame_id
+
+    # Create point fields
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1)
+    ]
+
+    # Create PointCloud2 message
+    pc2_msg = PointCloud2()
+    pc2_msg.header = pc2_header
+    pc2_msg.fields = fields
+    pc2_msg.is_bigendian = False
+    pc2_msg.point_step = 16  # 4 fields * 4 bytes each
+    pc2_msg.row_step = pc2_msg.point_step * numpy_cloud.shape[0]
+    pc2_msg.height = 1
+    pc2_msg.width = numpy_cloud.shape[0]
+    pc2_msg.data = numpy_cloud.astype(np.float32).tobytes()
+
+    return pc2_msg
+
 # NOTES
 # Post processing is split into two functions, pre and post.
 # Pre is called before the time measurement finishes.
@@ -31,6 +61,14 @@ def pre_forward_hook(module, inp_args):
     torch.cuda.nvtx.range_push('End-to-end')
     module.measure_time_start('End-to-end')
     module.measure_time_start('PreProcess')
+
+    # We can get the most recent sweep and publish it to the gpu clustering ros node
+    pts = data_dicts[0]['points']
+    mr_sweep_points = pts[pts[:, -1] == 0., :4] # timestamp 0. sweep, x y z i
+    mr_sweep_points = mr_sweep_points[mr_sweep_points[:,1] < 0] # cut the point cloud into half
+    pc2_msg = numpy_to_ros_pointcloud(mr_sweep_points)
+    module.pcl_pub.publish(pc2_msg)
+
     #module.measure_time_start('GetitemPost')
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
     #data_dict = module.dataset.getitem_post(data_dict)
@@ -122,6 +160,9 @@ class Detector3DTemplate(nn.Module):
     
         self.latest_batch_dict = None
         self.psched_start_time = 0
+
+        rospy.init_node('lidar_detector')
+        self.pcl_pub = rospy.Publisher("/velodyne_points", PointCloud2, queue_size=1)
 
     def train(self, mode=True):
         super().train(mode)
