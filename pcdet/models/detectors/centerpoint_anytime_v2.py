@@ -1,6 +1,8 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 
 import torch
+import socket
+import os
 
 class CenterPointAnytimeV2(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -32,6 +34,10 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'CenterHead': [],
                     'Projection': []})
         self.calibrated = False
+
+        self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        addr = '/tmp/pointcloudsock'
+        self.client.connect(addr)
 
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
@@ -67,7 +73,16 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_start('CenterHead')
         batch_dict = self.dense_head.forward_eval_pre(batch_dict)
         #batch_dict = self.schedule3(batch_dict)
+
+        sweep = batch_dict['mr_sweep_points']
+        num_points = str(sweep.shape[0])
+        num_points = '0'*(16-len(num_points)) + num_points
+        self.client.send(num_points.encode())
+        sweep = sweep.tobytes()
+        self.client.send(sweep)
+
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
+
         self.measure_time_end('CenterHead')
 
         return batch_dict
