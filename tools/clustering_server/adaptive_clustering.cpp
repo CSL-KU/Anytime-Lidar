@@ -72,7 +72,7 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
     }
   }
 
-  int total_num_points=0;
+  auto total_num_points = 0;
   for(int i = 0; i < AdaptiveClustering::region_max_; ++i){
     num_points_per_region[i] = indices_array[i].size();
     total_num_points += num_points_per_region[i];
@@ -87,47 +87,46 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
     }
   }
 
-  auto sz = sizeof(float) * 4 * total_num_points;
-  cudaMallocManaged(&inputEC_all, sz);
-  cudaMallocManaged(&outputEC_all, sz);
-  cudaMallocManaged(&indexEC_all, sz / sizeof(float) * sizeof(unsigned int));
-  cudaMemcpyAsync(inputEC_all, inputEC_cat.data(), sz, cudaMemcpyHostToDevice, 0);
-  cudaMemcpyAsync(outputEC_all, inputEC_cat.data(), sz, cudaMemcpyHostToDevice, 0);
-  cudaMemsetAsync(indexEC_all, 0, sz / sizeof(float) * sizeof(unsigned int), 0);
-  cudaStreamSynchronize(0);
-  //CHECK_LAST_CUDA_ERROR();
+  std::vector<float*> inputEC_v(AdaptiveClustering::region_max_);
+  std::vector<float*> outputEC_v(AdaptiveClustering::region_max_);
+  std::vector<unsigned int*> indexEC_v(AdaptiveClustering::region_max_);
+  std::vector<cudaStream_t> streams(AdaptiveClustering::region_max_);
 
   auto num_points_so_far = 0;
-  std::vector<cudaStream_t> streams;
+  for(int i = 0; i < AdaptiveClustering::region_max_; ++i){
+    if(num_points_per_region[i] > cluster_size_min){
+      cudaStreamCreate(&streams[i]);
+      auto sz = sizeof(float) * 4 * num_points_per_region[i];
+      cudaMallocManaged(&inputEC_v[i], sz, cudaMemAttachHost);
+      cudaStreamAttachMemAsync(streams[i], inputEC_v[i]);
+      cudaMallocManaged(&outputEC_v[i], sz, cudaMemAttachHost);
+      cudaStreamAttachMemAsync(streams[i], outputEC_v[i]);
+      cudaMallocManaged(&indexEC_v[i], sz / sizeof(float) * sizeof(unsigned int), cudaMemAttachHost);
+      cudaStreamAttachMemAsync(streams[i], indexEC_v[i]);
+
+      auto* data_ptr = inputEC_cat.data() + (num_points_so_far * 4);
+      cudaMemcpyAsync(inputEC_v[i], data_ptr, sz, cudaMemcpyHostToDevice, streams[i]);
+      cudaMemcpyAsync(outputEC_v[i], data_ptr, sz, cudaMemcpyHostToDevice, streams[i]);
+    }
+    num_points_so_far += num_points_per_region[i];
+  }
+
   for(int r = 0; r < AdaptiveClustering::region_max_; r++) {
     if(num_points_per_region[r] > cluster_size_min) {
-      float *inputEC = inputEC_all + num_points_so_far*4;
-      float *outputEC = outputEC_all + num_points_so_far*4;
-      unsigned int *indexEC = indexEC_all + num_points_so_far*4;
-
-      cudaStream_t stream = NULL;
-      cudaStreamCreate(&stream);
-      streams.push_back(stream);
-      cudaExtractCluster cudaec(stream);
+      cudaExtractCluster cudaec(streams[r]);
       cudaec.set(params[r]);
-      cudaec.extract(inputEC, num_points_per_region[r], outputEC, indexEC);
+      cudaec.extract(inputEC_v[r], num_points_per_region[r], outputEC_v[r], indexEC_v[r]);
     }
-    num_points_so_far += num_points_per_region[r];
   }
-
-  for(auto stream : streams){
-      cudaStreamSynchronize(stream);
-      cudaStreamDestroy(stream);
-  }
-  //cudaStreamSynchronize(stream);
 
   std::vector<std::vector<float>> clusters;
-  num_points_so_far = 0;
 
   for(int r = 0; r < AdaptiveClustering::region_max_; r++) {
     if(num_points_per_region[r] > cluster_size_min) {
-      float *outputEC = outputEC_all + num_points_so_far*4;
-      unsigned int *indexEC = indexEC_all + num_points_so_far*4;
+      cudaStreamSynchronize(streams[r]);
+      cudaStreamDestroy(streams[r]);
+      float *outputEC = outputEC_v[r];
+      unsigned int *indexEC = indexEC_v[r];
       for(int i = 1; i <= indexEC[0]; i++) {
         std::vector<float> cloud_cluster;
         cloud_cluster.reserve(indexEC[i]*3);
@@ -147,13 +146,12 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
 
         clusters.push_back(std::move(cloud_cluster));
       }
-    }
-    num_points_so_far += num_points_per_region[r];
-  }
 
-  cudaFree(inputEC_all);
-  cudaFree(outputEC_all);
-  cudaFree(indexEC_all);
+      cudaFree(inputEC_v[r]);
+      cudaFree(outputEC_v[r]);
+      cudaFree(indexEC_v[r]);
+    }
+  }
 
   return clusters;
 }
