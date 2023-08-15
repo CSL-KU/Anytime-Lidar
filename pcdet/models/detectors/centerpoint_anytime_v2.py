@@ -3,6 +3,7 @@ from .anytime_template_v2 import AnytimeTemplateV2
 import torch
 import socket
 import os
+import numpy as np
 
 class CenterPointAnytimeV2(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -81,7 +82,20 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         sweep = sweep.tobytes()
         self.client.send(sweep)
 
+
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
+
+        # Receiving the data takes 1 ms on nemo x86
+        num_clusters = int.from_bytes(self.client.recv(4), byteorder='little')
+        clusters = []
+        for i in range(num_clusters):
+            num_floats = int.from_bytes(self.client.recv(4), byteorder='little')
+            # Assuming float is 4 bytes
+            points = self.client.recv(num_floats * 4)
+            points = np.frombuffer(points, dtype=np.float32)
+            points = np.reshape(points, (points.shape[0]//3, 3))
+            clusters.append(points)
+        batch_dict['clusters'] = clusters
 
         self.measure_time_end('CenterHead')
 

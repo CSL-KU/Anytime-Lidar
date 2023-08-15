@@ -98,6 +98,7 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
   //CHECK_LAST_CUDA_ERROR();
 
   auto num_points_so_far = 0;
+  std::vector<cudaStream_t> streams;
   for(int r = 0; r < AdaptiveClustering::region_max_; r++) {
     if(num_points_per_region[r] > cluster_size_min) {
       float *inputEC = inputEC_all + num_points_so_far*4;
@@ -106,15 +107,18 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
 
       cudaStream_t stream = NULL;
       cudaStreamCreate(&stream);
+      streams.push_back(stream);
       cudaExtractCluster cudaec(stream);
       cudaec.set(params[r]);
       cudaec.extract(inputEC, num_points_per_region[r], outputEC, indexEC);
-      cudaStreamSynchronize(stream);
-      cudaStreamDestroy(stream);
     }
     num_points_so_far += num_points_per_region[r];
   }
 
+  for(auto stream : streams){
+      cudaStreamSynchronize(stream);
+      cudaStreamDestroy(stream);
+  }
   //cudaStreamSynchronize(stream);
 
   std::vector<std::vector<float>> clusters;
@@ -136,9 +140,9 @@ std::vector<std::vector<float>> AdaptiveClustering::cluster(
         }
 
         for(std::size_t k = 0; k < indexEC[i]; ++k) {
-          cloud_cluster[k*3] = outputEC[(outoff+k)*4+0];
-          cloud_cluster[k*3+1] = outputEC[(outoff+k)*4+1];
-          cloud_cluster[k*3+2] = outputEC[(outoff+k)*4+2];
+          cloud_cluster.push_back(outputEC[(outoff+k)*4+0]);
+          cloud_cluster.push_back(outputEC[(outoff+k)*4+1]);
+          cloud_cluster.push_back(outputEC[(outoff+k)*4+2]);
         }
 
         clusters.push_back(std::move(cloud_cluster));

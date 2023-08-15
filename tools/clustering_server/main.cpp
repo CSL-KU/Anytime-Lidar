@@ -1,5 +1,6 @@
 #include <iostream>
 #include <chrono>
+#include <cstdint>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -99,11 +100,22 @@ int main(int argc, const char **argv)
     auto start = std::chrono::steady_clock::now();
     auto clusters = ac.cluster(point_cloud, num_points*4);
     auto end = std::chrono::steady_clock::now();
+    
+    //First, send the number of clusters
+    //Then, for each cluster, send num elems (x3 num points)
+    //Then send the points themselves
+    uint32_t num_clusters = (uint32_t) clusters.size();
+    send(client_sock, &num_clusters, sizeof(uint32_t), 0);
+    for(auto& cluster : clusters){
+      uint32_t num_elems = (uint32_t) cluster.size();
+      send(client_sock, &num_elems , sizeof(uint32_t), 0);
+      send(client_sock, cluster.data(), num_elems * sizeof(float), 0);
+    }
+
+    delete [] point_cloud;
     std::cout << "Elapsed time in milliseconds: "
       << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
       << " ms" << std::endl;
-    delete [] point_cloud;
-
   }
 
   close(client_sock);
