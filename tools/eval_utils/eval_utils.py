@@ -95,13 +95,16 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if visualize and 'chosen_tile_coords' in batch_dict:
             # Can infer which detections are projection from the scores
             # -x -y -z +x +y +z
+            if 'clusters' not in batch_dict:
+                batch_dict['clusters'] = None
             V.draw_scenes(
                 points=batch_dict['points'][:, 1:], ref_boxes=pred_dicts[0]['pred_boxes'],
-                #gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
+                gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
                 ref_scores=pred_dicts[0]['pred_scores'], ref_labels=pred_dicts[0]['pred_labels'],
                 max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                tile_coords=batch_dict['chosen_tile_coords'])
-
+                nonempty_tile_coords=batch_dict['nonempty_tile_coords'],
+                tile_coords=batch_dict['chosen_tile_coords'],
+                clusters=batch_dict['clusters'])
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
         annos = dataset.generate_prediction_dicts(

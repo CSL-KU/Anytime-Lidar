@@ -49,7 +49,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
         torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.benchmark_limit = 0
+        if torch.backends.cudnn.benchmark:
+            torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
@@ -232,11 +233,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.measure_time_start('Sched')
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
         netc = netc.cpu() # sync
-        batch_dict['mask'] = None
+        batch_dict['nonempty_tile_coords'] = netc.numpy()
 
         if self.sched_algo == self.RoundRobin:
             num_tiles, vcounts_all, netc_flip= round_robin_sched_helper(
-                    netc.numpy(), self.last_tile_coord, self.tcount,
+                    batch_dict['nonempty_tile_coords'], self.last_tile_coord, self.tcount,
                     netc_vcounts.cpu().numpy())
             self.projection_stream.synchronize()
 
@@ -271,6 +272,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.last_tile_coord = chosen_tile_coords[-1].item()
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
+
                 if 'voxel_features' in batch_dict:
                     batch_dict['voxel_features'] = \
                             batch_dict['voxel_features'][tile_filter].contiguous()

@@ -43,13 +43,16 @@ def get_coor_colors(obj_labels):
     return label_rgba
 
 
-def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scores=None, point_colors=None, draw_origin=True, max_num_tiles=18, pc_range=None, tile_coords=None):
+def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scores=None, point_colors=None, draw_origin=True, max_num_tiles=18, pc_range=None, nonempty_tile_coords=None, tile_coords=None, clusters=None):
     if isinstance(points, torch.Tensor):
         points = points.cpu().numpy()
     if isinstance(gt_boxes, torch.Tensor):
         gt_boxes = gt_boxes.cpu().numpy()
     if isinstance(ref_boxes, torch.Tensor):
         ref_boxes = ref_boxes.cpu().numpy()
+
+    #print(points.shape)
+    #print(points[:, -1])
 
     vis = open3d.visualization.Visualizer()
     vis.create_window()
@@ -65,21 +68,37 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scor
         vis.add_geometry(axis_pcd)
 
     pts = open3d.geometry.PointCloud()
+
+    #NOTE Only display most recent sweep start
+    mrs_mask = (points[:, -1] == 0.)
+    points = points[mrs_mask]
+    # filter point outside of pc_range
+    points_x = points[:, 0]
+    points_y = points[:, 1]
+    x_range_mask = np.logical_and(points_x > pc_range[0], points_x < pc_range[3])
+    y_range_mask = np.logical_and(points_y > pc_range[1], points_y < pc_range[4])
+    points = points[np.logical_and(x_range_mask, y_range_mask)]
+
+    #NOTE Only display most recent sweep end
+
     pts.points = open3d.utility.Vector3dVector(points[:, :3])
 
     vis.add_geometry(pts)
     if point_colors is None:
-        #pts.colors = open3d.utility.Vector3dVector(np.ones((points.shape[0], 3)))
-        # Baby blue
-        baby_blue = np.array([[137., 207., 240.]])/255.
-        cornflower_blue = np.array([[100., 149., 237.]])/255.
 
-        pts.colors = open3d.utility.Vector3dVector(np.repeat(cornflower_blue, points.shape[0], axis=0))
+
+        cornflower_blue = np.array([[100., 149., 237.]])/255.
+        clrs = np.repeat(cornflower_blue, points.shape[0], axis=0)
+        #3# make the most recent sweep pink
+        ##mrs_mask = (points[:, -1] == 0.)
+        ##clrs[mrs_mask] = np.array([255.,192.,203.])/255.
+        pts.colors = open3d.utility.Vector3dVector(clrs)
     else:
         pts.colors = open3d.utility.Vector3dVector(point_colors)
 
-    if gt_boxes is not None:
-        vis = draw_box(vis, gt_boxes, (0, 0, 1))
+    #print(gt_boxes)
+    #if gt_boxes is not None:
+    #    vis = draw_box(vis, gt_boxes, (0, 0, 1))
 
     if ref_boxes is not None:
         vis = draw_box(vis, ref_boxes, (0, 1, 0), ref_labels, ref_scores)
@@ -96,32 +115,55 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scor
         vertices_top = np.array([v_top + (tile_w*i, 0) for i in range(max_num_tiles+1)])
         vertices_bot = np.array([v_bot + (tile_w*i, 0) for i in range(max_num_tiles+1)])
         vertices = np.concatenate((vertices_top, vertices_bot), axis=0)
-        vertices_low = np.concatenate((vertices, np.full((vertices.shape[0],1), -3,
+        vertices = np.concatenate((vertices, np.full((vertices.shape[0],1), -3,
             dtype=vertices.dtype)), axis=1)
-        vertices_high = vertices_low + (0,0,0.1)
+
+        # The whole area
+        s = vertices.shape[0]//2
+        lines_area = [(0,s), (0,s-1), (s,2*s-1), (s-1,2*s-1)]
+
+        #  Nonempty area
+        netc = nonempty_tile_coords
+        st, et = netc[0], netc[-1]
+        lines_nonempty_area = [(st, st+s), (st, et+1), (st+s, et+s+1), (et+1, et+s+1)]
+
 
         lines_chosen = []
-        lines_other = []
-        s = vertices_low.shape[0]//2
         for t in range(max_num_tiles):
-            vl =[(t,t+1), (t,t+s), (t+s,t+s+1), (t+1,t+s+1)]
-
             if t in tile_coords:
+                vl =[(t,t+1), (t,t+s), (t+s,t+s+1), (t+1,t+s+1)]
                 lines_chosen.extend(vl)
-            else:
-                lines_other.extend(vl)
+            #else:
+            #    lines_other.extend(vl)
 
         print('Tile coords:', tile_coords)
 
-        all_vertices = (vertices_low, vertices_high)
-        all_lines = (lines_other, lines_chosen)
-        all_colors = (np.array((217, 136, 128))/255., np.array((125, 206, 160))/255.)
+        #all_vertices = (vertices, vertices + (0,0,0.2), vertices + (0,0,0.4))
+        #all_lines = (lines_area, lines_nonempty_area, lines_chosen)
+        #all_colors = ((0.,0.,0.), np.array((217, 136, 128))/255., np.array((125, 206, 160))/255.)
+        vertices_ = vertices.copy()
+        vertices_[:s] += (0, 0.2, 0)
+        vertices_[s:] += (0, -0.2, 0)
+        all_vertices = (vertices, vertices_)
+        all_lines = (lines_area, lines_chosen)
+        all_colors = ((0.,0.,0.), np.array((125, 206, 160))/255.)
         for vertices, lines, colors in zip(all_vertices, all_lines, all_colors):
             o3d_vertices = open3d.utility.Vector3dVector(vertices)
             o3d_vertex_pairs = open3d.utility.Vector2iVector(np.array(lines))
             rectangles = open3d.geometry.LineSet(o3d_vertices, o3d_vertex_pairs)
             rectangles.paint_uniform_color(colors)
             vis.add_geometry(rectangles)
+
+        if clusters is not None:
+            for clu in clusters:
+                try:
+                    clu_v = open3d.utility.Vector3dVector(clu.astype(np.float64))
+                    bb = open3d.geometry.AxisAlignedBoundingBox.create_from_points(clu_v)
+                    bb.color= (1, 0, 0) # red
+                    vis.add_geometry(bb)
+                except:
+                    print('Bad cluster')
+
     else:
         # Assume there are 16 vertical tiles
         pass
@@ -165,7 +207,11 @@ def draw_box(vis, gt_boxes, color=(0, 1, 0), ref_labels=None, score=None):
         #else:
         #    line_set.paint_uniform_color(box_colormap[ref_labels[i]])
 
-        c = np.array((220, 118, 51))/255. if score[i] < 0.3 else np.array((39, 174, 96))/255.
+        if score is not None: 
+            c = np.array((142, 68, 173))/255. if score[i] < 0.3 else np.array((39, 174, 96))/255.
+        else:
+            c = color
+
         line_set.paint_uniform_color(c)
         vis.add_geometry(line_set)
 
