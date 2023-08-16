@@ -267,7 +267,11 @@ class CenterPointAnytimeV1(Detector3DTemplate):
 
     def forward(self, data_dict):
         if not self.training:
-            self.gt_counts = data_dict['gt_counts'][0]
+            # Count number of objects for each head
+
+            gt_labels = data_dict['gt_boxes'][..., -1].cpu().long().flatten() - 1
+            head_ids = self.dense_head.class_id_to_dh_id_mapping[gt_labels]
+            self.gt_counts = torch.bincount(head_ids, minlength=self.dense_head.num_heads).numpy()
             if self._calibrating_now:
                 self.all_gt_counts += self.gt_counts
             if 'method' not in data_dict:
@@ -276,19 +280,21 @@ class CenterPointAnytimeV1(Detector3DTemplate):
             self.latest_token = data_dict['metadata'][0]['token']
 
             # det_dicts length is equal to batch size
-            det_dicts, recall_dict = self.eval_forward(data_dict)
-
+            data_dict = self.eval_forward(data_dict)
+            det_dicts = data_dict['pred_dicts']
             dd = det_dicts[0] # Assume batch size is 1
+            for k,v in dd.items():
+                dd[k] = v.cpu()
+
+            pred_labels = dd['pred_labels'] - 1
+            head_ids = self.dense_head.class_id_to_dh_id_mapping[pred_labels]
+            num_obj_per_head = torch.bincount(head_ids, minlength=self.dense_head.num_heads)
+
             if data_dict['method'] == self.IMPR_HistoryHeadSel or \
                     data_dict['method'] == self.IMPR_HistoryHeadSel_Prj:
                 self.hist_tuple = \
                         (data_dict['num_stgs_to_run'] - 1, data_dict['heads_to_run'], 
-                         dd['pred_score_sizes'])
-
-                del dd['pred_score_sizes']
-
-            for k,v in dd.items():
-                dd[k] = v.cpu()
+                          num_obj_per_head)
 
             if self.use_oracle:
                 oracle_dd = self.token_to_anns[self.latest_token]
@@ -355,7 +361,8 @@ class CenterPointAnytimeV1(Detector3DTemplate):
 
                 self.measure_time_end("Post-PFE", data_dict['method'] == self.IMPR_Dryrun)
 
-            return det_dicts_ret, recall_dict
+            data_dict['final_box_dicts'] = det_dicts_ret
+            return data_dict
         else:
             data_dict = self.pre_rpn_forward(data_dict)
 
@@ -455,23 +462,23 @@ class CenterPointAnytimeV1(Detector3DTemplate):
 
         data_dict = self.dense_head.forward_remaining_preds(data_dict)
         #data_dict = self.dense_head.gen_pred_boxes(data_dict)
-        data_dict['pred_dicts'] = self.generate_predicted_boxes(
-            data_dict['batch_size'], data_dict['pred_dicts']
+        data_dict['pred_dicts'] = self.dense_head.generate_predicted_boxes(
+            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['heads_to_run']
         )
         self.measure_time_end('RPN-finalize')
 
         # Now do postprocess and finish
         self.measure_time_start("PostProcess")
-        ss = (data_dict['method'] == self.IMPR_HistoryHeadSel or \
-                    data_dict['method'] == self.IMPR_HistoryHeadSel_Prj)
-        det_dicts, recall_dict = self.post_processing(data_dict, False, ss)
-        self.measure_time_end("PostProcess")
+        #ss = (data_dict['method'] == self.IMPR_HistoryHeadSel or \
+        #            data_dict['method'] == self.IMPR_HistoryHeadSel_Prj)
+        #det_dicts, recall_dict = self.post_processing(data_dict, False, ss)
         if data_dict['method'] > self.IMPR_MultiStage:
             heads = data_dict['heads_to_run'].tolist()
         else:
             heads = self.all_heads.tolist()
         self._eval_dict['rpn_stg_exec_seqs'].append((stg_seq, heads))
-        return det_dicts, recall_dict
+        self.measure_time_end("PostProcess")
+        return data_dict
 
     def pre_rpn_forward(self, data_dict):
         self.measure_time_start('VFE')
@@ -890,10 +897,9 @@ class CenterPointAnytimeV1(Detector3DTemplate):
                         dryrun_cnt = 0
 
                 with torch.no_grad():
-                    batch_dict, pred_dicts, ret_dict = self.load_and_infer(i,
-                            {'method': self._default_method})
+                    pred_dicts, recall_dict = self([i])
                 annos = self.dataset.generate_prediction_dicts(
-                        batch_dict, pred_dicts, self.dataset.class_names,
+                        self.latest_batch_dict, pred_dicts, self.dataset.class_names,
                         output_path='./temp_results')
                 det_annos += annos
                 #progress_bar.update()
@@ -948,6 +954,28 @@ class CenterPointAnytimeV1(Detector3DTemplate):
 
         loss = loss_rpn
         return loss, tb_dict, disp_dict
+
+    def post_processing_pre(self, batch_dict):
+        return (batch_dict,)
+
+    def post_processing_post(self, pp_args):
+        batch_dict = pp_args[0]
+        post_process_cfg = self.model_cfg.POST_PROCESSING
+        batch_size = batch_dict['batch_size']
+        final_pred_dict = batch_dict['final_box_dicts']
+        recall_dict = {}
+        for index in range(batch_size):
+            pred_boxes = final_pred_dict[index]['pred_boxes']
+
+            recall_dict = self.generate_recall_record(
+                box_preds=pred_boxes.cuda(),
+                recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
+                thresh_list=post_process_cfg.RECALL_THRESH_LIST
+            )
+
+        return final_pred_dict, recall_dict
+
+
 
     def clear_stats(self):
         super().clear_stats()

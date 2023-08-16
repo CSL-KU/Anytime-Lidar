@@ -137,7 +137,7 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-    METHOD: 3
+    METHOD: 2
     DEADLINE_SEC: 9999.9
 
 OPTIMIZATION:

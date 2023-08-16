@@ -78,9 +78,18 @@ class CenterHeadMultiImprecise(nn.Module):
                 [self.class_names.index(x) for x in cur_class_names if x in class_names]
             )).cuda()
             self.class_id_mapping_each_head.append(cur_class_id_mapping)
+        self.class_id_to_dh_id_mapping = []
+        for i,m in  enumerate(self.class_id_mapping_each_head):
+            self.class_id_to_dh_id_mapping.extend([i] * m.size(0))
+        self.class_id_to_dh_id_mapping = torch.tensor(self.class_id_to_dh_id_mapping)
 
         total_classes = sum([len(x) for x in self.class_names_each_head])
         assert total_classes == len(self.class_names), f'class_names_each_head={self.class_names_each_head}'
+
+        self.heads_to_labels = [(labels.cpu()+1).tolist() \
+                for labels in self.class_id_mapping_each_head]
+        print('heads_to_labels:', self.heads_to_labels)
+
 
         num_rpn_blocks = len(input_channels)
         self.shared_conv_alternatives = nn.ModuleList()
@@ -274,7 +283,7 @@ class CenterHeadMultiImprecise(nn.Module):
         tb_dict['rpn_loss'] = loss.item()
         return loss, tb_dict
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, heads_to_run):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -284,6 +293,8 @@ class CenterHeadMultiImprecise(nn.Module):
             'pred_labels': [],
         } for k in range(batch_size)]
         for idx, pred_dict in enumerate(pred_dicts):
+            if idx not in heads_to_run:
+                continue
             batch_hm = pred_dict['hm'].sigmoid()
             batch_center = pred_dict['center']
             batch_center_z = pred_dict['center_z']
@@ -306,15 +317,16 @@ class CenterHeadMultiImprecise(nn.Module):
             for k, final_dict in enumerate(final_pred_dicts):
                 final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
                 if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
-                    selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                        box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
-                        nms_config=post_process_cfg.NMS_CONFIG,
-                        score_thresh=None
-                    )
+                    if final_dict['pred_scores'].size(0) > 1:
+                        selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                            box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
+                            nms_config=post_process_cfg.NMS_CONFIG,
+                            score_thresh=None
+                        )
 
-                    final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
-                    final_dict['pred_scores'] = selected_scores
-                    final_dict['pred_labels'] = final_dict['pred_labels'][selected]
+                        final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
+                        final_dict['pred_scores'] = selected_scores
+                        final_dict['pred_labels'] = final_dict['pred_labels'][selected]
 
                 ret_dict[k]['pred_boxes'].append(final_dict['pred_boxes'])
                 ret_dict[k]['pred_scores'].append(final_dict['pred_scores'])
