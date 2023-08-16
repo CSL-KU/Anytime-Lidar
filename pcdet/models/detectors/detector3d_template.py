@@ -4,6 +4,7 @@ import time
 import json
 import datetime
 import numpy as np
+import socket
 
 import torch
 import torch.nn as nn
@@ -32,11 +33,6 @@ def pre_forward_hook(module, inp_args):
     module.measure_time_start('End-to-end')
     module.measure_time_start('PreProcess')
 
-    # We can get the most recent sweep and publish it to the gpu clustering ros node
-    pts = data_dicts[0]['points']
-    mr_sweep_points = pts[pts[:, -1] == 0., :4] # timestamp 0. sweep, x y z i
-    mr_sweep_points = mr_sweep_points[mr_sweep_points[:,1] >= 0] # cut the point cloud into half
-
     #module.measure_time_start('GetitemPost')
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
     #data_dict = module.dataset.getitem_post(data_dict)
@@ -50,7 +46,6 @@ def pre_forward_hook(module, inp_args):
     batch_dict['deadline_sec'] = module._eval_dict['deadline_sec']
     #batch_dict.update(extra_batch)  # deadline, method, etc.
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
-    batch_dict['mr_sweep_points'] = mr_sweep_points
 
     module.measure_time_end('PreProcess')
     return batch_dict
@@ -131,6 +126,11 @@ class Detector3DTemplate(nn.Module):
         self.latest_batch_dict = None
         self.psched_start_time = 0
 
+        self.client = None
+        #self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        #addr = '/tmp/pointcloudsock'
+        #self.client.connect(addr)
+
     def train(self, mode=True):
         super().train(mode)
         if self.hooks_binded:
@@ -145,6 +145,36 @@ class Detector3DTemplate(nn.Module):
             self.post_hook_handle = self.register_forward_hook(post_forward_hook)
             self.hooks_binded = True
 
+    #NOTE assumes batch size is 1
+    def send_pc_for_clustering(self, points):
+        if self.client is None:
+            return
+        if isinstance(points, torch.Tensor):
+            points = points.cpu().numpy()
+        # We can get the most recent sweep and publish it to the gpu clustering ros node
+        sweep = points[points[:, -1] == 0., 1:5] # timestamp 0. sweep, x y z i
+        sweep = sweep[sweep[:,1] >= 0] # cut the point cloud into half
+
+        num_points = str(sweep.shape[0])
+        num_points = '0'*(16-len(num_points)) + num_points
+        self.client.send(num_points.encode())
+        sweep = sweep.tobytes()
+        self.client.send(sweep)
+
+    def receive_clusters(self):
+        if self.client is None:
+            return None
+        # Receiving clusters!
+        num_clusters = int.from_bytes(self.client.recv(4), byteorder='little')
+        clusters = []
+        for i in range(num_clusters):
+            num_floats = int.from_bytes(self.client.recv(4), byteorder='little')
+            # Assuming float is 4 bytes
+            cluster = self.client.recv(num_floats * 4)
+            cluster = np.frombuffer(cluster, dtype=np.float32)
+            cluster = np.reshape(cluster, (cluster.shape[0]//3, 3))
+            clusters.append(cluster)
+        return clusters
 
     @property
     def mode(self):

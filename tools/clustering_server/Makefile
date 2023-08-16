@@ -159,7 +159,7 @@ LIBRARY_FILES   := $(wildcard ./lib/*.so)
 OBJ_FILES_CPP    := $(CPP_FILES:%.cpp=$(OBJ_DIR)/%.o)
 OBJ_FILES_CU    := $(CU_FILES:%.cu=$(OBJ_DIR)/%.o)
 
-TARGET         := demo
+TARGET         := cserver
 
 all: $(OBJ_DIR) $(TARGET)
 

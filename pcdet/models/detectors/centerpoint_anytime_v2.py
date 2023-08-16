@@ -1,9 +1,6 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 
 import torch
-import socket
-import os
-import numpy as np
 
 class CenterPointAnytimeV2(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -36,9 +33,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'Projection': []})
         self.calibrated = False
 
-        self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        addr = '/tmp/pointcloudsock'
-        self.client.connect(addr)
 
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
@@ -49,6 +43,8 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             return self.forward_eval(batch_dict)
 
     def forward_eval(self, batch_dict):
+        self.send_pc_for_clustering(batch_dict['points'])
+        batch_dict['clusters'] = self.receive_clusters()
         self.measure_time_start('Projection')
         batch_dict = self.projection(batch_dict)
         self.measure_time_end('Projection')
@@ -60,6 +56,8 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d(batch_dict)
             self.measure_time_end('Backbone3D')
+
+
         batch_dict = self.schedule2(batch_dict)
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
@@ -73,30 +71,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
         batch_dict = self.dense_head.forward_eval_pre(batch_dict)
-        #batch_dict = self.schedule3(batch_dict)
-
-        sweep = batch_dict['mr_sweep_points']
-        num_points = str(sweep.shape[0])
-        num_points = '0'*(16-len(num_points)) + num_points
-        self.client.send(num_points.encode())
-        sweep = sweep.tobytes()
-        self.client.send(sweep)
-
-
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
-
-        # Receiving the data takes 1 ms on nemo x86
-        num_clusters = int.from_bytes(self.client.recv(4), byteorder='little')
-        clusters = []
-        for i in range(num_clusters):
-            num_floats = int.from_bytes(self.client.recv(4), byteorder='little')
-            # Assuming float is 4 bytes
-            points = self.client.recv(num_floats * 4)
-            points = np.frombuffer(points, dtype=np.float32)
-            points = np.reshape(points, (points.shape[0]//3, 3))
-            clusters.append(points)
-        batch_dict['clusters'] = clusters
-
         self.measure_time_end('CenterHead')
 
         return batch_dict
