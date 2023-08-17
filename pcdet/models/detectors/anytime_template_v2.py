@@ -89,6 +89,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         #self.calibrating_now = False
         self.add_dict = self._eval_dict['additional']
+        self.add_dict['bb3d_preds'] = []
+        self.add_dict['nonempty_tiles'] = []
+        self.add_dict['chosen_tiles_1'] = []
+        self.add_dict['chosen_tiles_2'] = []
         #for k in ('voxel_counts', 'num_tiles', 'PostSched'):
         #    self.add_dict[k] = []
 
@@ -239,6 +243,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             num_tiles, vcounts_all, netc_flip= round_robin_sched_helper(
                     batch_dict['nonempty_tile_coords'], self.last_tile_coord, self.tcount,
                     netc_vcounts.cpu().numpy())
+            self.add_dict['nonempty_tiles'].append(batch_dict['nonempty_tile_coords'].tolist())
             self.projection_stream.synchronize()
 
             vcounts_all = torch.from_numpy(vcounts_all)
@@ -246,8 +251,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
             bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(vcounts_all, num_tiles)
             batch_dict['post_bb3d_times'] = post_bb3d_times
             tpreds = bb3d_times + post_bb3d_times
-            self.psched_start_time = time.time()
-            rem_time_ms = (batch_dict['abs_deadline_sec'] - self.psched_start_time) * 1000
+            psched_start_time = time.time()
+            rem_time_ms = (batch_dict['abs_deadline_sec'] - psched_start_time) * 1000
 
             # Choose configuration that can meet the deadline, that's it
             diffs = tpreds < rem_time_ms
@@ -262,10 +267,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['netc_flip'] = netc_flip
             if diffs[-1]:
                 chosen_tile_coords = netc.numpy()
+                self.add_dict['bb3d_preds'].append(float(bb3d_times[-1]))
             else:
                 tiles_idx=1
                 while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                     tiles_idx += 1
+
+                self.add_dict['bb3d_preds'].append(float(bb3d_times[tiles_idx-1]))
 
                 # Voxel filtering is needed
                 chosen_tile_coords = netc_flip[:tiles_idx]
@@ -283,7 +291,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.measure_time_end('Sched')
             return batch_dict
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
-
+        self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
         self.measure_time_end('Sched')
 
         return batch_dict
@@ -302,6 +310,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             chosen_tile_coords = batch_dict['netc_flip'][:tiles_idx]
             self.last_tile_coord = chosen_tile_coords[-1].item()
             batch_dict['chosen_tile_coords'] = chosen_tile_coords
+        self.add_dict['chosen_tiles_2'].append(batch_dict['chosen_tile_coords'].tolist())
 
         return batch_dict
 
@@ -389,6 +398,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
         return None
 
     def post_eval(self):
+        # remove first ones due to calibration
+        self.add_dict['bb3d_preds'] = self.add_dict['bb3d_preds'][1:]
+        self.add_dict['nonempty_tiles'] = self.add_dict['nonempty_tiles'][1:]
+        self.add_dict['chosen_tiles_1'] = self.add_dict['chosen_tiles_1'][1:]
+        self.add_dict['chosen_tiles_2'] = self.add_dict['chosen_tiles_2'][1:]
+
         self.add_dict['tcount'] = self.tcount
         print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")
 

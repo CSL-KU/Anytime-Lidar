@@ -292,9 +292,7 @@ class CenterHeadMultiImprecise(nn.Module):
             'pred_scores': [],
             'pred_labels': [],
         } for k in range(batch_size)]
-        for idx, pred_dict in enumerate(pred_dicts):
-            if idx not in heads_to_run:
-                continue
+        for head_idx, pred_dict in zip(heads_to_run, pred_dicts):
             batch_hm = pred_dict['hm'].sigmoid()
             batch_center = pred_dict['center']
             batch_center_z = pred_dict['center_z']
@@ -315,18 +313,18 @@ class CenterHeadMultiImprecise(nn.Module):
             )
 
             for k, final_dict in enumerate(final_pred_dicts):
-                final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
+                final_dict['pred_labels'] = self.class_id_mapping_each_head[head_idx \
+                        ][final_dict['pred_labels'].long()]
                 if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
-                    if final_dict['pred_scores'].size(0) > 1:
-                        selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                            box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
-                            nms_config=post_process_cfg.NMS_CONFIG,
-                            score_thresh=None
-                        )
+                    selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                        box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
+                        nms_config=post_process_cfg.NMS_CONFIG,
+                        score_thresh=None
+                    )
 
-                        final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
-                        final_dict['pred_scores'] = selected_scores
-                        final_dict['pred_labels'] = final_dict['pred_labels'][selected]
+                    final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
+                    final_dict['pred_scores'] = selected_scores
+                    final_dict['pred_labels'] = final_dict['pred_labels'][selected]
 
                 ret_dict[k]['pred_boxes'].append(final_dict['pred_boxes'])
                 ret_dict[k]['pred_scores'].append(final_dict['pred_scores'])

@@ -75,8 +75,8 @@ def post_forward_hook(module, inp_args, outp_args):
         if module._det_dict_copy is not None:
             pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
 
-    tm = module.finish_time - module.psched_start_time
-    module._eval_dict['additional']['PostSched'].append(tm)
+    #tm = module.finish_time - module.psched_start_time
+    #module._eval_dict['additional']['PostSched'].append(tm)
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
@@ -105,6 +105,7 @@ class Detector3DTemplate(nn.Module):
         self.update_time_dict(dict())
        
         self._eval_dict = {}
+        self._eval_dict['additional'] = {}
         if self.model_cfg.get('DEADLINE_SEC', None) is not None:
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
@@ -116,7 +117,7 @@ class Detector3DTemplate(nn.Module):
         print('Default deadline is:', self._eval_dict['deadline_sec'])
 
         # To be filled by the child class, in case needed
-        self._eval_dict['additional'] = {'PostSched':[]}
+        #self._eval_dict['additional'] = {'PostSched':[]}
 
         self._det_dict_copy = None
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)
@@ -124,7 +125,7 @@ class Detector3DTemplate(nn.Module):
         self.hooks_binded = True
     
         self.latest_batch_dict = None
-        self.psched_start_time = 0
+        #self.psched_start_time = 0
 
         self.client = None
         #self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
