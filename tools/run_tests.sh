@@ -20,6 +20,8 @@ if [ $1 == 'profile' ]; then
     #   --sampling-frequency=50000 --cuda-memory-usage=true"
 fi
 
+TASKSET=""
+
 # Imprecise model
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_multihead_imprecise.yaml"
 #CKPT_FILE="../models/cbgs_pp_multihead_imprecise.pth"
@@ -56,9 +58,16 @@ fi
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
 
-# Centerpoint-voxel0075-anytime
+# Centerpoint-voxel0075-anytime-v2
 CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
 CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+TASKSET="taskset -c 4-7"
+export OMP_NUM_THREADS=4
+
+# Centerpoint-voxel0075-anytime-v1
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
+#CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth"
+#export OMP_NUM_THREADS=2
 
 # Centerpoint-KITTI-voxel
 #CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
@@ -74,11 +83,6 @@ CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_pillar0075_res2d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
-#TASKSET="taskset -c 2-3"
-#export OMP_NUM_THREADS=2
-TASKSET="taskset -c 4-7"
-export OMP_NUM_THREADS=4
-#TASKSET=""
 
 #DATASET="nuscenes_dataset.yaml"
 #DATASET="nuscenes_mini_dataset.yaml"
@@ -92,7 +96,6 @@ CMD="chrt -f 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
         --ckpt $CKPT_FILE --batch_size=1 --workers 0"
 
 #export CUBLAS_WORKSPACE_CONFIG=":4096:2"
-
 set -x
 if [ $1 == 'profile' ]; then
     #export CUDA_LAUNCH_BLOCKING=1
@@ -105,14 +108,15 @@ elif [ $1 == 'methods' ]; then
 
     CFG_FILES=( \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml" \
-	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
-#           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml")
 #	    "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
 #	    "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml")
 #           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
     CKPT_FILES=( \
             "../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
-            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth")
 #           "../models/voxelnext_nuscenes_kernel1.pth" \
 #           "../models/voxelnext_nuscenes_kernel1.pth")
 #           "../models/voxelnext_nuscenes_kernel1.pth" \
@@ -122,22 +126,30 @@ elif [ $1 == 'methods' ]; then
 
     for m in ${!CFG_FILES[@]}
     do
-        #if [ $m == 1 ]; then
-        #    continue
-        #fi
         CFG_FILE=${CFG_FILES[$m]}
         CKPT_FILE=${CKPT_FILES[$m]}
+
+	if [ $m == 2 ]; then # Anytime lidar 1
+		TSKST=""
+		MTD=10
+		export OMP_NUM_THREADS=2
+	else
+		TSKST="taskset -c 4-7"
+		MTD=$m
+		export OMP_NUM_THREADS=4
+	fi	
         #CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
         #   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
-        CMD="chrt -f 90 $TASKSET python test.py --cfg_file=$CFG_FILE \
-                --ckpt $CKPT_FILE --batch_size=1 --workers 0"
+	CMD="chrt -f 90 $TSKST python test.py --cfg_file=$CFG_FILE \
+		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+
         for s in $(seq $2 $3 $4)
         do
             OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
             if [ -f $OUT_FILE ]; then
                 printf "Skipping $OUT_FILE test.\n"
             else
-                $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $m
+	        $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
                 # rename the output and move the corresponding directory
                 mv -f eval_dict_*.json $OUT_DIR/eval_dict_m"$m"_d"$s".json
             fi
