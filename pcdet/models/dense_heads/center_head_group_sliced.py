@@ -484,13 +484,14 @@ class CenterHeadGroupSliced(nn.Module):
 
     def scatter_sliced_tensors(self, chosen_tile_coords, sliced_tensors):
         #Based on chosen_tile_coords, we need to scatter the output
-        ctc = chosen_tile_coords
+        ctc = np.sort(chosen_tile_coords)
         if len(ctc) == self.tcount:
             return sliced_tensors # no need to scatter
         scattered_tensors = []
         ctc_s, ctc_e = ctc[0], ctc[-1]
         for tensor in sliced_tensors:
-            if ctc_s <= ctc_e:
+            if ctc_e - ctc_s + 1 == ctc.shape[0]:
+                # contiguous
                 num_tiles = ctc_e - ctc_s + 1
                 tile_sz = tensor.size(-1) // num_tiles
                 full_sz = tile_sz * self.tcount
@@ -501,7 +502,7 @@ class CenterHeadGroupSliced(nn.Module):
             else:
                 # Two chunks, find the point of switching
                 i = 0
-                while ctc[i] < ctc[i+1]:
+                while ctc[i]+1 == ctc[i+1]:
                     i += 1
                 chunk_r = (ctc_s, ctc[i])
                 chunk_l = (ctc[i+1], ctc_e)

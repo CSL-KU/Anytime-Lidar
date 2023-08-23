@@ -23,18 +23,20 @@ def tile_coords_to_id(tile_coords):
         tid += 2 ** tc
     return int(tid)
 
-@numba.jit(nopython=True)
-def get_num_tiles(ctc): # chosen tile coords
-    ctc_s, ctc_e = ctc[0], ctc[-1]
-    if ctc_s <= ctc_e:
-        num_tiles = ctc_e - ctc_s + 1
-    else:
-        j = 0
-        while ctc[j] < ctc[j+1]:
-            j += 1
-        num_tiles = ctc[j] - ctc_s + 1 + ctc_e - ctc[j+1] + 1
-
-    return num_tiles
+## Assume that nonempty tiles will have no gaps
+#@numba.jit(nopython=True)
+#def get_num_tiles(ctc): # chosen tile coords
+#    # it could be contiguous or not, detect that
+#    ctc_s, ctc_e = ctc[0], ctc[-1]
+#    if ctc_s <= ctc_e:
+#        num_tiles = ctc_e - ctc_s + 1
+#    else:
+#        j = 0
+#        while ctc[j] < ctc[j+1]:
+#            j += 1
+#        num_tiles = ctc[j] - ctc_s + 1 + ctc_e - ctc[j+1] + 1
+#
+#    return num_tiles
 
 class AnytimeCalibrator():
     def __init__(self, model):
@@ -92,14 +94,13 @@ class AnytimeCalibrator():
         self.max_exec_time_model = LinearRegression().fit(vcounts_all, max_ets)
 
         bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
-        bb2d_time_data[0].append(0.)
-        self.bb2d_times_ms = np.array([np.percentile(arr, 99, method='lower') \
+        self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
                 for arr in bb2d_time_data])
 
         print('bb2d_times_ms')
         print(self.bb2d_times_ms)
         dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
-        self.det_head_post_times_ms = np.array([np.percentile(arr, 99, method='lower') \
+        self.det_head_post_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
                 for arr in dh_post_time_data])
 
         print('det_head_post_times_ms')
@@ -178,7 +179,7 @@ class AnytimeCalibrator():
         batch_dict = self.model.vfe(batch_dict)
         batch_dict['voxel_tile_coords'], ctc, _ = \
                 self.model.get_nonempty_tiles(batch_dict['voxel_coords'])
-        batch_dict['chosen_tile_coords'] = ctc.cpu().numpy()
+        batch_dict['chosen_tile_coords'] = ctc
         self.process(batch_dict, record=False, noprint=True)
 
         num_samples = len(self.dataset)
@@ -211,18 +212,43 @@ class AnytimeCalibrator():
                     self.model.get_nonempty_tiles(voxel_coords)
             batch_dict['voxel_tile_coords'] = voxel_tile_coords
 
-            nonempty_tile_coords = nonempty_tile_coords.cpu().numpy()
-            voxel_counts = voxel_counts.cpu().numpy()
-            all_tiles = np.concatenate((nonempty_tile_coords, nonempty_tile_coords))
-            all_voxel_counts= np.concatenate((voxel_counts, voxel_counts))
+            m2 = self.num_tiles//2
+            m1 = m2 - 1
+            mandatory_tiles = np.array([m1, m2], dtype=int)
+            rtiles = np.arange(m2+1, nonempty_tile_coords[-1]+1)
+            ltiles = np.arange(m1-1, nonempty_tile_coords[0]-1, -1)
+            rltiles = np.concatenate((rtiles, ltiles, rtiles, ltiles))
+            v = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
+            v[nonempty_tile_coords] = voxel_counts
+            voxel_counts = v
 
-            ntc_sz = nonempty_tile_coords.shape[0]
+            # Keep processing mandatory tiles while additionaly processing rtiles
+            # and ltiles in a round robin fashion
 
-            for tiles in range(1, ntc_sz):
-                for start_idx in range(ntc_sz):
-                    chosen_tile_coords = all_tiles[start_idx:(start_idx+tiles)]
+            #ntc_sz = nonempty_tile_coords.shape[0]
+
+            # Initially, process only the mandatory tiles
+            chosen_tc_series[sample_idx].append(mandatory_tiles)
+            batch_dict['voxel_coords'] = voxel_coords
+            batch_dict['voxel_features'] = voxel_features
+            batch_dict['chosen_tile_coords'] = mandatory_tiles
+            bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
+                    record=True, noprint=True)
+
+            bb3d_time_series[sample_idx].append(bb3d_time)
+            nt = mandatory_tiles.shape[0]
+            bb2d_time_data[nt].append(bb2d_time)
+            dh_post_time_data[hid].append(dh_post_time)
+            vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
+            vcounts[mandatory_tiles] = voxel_counts[mandatory_tiles]
+            voxel_counts_series[sample_idx].append(vcounts)
+
+            # Process rest of the possibilities expect the final one
+            for tiles in range(1, rltiles.shape[0]//2):
+                for start_idx in range(rltiles.shape[0]//2):
+                    chosen_tile_coords = np.concatenate((mandatory_tiles, rltiles[start_idx:(start_idx+tiles)]))
                     chosen_tc_series[sample_idx].append(chosen_tile_coords)
-                    chosen_voxel_counts = all_voxel_counts[start_idx:(start_idx+tiles)]
+                    chosen_voxel_counts = voxel_counts[chosen_tile_coords]
 
                     batch_dict['voxel_coords'] = voxel_coords
                     batch_dict['voxel_features'] = voxel_features
@@ -230,7 +256,7 @@ class AnytimeCalibrator():
                     bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
                             record=True, noprint=True)
                     bb3d_time_series[sample_idx].append(bb3d_time)
-                    nt = get_num_tiles(chosen_tile_coords)
+                    nt = chosen_tile_coords.shape[0]
                     bb2d_time_data[nt].append(bb2d_time)
                     dh_post_time_data[hid].append(dh_post_time)
 
@@ -246,16 +272,12 @@ class AnytimeCalibrator():
             batch_dict['chosen_tile_coords'] = nonempty_tile_coords
             bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
                     record=True, noprint=True)
-
             bb3d_time_series[sample_idx].append(bb3d_time)
-
-            nt = get_num_tiles(nonempty_tile_coords)
+            nt = nonempty_tile_coords.shape[0]
             bb2d_time_data[nt].append(bb2d_time)
             dh_post_time_data[hid].append(dh_post_time)
 
-            vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-            vcounts[nonempty_tile_coords] = voxel_counts
-            voxel_counts_series[sample_idx].append(vcounts)
+            voxel_counts_series[sample_idx].append(voxel_counts)
 
             gc.collect()
             time_end = time.time()
