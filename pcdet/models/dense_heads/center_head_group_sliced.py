@@ -8,6 +8,7 @@ from ..model_utils import centernet_utils
 from ...utils import loss_utils
 from ...ops.cuda_slicer import cuda_slicer
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
+from ..detectors.sched_helpers import SchedAlgo
 
 import time
 
@@ -59,6 +60,7 @@ class CenterHeadGroupSliced(nn.Module):
         self.voxel_size = voxel_size
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', None)
         self.tcount=self.model_cfg.TILE_COUNT # There should be a better way but its fine for now
+        self.sched_algo = self.model_cfg.METHOD
         post_process_cfg = self.model_cfg.POST_PROCESSING
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
@@ -484,15 +486,37 @@ class CenterHeadGroupSliced(nn.Module):
 
     def scatter_sliced_tensors(self, chosen_tile_coords, sliced_tensors):
         #Based on chosen_tile_coords, we need to scatter the output
-        ctc = np.sort(chosen_tile_coords)
-        if len(ctc) == self.tcount:
-            return sliced_tensors # no need to scatter
+        ctc = chosen_tile_coords
+        if self.sched_algo == SchedAlgo.MirrorRR:
+            ctc = np.sort(chosen_tile_coords)
         scattered_tensors = []
         ctc_s, ctc_e = ctc[0], ctc[-1]
+        if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+                (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
+            # contiguous
+            num_tiles = ctc_e - ctc_s + 1
+            chunks = [(ctc_s, ctc_e)]
+        else:
+            # Two chunks, find the point of switching
+            i = 0
+            if self.sched_algo == SchedAlgo.RoundRobin:
+                while ctc[i] < ctc[i+1]:
+                    i += 1
+            elif self.sched_algo == SchedAlgo.MirrorRR:
+                while ctc[i]+1 == ctc[i+1]:
+                    i += 1
+            chunk_r = (ctc_s, ctc[i])
+            chunk_l = (ctc[i+1], ctc_e)
+            num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
+            chunks = [chunk_r, chunk_l]
+
+        if len(ctc) == self.tcount:
+            return sliced_tensors, chunks # no need to scatter
+
         for tensor in sliced_tensors:
-            if ctc_e - ctc_s + 1 == ctc.shape[0]:
+            if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+                    (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
                 # contiguous
-                num_tiles = ctc_e - ctc_s + 1
                 tile_sz = tensor.size(-1) // num_tiles
                 full_sz = tile_sz * self.tcount
                 tensor_sz = list(tensor.size())
@@ -501,12 +525,6 @@ class CenterHeadGroupSliced(nn.Module):
                 scat_tensor[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)] = tensor
             else:
                 # Two chunks, find the point of switching
-                i = 0
-                while ctc[i]+1 == ctc[i+1]:
-                    i += 1
-                chunk_r = (ctc_s, ctc[i])
-                chunk_l = (ctc[i+1], ctc_e)
-                num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
                 tile_sz = tensor.size(-1) // num_tiles
                 full_sz = tile_sz * self.tcount
                 tensor_sz = list(tensor.size())
@@ -520,7 +538,7 @@ class CenterHeadGroupSliced(nn.Module):
                 scat_tensor[..., (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)] = \
                         tensor[..., -c_sz_l:]
             scattered_tensors.append(scat_tensor)
-        return scattered_tensors 
+        return scattered_tensors, chunks
 
     def forward(self, data_dict):
         if self.training:
@@ -533,7 +551,7 @@ class CenterHeadGroupSliced(nn.Module):
         shr_conv_outp = self.shared_conv(spatial_features_2d)
 
         heatmaps = self.heatmap_convs(shr_conv_outp)
-        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        heatmaps, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
 
         pred_dicts = [{'hm' : hm} for hm in heatmaps]
         # default padding is 1
@@ -547,7 +565,7 @@ class CenterHeadGroupSliced(nn.Module):
                     x = torch.nn.functional.pad(x, (p,p,p,p))
                 x = m(x)
 
-            x = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x)
+            x, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x)
             for name, attr in zip(self.attr_conv_names, x):
                 pd[name] = attr
 
@@ -589,7 +607,8 @@ class CenterHeadGroupSliced(nn.Module):
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
-        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        heatmaps, chunks = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        data_dict['tile_chunks'] = chunks
 
         pred_dicts = [{'hm' : hm} for hm in heatmaps]
 
@@ -599,7 +618,9 @@ class CenterHeadGroupSliced(nn.Module):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         score_thres = post_process_cfg.SCORE_THRESH
         p = pad_size = self.slice_size//2
-        shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], [shr_conv_outp])[0]
+        shr_conv_outp, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
+                [shr_conv_outp])
+        shr_conv_outp = shr_conv_outp[0]
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
         data_dict['padded_x'] = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
         for pd in pred_dicts:
@@ -672,6 +693,31 @@ class CenterHeadGroupSliced(nn.Module):
         pred_dicts = self.generate_predicted_boxes_eval(
             data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections']
         )
+
+#        # NOTE below code is an alternative to using NMS to filter projections
+#        # However,  NMS method appears to provide better accuracy
+#        # add projections to final box dicts after filtering w.r.t. area processed
+#        pred_dicts = self.generate_predicted_boxes_eval(
+#            data_dict['batch_size'], data_dict['pred_dicts'], None
+#        )
+#        if data_dict['projections'] is not None:
+#            boxy = data_dict['projections']['pred_boxes'][:,1]
+#            tile_chunk = data_dict['tile_chunks'][0]
+#            lim1 = tile_chunk[0] * 108.0 / 18 - 54.0
+#            lim2 = (tile_chunk[1]+1) * 108.0 / 18 - 54.0
+#            mask = torch.logical_and(boxy > lim1, boxy < lim2)
+#            for tile_chunk in data_dict['tile_chunks'][1:]:
+#                lim1 = tile_chunk[0] * 108.0 / 18 - 54.0
+#                lim2 = (tile_chunk[1]+1) * 108.0 / 18 - 54.0
+#                mask = torch.logical_or(mask, torch.logical_and(boxy > lim1, boxy < lim2))
+#            mask = torch.logical_not(mask)
+#
+#            for k, v in data_dict['projections'].items():
+#                data_dict['projections'][k] = v[mask]
+#
+#            for k, v in pred_dicts[0].items():
+#                pred_dicts[0][k] = torch.cat((v, data_dict['projections'][k]), dim=0)
+
         data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict

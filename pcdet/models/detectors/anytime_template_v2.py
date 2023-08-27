@@ -1,6 +1,6 @@
 from .detector3d_template import Detector3DTemplate
 from .anytime_calibrator import AnytimeCalibrator
-#from .anytime_calibrator import get_num_tiles
+from .sched_helpers import *
 import torch
 from nuscenes.nuscenes import NuScenes
 import time
@@ -10,102 +10,21 @@ import numpy as np
 import scipy
 import gc
 import copy
-import numba
 
 from ..model_utils import model_nms_utils
 from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
 
-
-@numba.jit(nopython=True)
-def fill_tile_gaps(netc, vcounts):
-    num_tiles = netc[-1] - netc[0] + 1
-    if num_tiles == netc.shape[0]:
-        return netc, vcounts  # no need
-    else:
-        new_netc = np.arange(netc[0], netc[-1] + 1, dtype=netc.dtype)
-        new_vcounts= np.zeros(num_tiles, dtype=vcounts.dtype)
-        i, j = 0, 0
-        while i < netc.shape[0]:
-            if netc[i] == new_netc[j]:
-                new_vcounts[j] = vcounts[i]
-                i+=1
-            j+=1
-    return new_netc, new_vcounts
-
-#@numba.jit(nopython=True)
-#def round_robin_sched_helper(netc, last_tile_coord, tcount, netc_vcounts):
-#    num_nonempty_tiles = netc.shape[0]
-#    tile_begin_idx=0
-#    for i in range(num_nonempty_tiles):
-#        if netc[i] > last_tile_coord:
-#            tile_begin_idx = i
-#            break
-#
-#    netc_flip = np.concatenate((netc[tile_begin_idx:], netc[:tile_begin_idx]))
-#    netc_vcounts_flip = np.concatenate((netc_vcounts[tile_begin_idx:],
-#        netc_vcounts[:tile_begin_idx]))
-#
-#    vcounts_all = np.zeros((num_nonempty_tiles, tcount), dtype=np.float32)
-#    num_tiles = np.empty((num_nonempty_tiles,), dtype=np.int32)
-#
-#    for i in range(vcounts_all.shape[0]):
-#        ctc = netc_flip[:i+1]
-#        #num_tiles[i] = get_num_tiles(ctc)
-#        num_tiles[i] = ctc.shape[0] # TODO, quick fix to let it run
-#        for j in range(i+1):
-#            vcounts_all[i, ctc[j]] = netc_vcounts_flip[j]
-#
-#    return num_tiles, vcounts_all, netc_flip
-
-@numba.jit(nopython=True)
-def round_robin_sched_helper(netc, netc_vcounts, last_tile_coord, tcount):
-    m2 = tcount//2
-    m1 = m2 - 1
-    mtiles = np.array([m1, m2], dtype=netc.dtype)
-    rtiles = np.arange(m2+1, netc[-1]+1)
-    ltiles = np.arange(m1-1, netc[0]-1, -1)
-    rltiles = np.concatenate((rtiles, ltiles, rtiles, ltiles))
-
-    reference_tiles = np.concatenate((np.arange(m2+1, tcount), np.arange(m1-1, -1, -1)))
-    reference_tiles = np.concatenate((reference_tiles, reference_tiles))
-
-    idx = 0
-    while reference_tiles[idx] != last_tile_coord:
-        idx += 1
-    idx += 1
-    start_tile = reference_tiles[idx]
-    while (start_tile not in rtiles) and (start_tile not in ltiles):
-        idx += 1
-        start_tile = reference_tiles[idx]
-
-    idx, = np.where(rltiles == start_tile)
-    rltiles = rltiles[idx[0]:idx[0]+netc.shape[0]-2]
-
-    nv = np.zeros((tcount,), dtype=netc_vcounts.dtype)
-    nv[netc] = netc_vcounts
-
-    vcounts_all = np.zeros((netc.shape[0]-mtiles.shape[0]+1, tcount), dtype=np.float32)
-    num_tiles = np.empty((vcounts_all.shape[0],), dtype=np.int32)
-
-    #vcounts[0] represents running mandatory only
-    for i in range(vcounts_all.shape[0]):
-        ctc = np.concatenate((mtiles, rltiles[:i]))
-        num_tiles[i] = ctc.shape[0]
-        for j in range(num_tiles[i]):
-            vcounts_all[i, ctc[j]] = nv[ctc[j]]
-        #print('vc', i, vcounts_all[i])
-
-    return num_tiles, vcounts_all, rltiles
-
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
+            self.model_cfg.BACKBONE_2D.METHOD = self.model_cfg.METHOD
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
+            self.model_cfg.DENSE_HEAD.METHOD = self.model_cfg.METHOD
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
@@ -121,7 +40,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.total_num_tiles = self.tcount
 
         # This number will be determined by the scheduling algorithm initially for each input
-        self.last_tile_coord = 0
         self.projection_stream = torch.cuda.Stream()
 
         # divide the tiles in X axis only
@@ -154,17 +72,22 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #for k in ('voxel_counts', 'num_tiles', 'PostSched'):
         #    self.add_dict[k] = []
 
-
-        self.proj_time_limit_musec = 1600000 # 1.6 sec
-
-        self.RoundRobin = 1
-        self.ProjectionOnly, self.projLastNth = 2, 1
+        self.proj_time_limit_musec = 1.0 * 1000000
 
         self.sched_algo = self.model_cfg.METHOD
 
+        if self.sched_algo == SchedAlgo.RoundRobin:
+            self.init_tile_coord = -1
+        elif self.sched_algo == SchedAlgo.MirrorRR:
+            self.init_tile_coord = 0
+            m2 = self.tcount//2
+            m1 = m2 - 1
+            self.mtiles = np.array([m1, m2], dtype=np.int32)
+        self.last_tile_coord = self.init_tile_coord
+
         self.past_detections = {'num_dets': []}
         self.prev_scene_token = ''
-        if self.sched_algo == self.ProjectionOnly:
+        if self.sched_algo == SchedAlgo.ProjectionOnly:
             self.past_poses = []
             self.past_ts = []
         else:
@@ -182,10 +105,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
         self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
-
-        m2 = self.tcount//2
-        m1 = m2 - 1
-        self.mtiles = np.array([m1, m2], dtype=np.int32)
 
     # When projecting, set the pred scores to a number below 0.3.
     # After running nms, remove the dets that are projected using their
@@ -210,7 +129,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.projection_reset()
                 self.prev_scene_token = scene_token
 
-            if self.sched_algo == self.ProjectionOnly:
+            if self.sched_algo == SchedAlgo.ProjectionOnly:
                 return self.projection_for_test(batch_dict)
             # Clear unuseful dets
             if self.past_ts.size(0) > 0 and self.cur_ts - self.past_ts[0] > self.proj_time_limit_musec:
@@ -237,6 +156,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
                 proj_dict['pred_scores'] = self.past_detections['pred_scores']
                 proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
+                batch_dict['projections'] = proj_dict
 
                 proj_dicts = cuda_projection.split_projections(
                         proj_dict['pred_boxes'],
@@ -292,7 +212,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             netc = nonempty_tile_coords.cpu().numpy()
             voxel_counts = voxel_counts.cpu().numpy()
-            netc, voxel_counts = fill_tile_gaps(netc, voxel_counts)
+            if self.sched_algo == SchedAlgo.MirrorRR:
+                netc, voxel_counts = fill_tile_gaps(netc, voxel_counts)
 
             return voxel_tile_coords, netc, voxel_counts
 
@@ -305,9 +226,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
         batch_dict['nonempty_tile_coords'] = netc
 
-        if self.sched_algo == self.RoundRobin:
-            num_tiles, vcounts_all, rltiles = round_robin_sched_helper(
-                    batch_dict['nonempty_tile_coords'], netc_vcounts, self.last_tile_coord, self.tcount)
+        if self.sched_algo == SchedAlgo.RoundRobin:
+            num_tiles, vcounts_all, tiles_queue = round_robin_sched_helper(
+                    batch_dict['nonempty_tile_coords'], netc_vcounts,
+                    self.last_tile_coord, self.tcount)
+        elif self.sched_algo == SchedAlgo.MirrorRR:
+            num_tiles, vcounts_all, tiles_queue = mirror_sched_helper(
+                    batch_dict['nonempty_tile_coords'], netc_vcounts,
+                    self.last_tile_coord, self.tcount)
+
+        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR:
+            batch_dict['tiles_queue'] = tiles_queue
             self.add_dict['nonempty_tiles'].append(batch_dict['nonempty_tile_coords'].tolist())
             self.projection_stream.synchronize()
 
@@ -329,11 +258,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
             #        tiles_idx = idx + 1
             #        break
             #####
-            batch_dict['rltiles'] = rltiles
+
             if diffs[-1]:
                 chosen_tile_coords = netc
                 self.add_dict['bb3d_preds'].append(float(bb3d_times[-1]))
-                self.last_tile_coord = 0
+                if self.sched_algo == SchedAlgo.MirrorRR:
+                    self.last_tile_coord = self.init_tile_coord
             else:
                 tiles_idx=1
                 while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
@@ -342,10 +272,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.add_dict['bb3d_preds'].append(float(bb3d_times[tiles_idx-1]))
 
                 # Voxel filtering is needed
-
-                chosen_tile_coords = np.concatenate((self.mtiles, rltiles[:tiles_idx-1]))
-                #if chosen_tile_coords.shape[0] > self.mtiles.shape[0]:
-                #    self.last_tile_coord = chosen_tile_coords[-1].item()
+                if self.sched_algo == SchedAlgo.RoundRobin:
+                    chosen_tile_coords = tiles_queue[:tiles_idx]
+                    self.last_tile_coord = chosen_tile_coords[-1].item()
+                else:
+                    chosen_tile_coords = np.concatenate((self.mtiles, tiles_queue[:tiles_idx-1]))
 
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
@@ -357,7 +288,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             batch_dict['chosen_tile_coords'] = chosen_tile_coords
             self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
-        elif self.sched_algo == self.ProjectionOnly:
+        elif self.sched_algo == SchedAlgo.ProjectionOnly:
             batch_dict['chosen_tile_coords'] = netc
         self.measure_time_end('Sched')
 
@@ -369,15 +300,22 @@ class AnytimeTemplateV2(Detector3DTemplate):
         post_bb3d_times = batch_dict['post_bb3d_times']
         rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
         diffs = post_bb3d_times < rem_time_ms
-        if not diffs[batch_dict['chosen_tile_coords'].shape[0]-2]:
+
+        m = int(self.sched_algo == SchedAlgo.MirrorRR)
+        if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1-m]:
             tiles_idx=1
             while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                 tiles_idx += 1
 
-            ctc = batch_dict['rltiles'][:tiles_idx-1]
-            chosen_tile_coords = np.concatenate((self.mtiles, ctc))
-            batch_dict['chosen_tile_coords'] = chosen_tile_coords
-        if batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
+            ctc = batch_dict['tiles_queue'][:tiles_idx-m]
+            if self.sched_algo == SchedAlgo.MirrorRR:
+                batch_dict['chosen_tile_coords'] = np.concatenate((self.mtiles, ctc))
+            elif self.sched_algo == SchedAlgo.RoundRobin:
+                batch_dict['chosen_tile_coords'] = ctc
+                self.last_tile_coord = ctc[-1].item()
+
+        if self.sched_algo == SchedAlgo.MirrorRR and \
+                batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
             self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
         self.add_dict['chosen_tiles_2'].append(batch_dict['chosen_tile_coords'].tolist())
 
@@ -427,7 +365,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def projection_reset(self):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
         self.cur_pose, self.cur_ts = None, None
-        if self.sched_algo == self.ProjectionOnly:
+        if self.sched_algo == SchedAlgo.ProjectionOnly:
             for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx', 'num_dets'):
                 self.past_detections[k] = []
             self.past_poses, self.past_ts = [], []
@@ -438,14 +376,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 device=self.past_detections["pred_labels"].device)
             self.past_poses = torch.zeros([0, 14], dtype=torch.float)
             self.past_ts = torch.zeros([0], dtype=torch.long)
-        self.last_tile_coord = 0
+        self.last_tile_coord = self.init_tile_coord
 
     def calibrate(self):
         self.calibrator = AnytimeCalibrator(self)
 
         collect_data = False
         try:
-            self.calibrator.read_calib_data()
+            self.calibrator.read_calib_data(f"calib_data_{self.sched_algo}.json")
         except OSError:
             collect_data = True
 
@@ -462,7 +400,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             return None
 
         if collect_data:
-            self.calibrator.collect_data()
+            self.calibrator.collect_data(self.sched_algo, f"calib_data_{self.sched_algo}.json")
 
         return None
 

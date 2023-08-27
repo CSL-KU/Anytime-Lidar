@@ -9,6 +9,8 @@ from easydict import EasyDict as edict
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.linear_model import LinearRegression
 
+from .sched_helpers import SchedAlgo, get_num_tiles
+
 if __name__ != "__main__":
     from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 
@@ -22,21 +24,6 @@ def tile_coords_to_id(tile_coords):
     for tc in tile_coords:
         tid += 2 ** tc
     return int(tid)
-
-## Assume that nonempty tiles will have no gaps
-#@numba.jit(nopython=True)
-#def get_num_tiles(ctc): # chosen tile coords
-#    # it could be contiguous or not, detect that
-#    ctc_s, ctc_e = ctc[0], ctc[-1]
-#    if ctc_s <= ctc_e:
-#        num_tiles = ctc_e - ctc_s + 1
-#    else:
-#        j = 0
-#        while ctc[j] < ctc[j+1]:
-#            j += 1
-#        num_tiles = ctc[j] - ctc_s + 1 + ctc_e - ctc[j+1] + 1
-#
-#    return num_tiles
 
 class AnytimeCalibrator():
     def __init__(self, model):
@@ -166,7 +153,7 @@ class AnytimeCalibrator():
 
         return bb3d_time_ms, bb2d_time_ms, det_head_post_time_ms, hid
 
-    def collect_data(self, fname="calib_data.json"):
+    def collect_data(self, sched_algo, fname="calib_data.json"):
         print('Calibration starting...')
         print('NUM_POINT_FEATURES:', self.model.vfe.num_point_features)
         print('POINT_CLOUD_RANGE:', self.model.vfe.point_cloud_range)
@@ -212,43 +199,53 @@ class AnytimeCalibrator():
                     self.model.get_nonempty_tiles(voxel_coords)
             batch_dict['voxel_tile_coords'] = voxel_tile_coords
 
-            m2 = self.num_tiles//2
-            m1 = m2 - 1
-            mandatory_tiles = np.array([m1, m2], dtype=int)
-            rtiles = np.arange(m2+1, nonempty_tile_coords[-1]+1)
-            ltiles = np.arange(m1-1, nonempty_tile_coords[0]-1, -1)
-            rltiles = np.concatenate((rtiles, ltiles, rtiles, ltiles))
-            v = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-            v[nonempty_tile_coords] = voxel_counts
-            voxel_counts = v
+            if sched_algo == SchedAlgo.MirrorRR:
+                m2 = self.num_tiles//2
+                m1 = m2 - 1
+                mandatory_tiles = np.array([m1, m2], dtype=int)
+                rtiles = np.arange(m2+1, nonempty_tile_coords[-1]+1)
+                ltiles = np.arange(m1-1, nonempty_tile_coords[0]-1, -1)
+                rltiles = np.concatenate((rtiles, ltiles, rtiles, ltiles))
+                v = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
+                v[nonempty_tile_coords] = voxel_counts
+                voxel_counts = v
 
-            # Keep processing mandatory tiles while additionaly processing rtiles
-            # and ltiles in a round robin fashion
+                # Initially, process only the mandatory tiles
+                chosen_tc_series[sample_idx].append(mandatory_tiles)
+                batch_dict['voxel_coords'] = voxel_coords
+                batch_dict['voxel_features'] = voxel_features
+                batch_dict['chosen_tile_coords'] = mandatory_tiles
+                bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
+                        record=True, noprint=True)
 
-            #ntc_sz = nonempty_tile_coords.shape[0]
-
-            # Initially, process only the mandatory tiles
-            chosen_tc_series[sample_idx].append(mandatory_tiles)
-            batch_dict['voxel_coords'] = voxel_coords
-            batch_dict['voxel_features'] = voxel_features
-            batch_dict['chosen_tile_coords'] = mandatory_tiles
-            bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
-                    record=True, noprint=True)
-
-            bb3d_time_series[sample_idx].append(bb3d_time)
-            nt = mandatory_tiles.shape[0]
-            bb2d_time_data[nt].append(bb2d_time)
-            dh_post_time_data[hid].append(dh_post_time)
-            vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-            vcounts[mandatory_tiles] = voxel_counts[mandatory_tiles]
-            voxel_counts_series[sample_idx].append(vcounts)
+                bb3d_time_series[sample_idx].append(bb3d_time)
+                nt = mandatory_tiles.shape[0]
+                bb2d_time_data[nt].append(bb2d_time)
+                dh_post_time_data[hid].append(dh_post_time)
+                vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
+                vcounts[mandatory_tiles] = voxel_counts[mandatory_tiles]
+                voxel_counts_series[sample_idx].append(vcounts)
+                tiles_range = rltiles.shape[0]//2
+            elif sched_algo == SchedAlgo.RoundRobin:
+                all_tiles = np.concatenate((nonempty_tile_coords, nonempty_tile_coords))
+                all_voxel_counts= np.concatenate((voxel_counts, voxel_counts))
+                ntc_sz = nonempty_tile_coords.shape[0]
+                tiles_range = ntc_sz
 
             # Process rest of the possibilities expect the final one
-            for tiles in range(1, rltiles.shape[0]//2):
-                for start_idx in range(rltiles.shape[0]//2):
-                    chosen_tile_coords = np.concatenate((mandatory_tiles, rltiles[start_idx:(start_idx+tiles)]))
-                    chosen_tc_series[sample_idx].append(chosen_tile_coords)
-                    chosen_voxel_counts = voxel_counts[chosen_tile_coords]
+            for tiles in range(1, tiles_range):
+                for start_idx in range(tiles_range):
+                    if sched_algo == SchedAlgo.RoundRobin:
+                        chosen_tile_coords = all_tiles[start_idx:(start_idx+tiles)]
+                        chosen_tc_series[sample_idx].append(chosen_tile_coords)
+                        chosen_voxel_counts = all_voxel_counts[start_idx:(start_idx+tiles)]
+                        nt = get_num_tiles(chosen_tile_coords)
+                    elif sched_algo == SchedAlgo.MirrorRR:
+                        chosen_tile_coords = np.concatenate((mandatory_tiles, \
+                                rltiles[start_idx:(start_idx+tiles)]))
+                        chosen_tc_series[sample_idx].append(chosen_tile_coords)
+                        chosen_voxel_counts = voxel_counts[chosen_tile_coords]
+                        nt = chosen_tile_coords.shape[0]
 
                     batch_dict['voxel_coords'] = voxel_coords
                     batch_dict['voxel_features'] = voxel_features
@@ -256,7 +253,6 @@ class AnytimeCalibrator():
                     bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
                             record=True, noprint=True)
                     bb3d_time_series[sample_idx].append(bb3d_time)
-                    nt = chosen_tile_coords.shape[0]
                     bb2d_time_data[nt].append(bb2d_time)
                     dh_post_time_data[hid].append(dh_post_time)
 
@@ -273,11 +269,18 @@ class AnytimeCalibrator():
             bb3d_time, bb2d_time, dh_post_time, hid = self.process(batch_dict,
                     record=True, noprint=True)
             bb3d_time_series[sample_idx].append(bb3d_time)
-            nt = nonempty_tile_coords.shape[0]
-            bb2d_time_data[nt].append(bb2d_time)
-            dh_post_time_data[hid].append(dh_post_time)
-
-            voxel_counts_series[sample_idx].append(voxel_counts)
+            if sched_algo == SchedAlgo.RoundRobin:
+                nt = get_num_tiles(nonempty_tile_coords)
+                bb2d_time_data[nt].append(bb2d_time)
+                dh_post_time_data[hid].append(dh_post_time)
+                vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
+                vcounts[nonempty_tile_coords] = voxel_counts
+                voxel_counts_series[sample_idx].append(vcounts)
+            elif sched_algo == SchedAlgo.MirrorRR:
+                nt = nonempty_tile_coords.shape[0]
+                bb2d_time_data[nt].append(bb2d_time)
+                dh_post_time_data[hid].append(dh_post_time)
+                voxel_counts_series[sample_idx].append(voxel_counts)
 
             gc.collect()
             time_end = time.time()
