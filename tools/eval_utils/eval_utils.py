@@ -73,6 +73,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
     start_time = time.time()
     gc.disable()
+
+    det_elapsed_musec = []
     for i in range(len(dataloader)):
         if speed_test and i == num_samples:
             break
@@ -84,6 +86,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         with torch.no_grad():
             pred_dicts, ret_dict = model(data_indexes)
         batch_dict = model.latest_batch_dict
+        det_elapsed_musec.append(model.last_elapsed_time_musec)
         disp_dict = {}
 
         if getattr(args, 'infer_time', False):
@@ -182,7 +185,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             det_annos, class_names,
             eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
             output_path=final_output_dir,
-            nusc_annos_outp=nusc_annos
+            nusc_annos_outp=nusc_annos,
+            det_elapsed_musec=det_elapsed_musec,
         )
 
         if do_tracking:

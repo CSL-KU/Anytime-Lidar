@@ -230,6 +230,7 @@ class NuScenesDataset(DatasetTemplate):
             eval_version = 'cvpr_2019'
             eval_config = config_factory(eval_version)
 
+        dt = kwargs['det_elapsed_musec'] if 'det_elapsed_musec' in kwargs else None
         nusc_eval = NuScenesEval(
             nusc,
             config=eval_config,
@@ -237,6 +238,7 @@ class NuScenesDataset(DatasetTemplate):
             eval_set=eval_set_map[self.dataset_cfg.VERSION],
             output_dir=str(output_path),
             verbose=True,
+            det_elapsed_musec=dt,
         )
         metrics_summary = nusc_eval.main(plot_examples=0, render_curves=False)
 

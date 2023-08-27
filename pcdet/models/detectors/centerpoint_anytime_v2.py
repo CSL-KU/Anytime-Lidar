@@ -43,8 +43,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             return self.forward_eval(batch_dict)
 
     def forward_eval(self, batch_dict):
-        self.send_pc_for_clustering(batch_dict['points'])
-        batch_dict['clusters'] = self.receive_clusters()
         self.measure_time_start('Projection')
         batch_dict = self.projection(batch_dict)
         self.measure_time_end('Projection')
@@ -56,7 +54,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d(batch_dict)
             self.measure_time_end('Backbone3D')
-
 
         batch_dict = self.schedule2(batch_dict)
         self.measure_time_start('MapToBEV')
