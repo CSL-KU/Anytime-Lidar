@@ -83,7 +83,6 @@ export OMP_NUM_THREADS=4
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_pillar0075_res2d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
-
 #DATASET="nuscenes_dataset.yaml"
 #DATASET="nuscenes_mini_dataset.yaml"
 #ARG="s/_BASE_CONFIG_: cfgs\/dataset_configs.*$"
