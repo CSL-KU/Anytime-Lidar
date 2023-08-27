@@ -19,9 +19,12 @@ try:
     params = pypatchworkpp.Parameters()
     params.sensor_height = 1.84
     params.max_range = 54.0
+    params.enable_RNR = True
+    params.enable_TGR = True
     params.verbose = False
     PatchworkPLUSPLUS = pypatchworkpp.patchworkpp(params)
-    remove_ground = True
+    # NOTE uncomment the following line to enable ground removal
+#    remove_ground = True
 except ImportError:
     print("Cannot find pypatchworkpp, won't remove ground.")
 
