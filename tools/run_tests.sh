@@ -108,14 +108,18 @@ elif [ $1 == 'methods' ]; then
     CFG_FILES=( \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml")
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
 #	    "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
 #	    "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml")
 #           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
     CKPT_FILES=( \
             "../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth")
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
+	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
 #           "../models/voxelnext_nuscenes_kernel1.pth" \
 #           "../models/voxelnext_nuscenes_kernel1.pth")
 #           "../models/voxelnext_nuscenes_kernel1.pth" \
@@ -125,10 +129,15 @@ elif [ $1 == 'methods' ]; then
 
     for m in ${!CFG_FILES[@]}
     do
+
+	if [ $m == 2 ]; then # MRR
+		continue
+	fi
+
         CFG_FILE=${CFG_FILES[$m]}
         CKPT_FILE=${CKPT_FILES[$m]}
 
-	if [ $m == 2 ]; then # Anytime lidar 1
+	if [ $m == 3 ]; then
 		TSKST=""
 		MTD=10
 		export OMP_NUM_THREADS=2
