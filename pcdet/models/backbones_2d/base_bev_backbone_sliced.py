@@ -101,14 +101,15 @@ class BaseBEVBackboneSliced(nn.Module):
             # Select all
             x = spatial_features
         elif (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
-                (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
+                 (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
+                 (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
             # Contiguous
             x = spatial_features[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)]
         else:
             # Two chunks, find the point of switching
             # Following piece of code take 0.6 ms in jetson agx
             i = 0
-            if self.sched_algo == SchedAlgo.RoundRobin:
+            if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
                 while ctc[i] < ctc[i+1]:
                     i += 1
             elif self.sched_algo == SchedAlgo.MirrorRR:

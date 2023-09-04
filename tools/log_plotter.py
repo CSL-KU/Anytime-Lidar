@@ -29,7 +29,9 @@ method_colors= [
 method_num_to_str = [
         '0CenterPoint',
         '1AnytimeV1',
-        '2AnytimeV2',
+        '2AnytimeV2-RR',
+        '3AnytimeV2-MRR',
+        '4AnytimeV2-ARR',
 #        '3Anytime-NoPrj',
         #'2PointPillars-2',
         #'1PointPillars-3',
@@ -42,7 +44,7 @@ method_num_to_str = [
 ]
 
 method_remap = {
-    0:0, 1:2, 10:1,
+        0:0, 1:2, 2:3, 10:1, 4:4,
 }
 
 if __name__ == '__main__':
@@ -83,7 +85,9 @@ if __name__ == '__main__':
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint',
             'AnytimeV1',
-            'AnytimeV2',
+            'AnytimeV2-RR',
+#            'AnytimeV2-MRR',
+            'AnytimeV2-ARR',
     ]})
 
     #plot_sets.append({ nm:exps_dict[nm] for nm in [ \

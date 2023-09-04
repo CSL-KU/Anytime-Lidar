@@ -1,6 +1,7 @@
 from functools import partial
 
 import torch.nn as nn
+import torch
 
 from ...utils.spconv_utils import replace_feature, spconv
 
@@ -200,6 +201,7 @@ class VoxelResBackBone8x(nn.Module):
             SparseBasicBlock(16, 16, norm_fn=norm_fn, indice_key='res1'),
         )
 
+        # this is the first convolution where input size changes
         self.conv2 = spconv.SparseSequential(
             # [1600, 1408, 41] <- [800, 704, 21]
             block(16, 32, 3, norm_fn=norm_fn, stride=2, padding=1, indice_key='spconv2', conv_type='spconv'),
@@ -238,6 +240,9 @@ class VoxelResBackBone8x(nn.Module):
             'x_conv4': 128
         }
 
+        # Grouped with respect to having same input size
+        self.num_layer_groups = 4
+
     def forward(self, batch_dict):
         """
         Args:
@@ -251,6 +256,21 @@ class VoxelResBackBone8x(nn.Module):
         """
         voxel_features, voxel_coords = batch_dict['voxel_features'], batch_dict['voxel_coords']
         batch_size = batch_dict['batch_size']
+
+        record_time = batch_dict.get('record_time', False)
+        record_vcounts = batch_dict.get('record_int_vcounts', False)
+        # intermediary
+        record_int_vcoords = batch_dict.get('record_int_vcoords', False)
+
+        if record_time:
+            events=[torch.cuda.Event(enable_timing=True)]
+            events[-1].record()
+        if record_vcounts:
+            num_voxels=[voxel_coords.size(0)]
+        if record_int_vcoords:
+            vcoords = []
+            tile_size_voxels = batch_dict['tile_size_voxels']
+            num_tiles = batch_dict['num_tiles']
         input_sp_tensor = spconv.SparseConvTensor(
             features=voxel_features,
             indices=voxel_coords.int(),
@@ -258,12 +278,60 @@ class VoxelResBackBone8x(nn.Module):
             batch_size=batch_size
         )
         x = self.conv_input(input_sp_tensor)
-
         x_conv1 = self.conv1(x)
-        x_conv2 = self.conv2(x_conv1)
-        x_conv3 = self.conv3(x_conv2)
-        x_conv4 = self.conv4(x_conv3)
+        x_conv2_0 = self.conv2[0][0](x_conv1)
+        if record_time:
+            events.append(torch.cuda.Event(enable_timing=True))
+            events[-1].record()
+        if record_vcounts:
+            num_voxels.append(x_conv2_0.indices.size(0))
+        if record_int_vcoords:
+            #vcoords.append(x_conv2.indices)
 
+            voxel_tile_coords = torch.div(x_conv2_0.indices[:, -1], tile_size_voxels // 2, \
+                    rounding_mode='trunc')
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            vcoords.append(voxel_dist.unsqueeze(0))
+
+        # since next to ops are not spconv op
+        x_conv2_0 = x_conv2_0.replace_feature(self.conv2[0][1](x_conv2_0.features))
+        x_conv2_0 = x_conv2_0.replace_feature(self.conv2[0][2](x_conv2_0.features))
+        x_conv2_1 = self.conv2[1](x_conv2_0)
+        x_conv2 = self.conv2[2](x_conv2_1)
+        x_conv3_0 = self.conv3[0][0](x_conv2)
+        if record_time:
+            events.append(torch.cuda.Event(enable_timing=True))
+            events[-1].record()
+        if record_vcounts:
+            num_voxels.append(x_conv3_0.indices.size(0))
+        if record_int_vcoords:
+            #vcoords.append(x_conv3.indices)
+            voxel_tile_coords = torch.div(x_conv3_0.indices[:, -1], tile_size_voxels // 4, \
+                    rounding_mode='trunc')
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            vcoords.append(voxel_dist.unsqueeze(0))
+
+        x_conv3_0 = x_conv3_0.replace_feature(self.conv3[0][1](x_conv3_0.features))
+        x_conv3_0 = x_conv3_0.replace_feature(self.conv3[0][2](x_conv3_0.features))
+        x_conv3_1 = self.conv3[1](x_conv3_0)
+        x_conv3 = self.conv3[2](x_conv3_1)
+        x_conv4_0 = self.conv4[0][0](x_conv3)
+        if record_time:
+            events.append(torch.cuda.Event(enable_timing=True))
+            events[-1].record()
+        if record_vcounts:
+            num_voxels.append(x_conv4_0.indices.size(0))
+        if record_int_vcoords:
+            #vcoords.append(x_conv4.indices)
+            voxel_tile_coords = torch.div(x_conv4_0.indices[:, -1], tile_size_voxels // 8, \
+                    rounding_mode='trunc')
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            vcoords.append(voxel_dist.unsqueeze(0))
+
+        x_conv4_0 = x_conv4_0.replace_feature(self.conv4[0][1](x_conv4_0.features))
+        x_conv4_0 = x_conv4_0.replace_feature(self.conv4[0][2](x_conv4_0.features))
+        x_conv4_1 = self.conv4[1](x_conv4_0)
+        x_conv4 = self.conv4[2](x_conv4_1)
         # for detection head
         # [200, 176, 5] -> [200, 176, 2]
         out = self.conv_out(x_conv4)
@@ -289,5 +357,18 @@ class VoxelResBackBone8x(nn.Module):
                 'x_conv4': 8,
             }
         })
-        
+
+        if record_time:
+            events.append(torch.cuda.Event(enable_timing=True))
+            events[-1].record()
+            torch.cuda.synchronize()
+            times = []
+            for i in range(len(events)-1):
+                times.append(events[i].elapsed_time(events[i+1]))
+            batch_dict['bb3d_layer_times_ms'] = times
+        if record_vcounts:
+            batch_dict['bb3d_num_voxels'] = num_voxels
+        if record_int_vcoords:
+            batch_dict['bb3d_intermediary_vcoords'] = vcoords
+
         return batch_dict

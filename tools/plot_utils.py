@@ -223,7 +223,7 @@ def plot_func_rem_time_on_finish(out_path, exps_dict):
         time_rem = [np.expand_dims(-np.array(e['deadline_diffs'])*1000., -1)  for e in evals]
 
         for i, (label, data) in enumerate(zip(labels, time_rem)):
-            ax.boxplot(data, labels=[label], positions=[i])
+            ax.boxplot(data, labels=[label], positions=[i], sym=".")
 #        i+=1
         ax.invert_xaxis()
         ax.set_ylabel('Remaining time to deadline\non finish (msec)', fontsize='x-large')
@@ -266,7 +266,7 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
                 for e in evals]
         bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
         for i, (label, data) in enumerate(zip(labels, bb3d_pred_err)):
-            ax.boxplot(data, labels=[label], positions=[i])
+            ax.boxplot(data, labels=[label], positions=[i], sym=".")
         ax.invert_xaxis()
         ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
         ax.set_xlabel('Deadline (msec)', fontsize='x-large')
@@ -291,7 +291,7 @@ def plot_func_area_processed(out_path, exps_dict):
 
 #        bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
         for i, (label, data) in enumerate(zip(labels, processed_area_perc)):
-            ax.boxplot(data, labels=[label], positions=[i])
+            ax.boxplot(data, labels=[label], positions=[i], sym=".")
 #        i+=1
         ax.invert_xaxis()
         ax.set_ylabel('Processed area (%)', fontsize='x-large')
@@ -317,7 +317,7 @@ def plot_func_tile_drop_rate(out_path, exps_dict):
 
 #        bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
         for i, (label, data) in enumerate(zip(labels, dropped_area_perc)):
-            ax.boxplot(data, labels=[label], positions=[i])
+            ax.boxplot(data, labels=[label], positions=[i], sym=".")
 #        i+=1
         ax.invert_xaxis()
         ax.set_ylabel('Dropped tiles after\nBackbone 3D (%)', fontsize='x-large')

@@ -492,6 +492,7 @@ class CenterHeadGroupSliced(nn.Module):
         scattered_tensors = []
         ctc_s, ctc_e = ctc[0], ctc[-1]
         if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+                (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
                 (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
             # contiguous
             num_tiles = ctc_e - ctc_s + 1
@@ -499,7 +500,7 @@ class CenterHeadGroupSliced(nn.Module):
         else:
             # Two chunks, find the point of switching
             i = 0
-            if self.sched_algo == SchedAlgo.RoundRobin:
+            if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
                 while ctc[i] < ctc[i+1]:
                     i += 1
             elif self.sched_algo == SchedAlgo.MirrorRR:
@@ -515,6 +516,7 @@ class CenterHeadGroupSliced(nn.Module):
 
         for tensor in sliced_tensors:
             if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+                    (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
                     (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
                 # contiguous
                 tile_sz = tensor.size(-1) // num_tiles
@@ -651,7 +653,7 @@ class CenterHeadGroupSliced(nn.Module):
     def forward_eval_post(self, data_dict):
         padded_x = data_dict['padded_x']
         self.attr_skip_events = [None] * len(self.attr_skip_events)
-        record = data_dict['record'] if 'record' in data_dict else False
+        record = data_dict.get('record_time', False)
         for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
             topk_outp = pd['topk_outp']
             scores = topk_outp[0]

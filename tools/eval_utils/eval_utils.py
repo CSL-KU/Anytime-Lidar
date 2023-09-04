@@ -186,7 +186,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
             output_path=final_output_dir,
             nusc_annos_outp=nusc_annos,
-            det_elapsed_musec=det_elapsed_musec,
+#            det_elapsed_musec=det_elapsed_musec,
         )
 
         if do_tracking:

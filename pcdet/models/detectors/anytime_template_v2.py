@@ -1,5 +1,5 @@
 from .detector3d_template import Detector3DTemplate
-from .anytime_calibrator import AnytimeCalibrator
+from .anytime_calibrator import AnytimeCalibrator, get_stats
 from .sched_helpers import *
 import torch
 from nuscenes.nuscenes import NuScenes
@@ -40,11 +40,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.total_num_tiles = self.tcount
 
         # This number will be determined by the scheduling algorithm initially for each input
-        self.projection_stream = torch.cuda.Stream()
+        #self.projection_stream = torch.cuda.Stream(priority=0)
 
         # divide the tiles in X axis only
         self.tile_size_voxels = torch.tensor(\
                 self.dataset.grid_size[1] / self.tcount).cuda().long()
+        self.tile_size_voxels_int = self.tile_size_voxels.int()
 
         ####Projection###
         self.enable_projection = False
@@ -63,20 +64,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.token_to_scene[k] = v['scene']
         ################################################################################
 
-        #self.calibrating_now = False
         self.add_dict = self._eval_dict['additional']
         self.add_dict['bb3d_preds'] = []
         self.add_dict['nonempty_tiles'] = []
         self.add_dict['chosen_tiles_1'] = []
         self.add_dict['chosen_tiles_2'] = []
-        #for k in ('voxel_counts', 'num_tiles', 'PostSched'):
-        #    self.add_dict[k] = []
 
-        self.proj_time_limit_musec = 1.0 * 1000000
+        self.proj_time_limit_musec = 1.0 * 1600000
 
         self.sched_algo = self.model_cfg.METHOD
 
-        if self.sched_algo == SchedAlgo.RoundRobin:
+        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
             self.init_tile_coord = -1
         elif self.sched_algo == SchedAlgo.MirrorRR:
             self.init_tile_coord = 0
@@ -106,73 +104,81 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.cls_id_to_det_head_idx_map[cls_id] = i
         self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
 
+        if self.sched_algo == SchedAlgo.AdaptiveRR:
+            self.processing_time_limit_sec = 0.650 # Every x ms, reset
+            self.sched_reset()
+
     # When projecting, set the pred scores to a number below 0.3.
     # After running nms, remove the dets that are projected using their
     # pred score when adding the new dets to the past detections.
     # However, output the entire detections.
-    def projection(self, batch_dict):
+    def initialize(self, batch_dict):
         batch_dict['projections'] = None
+
+        latest_token = batch_dict['metadata'][0]['token']
+        scene_token = self.token_to_scene[latest_token]
+
+        reset_proj = False
+        if scene_token != self.prev_scene_token:
+            self.sched_reset()
+            self.prev_scene_token = scene_token
+            reset_proj = True
+
         if not self.enable_projection:
             return batch_dict
 
-        with torch.cuda.stream(self.projection_stream):
-            # Do post processing of previous sample here to facilitate calculating
-            # remaning time to dealdine
-            self.projection_post()
+        # Do post processing of previous sample here to facilitate calculating
+        # remaning time to deadline
+        self.projection_post()
 
-            latest_token = batch_dict['metadata'][0]['token']
-            scene_token = self.token_to_scene[latest_token]
-            self.cur_pose = self.token_to_pose[latest_token]
-            self.cur_ts = self.token_to_ts[latest_token]
+        self.cur_pose = self.token_to_pose[latest_token]
+        self.cur_ts = self.token_to_ts[latest_token]
 
-            if scene_token != self.prev_scene_token:
-                self.projection_reset()
-                self.prev_scene_token = scene_token
+        if reset_proj:
+            self.projection_reset()
 
-            if self.sched_algo == SchedAlgo.ProjectionOnly:
-                return self.projection_for_test(batch_dict)
-            # Clear unuseful dets
-            if self.past_ts.size(0) > 0 and self.cur_ts - self.past_ts[0] > self.proj_time_limit_musec:
-                self.past_poses = self.past_poses[1:]
-                self.past_ts = self.past_ts[1:]
-                nd = self.past_detections['num_dets'].pop(0)
-                for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
-                    self.past_detections[k] = self.past_detections[k][nd:]
-                self.past_detections['pose_idx'] -= 1
+        if self.sched_algo == SchedAlgo.ProjectionOnly:
+            return self.projection_for_test(batch_dict)
+        # Clear unuseful dets
+        if self.past_ts.size(0) > 0 and self.cur_ts - self.past_ts[0] > self.proj_time_limit_musec:
+            self.past_poses = self.past_poses[1:]
+            self.past_ts = self.past_ts[1:]
+            nd = self.past_detections['num_dets'].pop(0)
+            for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
+                self.past_detections[k] = self.past_detections[k][nd:]
+            self.past_detections['pose_idx'] -= 1
 
-            # Assign the scores in a way to favor fresh objects
-            self.past_detections['pred_scores'] = self.score_thresh - \
-                    (self.score_thresh / (self.past_detections['pose_idx'] + 2))
+        # Assign the scores in a way to favor fresh objects
+        self.past_detections['pred_scores'] = self.score_thresh - \
+                (self.score_thresh / (self.past_detections['pose_idx'] + 2))
 
-            if self.past_detections['pred_boxes'].size(0) > 0:
-                proj_dict = {}
-                proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
-                        self.past_detections['pred_boxes'],
-                        self.past_detections['pose_idx'],
-                        self.past_poses.cuda(),
-                        self.cur_pose.cuda(),
-                        self.past_ts.cuda(),
-                        self.cur_ts.item())
+        if self.past_detections['pred_boxes'].size(0) > 0:
+            proj_dict = {}
+            proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
+                    self.past_detections['pred_boxes'],
+                    self.past_detections['pose_idx'],
+                    self.past_poses.cuda(),
+                    self.cur_pose.cuda(),
+                    self.past_ts.cuda(),
+                    self.cur_ts.item())
 
-                proj_dict['pred_scores'] = self.past_detections['pred_scores']
-                proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
-                batch_dict['projections'] = proj_dict
+            proj_dict['pred_scores'] = self.past_detections['pred_scores']
+            proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
 
-                proj_dicts = cuda_projection.split_projections(
-                        proj_dict['pred_boxes'],
-                        proj_dict['pred_scores'],
-                        proj_dict['pred_labels'],
-                        self.cls_id_to_det_head_idx_map,
-                        self.num_det_heads)
-                batch_dict['projections'] = proj_dicts
+            proj_dicts = cuda_projection.split_projections(
+                    proj_dict['pred_boxes'],
+                    proj_dict['pred_scores'],
+                    proj_dict['pred_labels'],
+                    self.cls_id_to_det_head_idx_map,
+                    self.num_det_heads)
+            batch_dict['projections'] = proj_dicts
 
         return batch_dict
-
 
     def projection_post(self):
         batch_dict = self.latest_batch_dict
         if not self.enable_projection or batch_dict is None or self.cur_pose is None:
-            return
+            return batch_dict
 
         pred_dict = batch_dict['final_box_dicts'][0]
 
@@ -212,10 +218,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             netc = nonempty_tile_coords.cpu().numpy()
             voxel_counts = voxel_counts.cpu().numpy()
-            if self.sched_algo == SchedAlgo.MirrorRR:
-                netc, voxel_counts = fill_tile_gaps(netc, voxel_counts)
 
             return voxel_tile_coords, netc, voxel_counts
+
+    def schedule0(self, batch_dict):
+        return batch_dict
 
     def schedule1(self, batch_dict):
         voxel_coords = batch_dict['voxel_coords']
@@ -224,25 +231,74 @@ class AnytimeTemplateV2(Detector3DTemplate):
             return batch_dict
         self.measure_time_start('Sched')
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
+        vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
+        vcount_area[netc] = netc_vcounts
+        vcount_area = np.expand_dims(vcount_area, 0)
+        batch_dict['vcount_area'] = torch.from_numpy(vcount_area).int().cuda()
+
+        if self.sched_algo == SchedAlgo.MirrorRR:
+            netc, netc_vcounts= fill_tile_gaps(netc, netc_vcounts)
+        elif self.sched_algo == SchedAlgo.AdaptiveRR:
+            latest_token = batch_dict['metadata'][0]['token']
+            cur_ts = self.token_to_ts[latest_token]
+
+            # upper limit 25%
+            if self.num_blacklisted_tiles > netc.shape[0] - int(self.tcount//4):
+                self.num_blacklisted_tiles = netc.shape[0] - int(self.tcount//4)
+
+            if self.reset_ts is not None:
+                elapsed_time_sec = (cur_ts - self.reset_ts) / 1000000.0
+                if elapsed_time_sec > self.processing_time_limit_sec:
+                    # Reset
+                    if self.processed_area_perc < 1.0:
+                        # We need to blacklist tiles
+                        self.num_blacklisted_tiles += int(np.ceil(\
+                                (netc.shape[0] - self.num_blacklisted_tiles) * \
+                                (1.0 - self.processed_area_perc)))
+                        self.num_blacklisted_tiles = min(self.num_blacklisted_tiles, \
+                                netc.shape[0] - int(self.tcount//4))
+                    elif self.processed_area_perc > 1.0:
+                        self.num_blacklisted_tiles -= int(np.ceil(\
+                                (netc.shape[0] - self.num_blacklisted_tiles) * \
+                                (self.processed_area_perc - 1.0)))
+                        self.num_blacklisted_tiles = max(self.num_blacklisted_tiles, 0)
+
+                    self.reset_ts = cur_ts
+                    self.processed_area_perc = 0.
+
+            else:
+                self.reset_ts = cur_ts
+
+            if self.num_blacklisted_tiles > 0:
+                lptr, rptr = 0, netc_vcounts.shape[0]-1
+                bt = self.num_blacklisted_tiles
+                while bt > 0 and rptr - lptr > 0:
+                    if netc_vcounts[lptr] < netc_vcounts[rptr]:
+                        lptr += 1
+                    else:
+                        rptr -= 1
+                    bt -= 1
+                netc = netc[lptr:rptr+1]
+                netc_vcounts = netc_vcounts[lptr:rptr+1]
+
+            self.cur_netc_num_tiles = netc.shape[0]
+
         batch_dict['nonempty_tile_coords'] = netc
 
-        if self.sched_algo == SchedAlgo.RoundRobin:
-            num_tiles, vcounts_all, tiles_queue = round_robin_sched_helper(
-                    batch_dict['nonempty_tile_coords'], netc_vcounts,
-                    self.last_tile_coord, self.tcount)
+        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
+            num_tiles, tiles_queue = round_robin_sched_helper(
+                    netc, self.last_tile_coord, self.tcount)
         elif self.sched_algo == SchedAlgo.MirrorRR:
             num_tiles, vcounts_all, tiles_queue = mirror_sched_helper(
-                    batch_dict['nonempty_tile_coords'], netc_vcounts,
+                    netc, netc_vcounts,
                     self.last_tile_coord, self.tcount)
 
-        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR:
+        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR or \
+                self.sched_algo == SchedAlgo.AdaptiveRR:
             batch_dict['tiles_queue'] = tiles_queue
-            self.add_dict['nonempty_tiles'].append(batch_dict['nonempty_tile_coords'].tolist())
-            self.projection_stream.synchronize()
-
-            vcounts_all = torch.from_numpy(vcounts_all)
-            num_tiles = torch.from_numpy(num_tiles)
-            bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(vcounts_all, num_tiles)
+            self.add_dict['nonempty_tiles'].append(netc.tolist())
+            bb3d_times, post_bb3d_times = self.calibrator.pred_req_times_ms(\
+                    vcount_area, tiles_queue, num_tiles)
             batch_dict['post_bb3d_times'] = post_bb3d_times
             tpreds = bb3d_times + post_bb3d_times
             psched_start_time = time.time()
@@ -264,6 +320,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.add_dict['bb3d_preds'].append(float(bb3d_times[-1]))
                 if self.sched_algo == SchedAlgo.MirrorRR:
                     self.last_tile_coord = self.init_tile_coord
+                tiles_idx=0
             else:
                 tiles_idx=1
                 while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
@@ -272,7 +329,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.add_dict['bb3d_preds'].append(float(bb3d_times[tiles_idx-1]))
 
                 # Voxel filtering is needed
-                if self.sched_algo == SchedAlgo.RoundRobin:
+                if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
                     chosen_tile_coords = tiles_queue[:tiles_idx]
                     self.last_tile_coord = chosen_tile_coords[-1].item()
                 else:
@@ -292,11 +349,21 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
         self.measure_time_end('Sched')
 
+        batch_dict['record_int_vcoords'] = True
+        batch_dict['tile_size_voxels'] = self.tile_size_voxels_int
+        batch_dict['num_tiles'] = self.tcount
+
         return batch_dict
 
     # Recalculate chosen tiles based on the time spent on bb3d
     def schedule2(self, batch_dict):
         torch.cuda.synchronize()
+        vcoords = batch_dict['bb3d_intermediary_vcoords']
+        vcoords.insert(0, batch_dict['vcount_area'])
+        voxel_dists = torch.cat(vcoords, dim=0).cpu().numpy() # 4 x 18
+
+        self.calibrator.commit_bb3d_updates(batch_dict['chosen_tile_coords'], voxel_dists)
+
         post_bb3d_times = batch_dict['post_bb3d_times']
         rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
         diffs = post_bb3d_times < rem_time_ms
@@ -310,24 +377,25 @@ class AnytimeTemplateV2(Detector3DTemplate):
             ctc = batch_dict['tiles_queue'][:tiles_idx-m]
             if self.sched_algo == SchedAlgo.MirrorRR:
                 batch_dict['chosen_tile_coords'] = np.concatenate((self.mtiles, ctc))
-            elif self.sched_algo == SchedAlgo.RoundRobin:
+            elif self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
                 batch_dict['chosen_tile_coords'] = ctc
                 self.last_tile_coord = ctc[-1].item()
 
         if self.sched_algo == SchedAlgo.MirrorRR and \
                 batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
             self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
-        self.add_dict['chosen_tiles_2'].append(batch_dict['chosen_tile_coords'].tolist())
+        ctc = batch_dict['chosen_tile_coords'].tolist()
+        self.add_dict['chosen_tiles_2'].append(ctc)
+
+        if self.sched_algo == SchedAlgo.AdaptiveRR:
+            self.processed_area_perc += len(ctc) / self.cur_netc_num_tiles
 
         return batch_dict
 
-    # NOTE this is just a sanity check, not actual scheduling
     def schedule3(self, batch_dict):
-        rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
-        req_time_ms = self.calibrator.pred_final_req_time_ms(batch_dict['dethead_indexes'])
-        tdiff = rem_time_ms - req_time_ms
-        if tdiff < 0:
-            print('Remaining and requires time (ms):', rem_time_ms, req_time_ms)
+        return batch_dict
+
+    def schedule4(self, batch_dict):
         return batch_dict
 
     def get_training_loss(self):
@@ -362,6 +430,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return final_pred_dict, recall_dict
 
+    def sched_reset(self):
+        self.processed_area_perc = 0.
+        self.num_blacklisted_tiles = 0
+        self.reset_ts = None
+
     def projection_reset(self):
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
         self.cur_pose, self.cur_ts = None, None
@@ -395,6 +468,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
         self.enable_projection = True
         self.projection_reset()
+        self.sched_reset()
 
         if self.training:
             return None

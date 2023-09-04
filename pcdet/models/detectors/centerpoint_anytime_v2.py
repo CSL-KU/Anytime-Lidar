@@ -17,7 +17,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'MapToBEV': [],
                     'Backbone2D': [],
                     'CenterHead': [],
-                    'Projection': []})
+                    'Init': []})
         else:
             #voxel
             self.is_voxel_enc=True
@@ -30,9 +30,8 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'MapToBEV': [],
                     'Backbone2D': [],
                     'CenterHead': [],
-                    'Projection': []})
+                    'Init': []})
         self.calibrated = False
-
 
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
@@ -43,10 +42,11 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             return self.forward_eval(batch_dict)
 
     def forward_eval(self, batch_dict):
-        self.measure_time_start('Projection')
-        batch_dict = self.projection(batch_dict)
-        self.measure_time_end('Projection')
+        self.measure_time_start('Init')
+        batch_dict = self.initialize(batch_dict)
+        self.measure_time_end('Init')
         self.measure_time_start('VFE')
+        batch_dict = self.schedule0(batch_dict)
         batch_dict = self.vfe(batch_dict, model=self)
         self.measure_time_end('VFE')
         batch_dict = self.schedule1(batch_dict)
@@ -65,11 +65,13 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
 
         self.measure_time_start('Backbone2D')
         batch_dict = self.backbone_2d(batch_dict)
+        batch_dict = self.dense_head.forward_eval_pre(batch_dict)
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
-        batch_dict = self.dense_head.forward_eval_pre(batch_dict)
+        self.schedule3(batch_dict)
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead')
+        self.schedule4(batch_dict)
 
         return batch_dict
 

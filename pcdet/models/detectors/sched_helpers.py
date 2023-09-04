@@ -5,6 +5,7 @@ class SchedAlgo:
     ProjectionOnly = 0
     RoundRobin = 1
     MirrorRR = 2
+    AdaptiveRR = 4 # Calib data of method 1 should work fine
 
 @numba.jit(nopython=True)
 def get_num_tiles(ctc): # chosen tile coords
@@ -37,7 +38,7 @@ def fill_tile_gaps(netc, vcounts):
     return new_netc, new_vcounts
 
 @numba.jit(nopython=True)
-def round_robin_sched_helper(netc, netc_vcounts, last_tile_coord, tcount):
+def round_robin_sched_helper(netc, last_tile_coord, tcount):
     num_nonempty_tiles = netc.shape[0]
     tile_begin_idx=0
     for i in range(num_nonempty_tiles):
@@ -46,18 +47,13 @@ def round_robin_sched_helper(netc, netc_vcounts, last_tile_coord, tcount):
             break
 
     netc_flip = np.concatenate((netc[tile_begin_idx:], netc[:tile_begin_idx]))
-    netc_vcounts_flip = np.concatenate((netc_vcounts[tile_begin_idx:],
-        netc_vcounts[:tile_begin_idx]))
 
-    vcounts_all = np.zeros((num_nonempty_tiles, tcount), dtype=np.float32)
     num_tiles = np.empty((num_nonempty_tiles,), dtype=np.int32)
-    for i in range(vcounts_all.shape[0]):
+    for i in range(netc_flip.shape[0]):
         ctc = netc_flip[:i+1]
         num_tiles[i] = get_num_tiles(ctc)
-        for j in range(i+1):
-            vcounts_all[i, ctc[j]] = netc_vcounts_flip[j]
 
-    return num_tiles, vcounts_all, netc_flip
+    return num_tiles, netc_flip
 
 @numba.jit(nopython=True)
 def mirror_sched_helper(netc, netc_vcounts, last_tile_coord, tcount):
