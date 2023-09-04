@@ -165,6 +165,6 @@ elif [ $1 == 'methods' ]; then
     done
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
-elif [ $1 == 'calib' ]; then
-    $CMD
+elif [ $1 == 'calibm' ]; then
+    $CMD  --set "MODEL.METHOD" $2
 fi
