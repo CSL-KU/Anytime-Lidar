@@ -1,6 +1,7 @@
 #include <cmath>
-#include <torch/extension.h>
 #include <iostream>
+#include <torch/extension.h>
+#include<c10/cuda/CUDAStream.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -296,10 +297,12 @@ torch::Tensor project_past_detections(
       .device(pred_boxes.device().type())
       .requires_grad(false);
 
+
   torch::Tensor projected_boxes = torch::empty_like(pred_boxes);
 
+  auto s = at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_INTEGRAL_TYPES(past_pose_indexes.type(), "projection_cuda", ([&] {
-    projection_cuda_kernel<scalar_t><<<num_blocks, threads_per_block>>>(
+    projection_cuda_kernel<scalar_t><<<num_blocks, threads_per_block, 0, s>>>(
       pred_boxes.packed_accessor32<fp_type,2,torch::RestrictPtrTraits>(),
       past_pose_indexes.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
       past_poses.packed_accessor32<fp_type,2,torch::RestrictPtrTraits>(),
