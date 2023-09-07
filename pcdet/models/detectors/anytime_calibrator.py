@@ -197,6 +197,7 @@ class AnytimeCalibrator():
 
             batch_dict = self.model.map_to_bev(batch_dict)
             batch_dict = self.model.backbone_2d(batch_dict)
+            batch_dict = self.model.schedule3(batch_dict)
             batch_dict = self.model.dense_head.forward_eval_pre(batch_dict)
             ## synchronized here
 
@@ -204,6 +205,7 @@ class AnytimeCalibrator():
                 cuda_events[1].record()
 
             batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
+            batch_dict = self.model.schedule4(batch_dict)
 
             if record:
                 cuda_events[2].record()
@@ -218,8 +220,6 @@ class AnytimeCalibrator():
                 # all possibilities are touched from what I see in the calib data
                 det_head_post_time_ms = cuda_events[1].elapsed_time(cuda_events[2])
                 hid = tile_coords_to_id(batch_dict['dethead_indexes'])
-
-                self.model.dense_head.calc_skip_times()
 
         if record and not noprint:
             print(f'Elapsed times: {bb3d_times_ms}, {bb2d_time_ms}'
@@ -383,7 +383,6 @@ class AnytimeCalibrator():
                 "chosen_tile_coords": chosen_tc_series,
                 "bb2d_time_ms": bb2d_time_data,
                 "det_head_post_time_ms": dh_post_time_data,
-                "det_head_attr_skip_gains": self.model.dense_head.get_attr_skip_gains(),
                 "num_tiles": self.num_tiles,
                 "num_det_heads" : self.num_det_heads,
         }

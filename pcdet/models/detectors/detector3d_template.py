@@ -53,6 +53,8 @@ def pre_forward_hook(module, inp_args):
 def post_forward_hook(module, inp_args, outp_args):
     assert not isinstance(outp_args, tuple)
     batch_dict = outp_args
+    for k,v in batch_dict['final_box_dicts'][0].items():
+        batch_dict['final_box_dicts'][0][k] = v.cpu()
     pp_args = module.post_processing_pre(batch_dict) # NMS
     torch.cuda.synchronize()
     module.finish_time = time.time()
@@ -660,12 +662,9 @@ class Detector3DTemplate(nn.Module):
     def init_empty_det_dict(self, det_dict_example):
         self._det_dict_copy = {
             "pred_boxes": torch.zeros([0, det_dict_example["pred_boxes"].size()[1]],
-            dtype=det_dict_example["pred_boxes"].dtype,
-            device=det_dict_example["pred_boxes"].device),
-            "pred_scores": torch.zeros([0], dtype=det_dict_example["pred_scores"].dtype,
-            device=det_dict_example["pred_scores"].device),
-            "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype,
-            device=det_dict_example["pred_labels"].device),
+            dtype=det_dict_example["pred_boxes"].dtype),
+            "pred_scores": torch.zeros([0], dtype=det_dict_example["pred_scores"].dtype),
+            "pred_labels": torch.zeros([0], dtype=det_dict_example["pred_labels"].dtype),
         }
 
     def get_empty_det_dict(self):

@@ -180,12 +180,9 @@ class CenterHeadGroupSliced(nn.Module):
 
         self.det_dict_copy = {
             "pred_boxes": torch.zeros([0, 9], dtype=torch.float, device='cuda'),
-            "pred_scores": torch.zeros([0], dtype=torch.float,device='cuda'),
+            "pred_scores": torch.zeros([0], dtype=torch.float, device='cuda'),
             "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
         }
-
-        self.attr_skip_events = [None] * num_heads
-        self.attr_skip_gains_ms = [9999.9] * num_heads
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -395,7 +392,7 @@ class CenterHeadGroupSliced(nn.Module):
         return ret_dict
 
     # give topk_outps to this guy if it is available!
-    def generate_predicted_boxes_eval(self, batch_size, pred_dicts, projections):
+    def generate_predicted_boxes_eval(self, batch_size, pred_dicts):
         assert batch_size == 1
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
@@ -408,12 +405,7 @@ class CenterHeadGroupSliced(nn.Module):
         for idx, pred_dict in enumerate(pred_dicts):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
             cls_id_map = self.class_id_mapping_each_head[idx]
-            if 'center' not in pred_dict and not pred_dict['skip_attr']:
-                # did not run the attr convolutions
-                if projections is not None:
-                    # Add the projections if they exis, no need for NMS
-                    for k in projections[idx].keys():
-                        ret_dict[k].append(projections[idx][k])
+            if 'center' not in pred_dict:
                 continue
 
             vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
@@ -437,10 +429,6 @@ class CenterHeadGroupSliced(nn.Module):
             final_dict = final_pred_dicts[0]
             final_dict['pred_labels'] = cls_id_map[final_dict['pred_labels'].long()]
             if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
-                if projections is not None:
-                    # get the projections that match and cat them for NMS
-                    for k in projections[idx].keys():
-                        final_dict[k] = torch.cat((final_dict[k], projections[idx][k]), dim=0)
                 selected, selected_scores = model_nms_utils.class_agnostic_nms(
                     box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
                     nms_config=post_process_cfg.NMS_CONFIG,
@@ -496,7 +484,6 @@ class CenterHeadGroupSliced(nn.Module):
                 (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
             # contiguous
             num_tiles = ctc_e - ctc_s + 1
-            chunks = [(ctc_s, ctc_e)]
         else:
             # Two chunks, find the point of switching
             i = 0
@@ -509,10 +496,9 @@ class CenterHeadGroupSliced(nn.Module):
             chunk_r = (ctc_s, ctc[i])
             chunk_l = (ctc[i+1], ctc_e)
             num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
-            chunks = [chunk_r, chunk_l]
 
         if len(ctc) == self.tcount:
-            return sliced_tensors, chunks # no need to scatter
+            return sliced_tensors # no need to scatter
 
         for tensor in sliced_tensors:
             if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
@@ -540,7 +526,7 @@ class CenterHeadGroupSliced(nn.Module):
                 scat_tensor[..., (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)] = \
                         tensor[..., -c_sz_l:]
             scattered_tensors.append(scat_tensor)
-        return scattered_tensors, chunks
+        return scattered_tensors
 
     def forward(self, data_dict):
         if self.training:
@@ -553,7 +539,7 @@ class CenterHeadGroupSliced(nn.Module):
         shr_conv_outp = self.shared_conv(spatial_features_2d)
 
         heatmaps = self.heatmap_convs(shr_conv_outp)
-        heatmaps, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
 
         pred_dicts = [{'hm' : hm} for hm in heatmaps]
         # default padding is 1
@@ -567,7 +553,7 @@ class CenterHeadGroupSliced(nn.Module):
                     x = torch.nn.functional.pad(x, (p,p,p,p))
                 x = m(x)
 
-            x, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x)
+            x = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x)
             for name, attr in zip(self.attr_conv_names, x):
                 pd[name] = attr
 
@@ -609,8 +595,7 @@ class CenterHeadGroupSliced(nn.Module):
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
-        heatmaps, chunks = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
-        data_dict['tile_chunks'] = chunks
+        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
 
         pred_dicts = [{'hm' : hm} for hm in heatmaps]
 
@@ -620,7 +605,7 @@ class CenterHeadGroupSliced(nn.Module):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         score_thres = post_process_cfg.SCORE_THRESH
         p = pad_size = self.slice_size//2
-        shr_conv_outp, _ = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
+        shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
                 [shr_conv_outp])
         shr_conv_outp = shr_conv_outp[0]
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
@@ -641,8 +626,6 @@ class CenterHeadGroupSliced(nn.Module):
             if pd['topk_outp'][0].size(0) > 0:
                 nonempty_det_head_indexes.append(idx)
 
-            pd['skip_attr'] = False # TODO
-
         # Code is synched here due to masks
 
         data_dict['pred_dicts'] = pred_dicts
@@ -651,88 +634,47 @@ class CenterHeadGroupSliced(nn.Module):
         return data_dict
 
     def forward_eval_post(self, data_dict):
-        padded_x = data_dict['padded_x']
-        self.attr_skip_events = [None] * len(self.attr_skip_events)
-        record = data_dict.get('record_time', False)
-        for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
+        slc_indices, x_inds, y_inds, i = [], [], [], 0
+        for pd in data_dict['pred_dicts']:
             topk_outp = pd['topk_outp']
             scores = topk_outp[0]
             num_slc = scores.size(0)
-            if num_slc == 0 or pd['skip_attr']:
-                # We can skip some heads here to meet the deadline in case needed
-                # The prioritization to skip is as follows:
-                # 3 (barrier) > 5 (ped, t_c) > 4 (motorc, bicy) > 0 (car) > 1 > 2
-                # We can assume that the following part of the code will be skipped only
-                # when we predict the attributes instead of calculating them with convolutions
+            slc_indices.append((i, i+num_slc))
+            i += num_slc
+            if num_slc > 0:
+                # thanks to padding, xs and ys now give us the corner position instead of center
+                # which is required by the slice and batch kernel
+                x_inds.append(topk_outp[2])
+                y_inds.append(topk_outp[3])
+
+        if i > 0:
+            b_id = torch.full((i,), 0, dtype=torch.short, device='cuda') # since batch size is 1
+            indices = torch.stack((b_id, torch.cat(x_inds).short(), torch.cat(y_inds).short()), dim=1)
+            all_slices = cuda_slicer.slice_and_batch_nhwc(data_dict['padded_x'], indices, self.slice_size)
+
+        for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
+            slc_i_1, slc_i_2 = slc_indices[det_idx]
+            if slc_i_1 == slc_i_2: # no slice
                 continue
 
-            if record:
-                e1 = torch.cuda.Event(enable_timing=True)
-                e2 = torch.cuda.Event(enable_timing=True)
-                e1.record()
-
-            # thanks to padding, xs and ys now give us the corner position instead of center
-            # which is required by the slice and batch kernel
-            b_id = torch.full((num_slc,), 0, dtype=torch.short, device=scores.device) # since batch size is 1
-            indices = torch.stack((b_id, topk_outp[2].short(), topk_outp[3].short()), dim=1)
-            slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
-
             if not self.calibrated[det_idx] and torch.backends.cudnn.benchmark:
-                self.calibrate_for_cudnn_benchmarking(slices, det_idx)
+                self.calibrate_for_cudnn_benchmarking(all_slices[slc_i_1:slc_i_2], det_idx)
 
             # It becomes deterministic with cudnn benchmarking enabled, ~1ms
-            outp = det_head(slices)
+            outp = det_head(all_slices[slc_i_1:slc_i_2])
 
             # finally, split the output according to the batches they belong
             for name, attr in zip(self.attr_conv_names, outp):
                 pd[name] = attr.flatten(-3)
 
-            if record:
-                e2.record()
-                self.attr_skip_events[det_idx] = (e1,e2)
-
 
         pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections']
+            data_dict['batch_size'], data_dict['pred_dicts']
         )
-
-#        # NOTE below code is an alternative to using NMS to filter projections
-#        # However,  NMS method appears to provide better accuracy
-#        # add projections to final box dicts after filtering w.r.t. area processed
-#        pred_dicts = self.generate_predicted_boxes_eval(
-#            data_dict['batch_size'], data_dict['pred_dicts'], None
-#        )
-#        if data_dict['projections'] is not None:
-#            boxy = data_dict['projections']['pred_boxes'][:,1]
-#            tile_chunk = data_dict['tile_chunks'][0]
-#            lim1 = tile_chunk[0] * 108.0 / 18 - 54.0
-#            lim2 = (tile_chunk[1]+1) * 108.0 / 18 - 54.0
-#            mask = torch.logical_and(boxy > lim1, boxy < lim2)
-#            for tile_chunk in data_dict['tile_chunks'][1:]:
-#                lim1 = tile_chunk[0] * 108.0 / 18 - 54.0
-#                lim2 = (tile_chunk[1]+1) * 108.0 / 18 - 54.0
-#                mask = torch.logical_or(mask, torch.logical_and(boxy > lim1, boxy < lim2))
-#            mask = torch.logical_not(mask)
-#
-#            for k, v in data_dict['projections'].items():
-#                data_dict['projections'][k] = v[mask]
-#
-#            for k, v in pred_dicts[0].items():
-#                pred_dicts[0][k] = torch.cat((v, data_dict['projections'][k]), dim=0)
 
         data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict
-
-    def calc_skip_times(self):
-        # should be synchronized by now
-        for i, se in enumerate(self.attr_skip_events):
-            if se is not None:
-                time_ms = se[0].elapsed_time(se[1])
-                self.attr_skip_gains_ms[i] = min(self.attr_skip_gains_ms[i], time_ms)
-
-    def get_attr_skip_gains(self):
-        return self.attr_skip_gains_ms
 
     def get_empty_det_dict(self):
         det_dict = {}

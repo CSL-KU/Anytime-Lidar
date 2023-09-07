@@ -100,11 +100,13 @@ class BaseBEVBackboneSliced(nn.Module):
         if len(ctc) == self.tcount:
             # Select all
             x = spatial_features
+            chunks = [(ctc_s, ctc_e)]
         elif (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
                  (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
                  (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
             # Contiguous
             x = spatial_features[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)]
+            chunks = [(ctc_s, ctc_e)]
         else:
             # Two chunks, find the point of switching
             # Following piece of code take 0.6 ms in jetson agx
@@ -127,6 +129,8 @@ class BaseBEVBackboneSliced(nn.Module):
                     (chunk_r[0]*tile_sz):((chunk_r[1]+1)*tile_sz)]
             x[..., -c_sz_l:] = spatial_features[..., \
                     (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)]
+            chunks = [chunk_r, chunk_l]
+        data_dict['tile_chunks'] = chunks
 
         ups = []
         ret_dict = {}

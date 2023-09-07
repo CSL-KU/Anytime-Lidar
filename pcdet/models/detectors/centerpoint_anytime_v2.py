@@ -65,13 +65,13 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
 
         self.measure_time_start('Backbone2D')
         batch_dict = self.backbone_2d(batch_dict)
+        batch_dict = self.schedule3(batch_dict)
         batch_dict = self.dense_head.forward_eval_pre(batch_dict)
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
-        self.schedule3(batch_dict)
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
+        batch_dict = self.schedule4(batch_dict)
         self.measure_time_end('CenterHead')
-        self.schedule4(batch_dict)
 
         return batch_dict
 
