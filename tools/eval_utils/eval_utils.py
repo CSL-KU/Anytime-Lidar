@@ -74,6 +74,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     start_time = time.time()
     gc.disable()
 
+    if visualize:
+        V.initialize_visualizer()
+
     det_elapsed_musec = []
     for i in range(len(dataloader)):
         if speed_test and i == num_samples:
@@ -100,10 +103,11 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             # -x -y -z +x +y +z
             if 'clusters' not in batch_dict:
                 batch_dict['clusters'] = None
+            pd = batch_dict['final_box_dicts'][0]
             V.draw_scenes(
-                points=batch_dict['points'][:, 1:], ref_boxes=pred_dicts[0]['pred_boxes'],
+                points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
                 gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
-                ref_scores=pred_dicts[0]['pred_scores'], ref_labels=pred_dicts[0]['pred_labels'],
+                ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
                 max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
                 nonempty_tile_coords=batch_dict['nonempty_tile_coords'],
                 tile_coords=batch_dict['chosen_tile_coords'],
@@ -121,6 +125,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
         gc.collect()
     gc.enable()
+
+    if visualize:
+        V.destroy_visualizer()
 
     if 'post_eval' in dir(model):
         model.post_eval()
