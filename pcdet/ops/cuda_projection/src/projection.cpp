@@ -78,7 +78,8 @@ std::vector<std::map<std::string, torch::Tensor>> split_projections(
         torch::Tensor pred_scores,
         torch::Tensor pred_labels,
 	torch::Tensor cls_id_to_det_head_idx_map,
-	int num_det_heads
+	int num_det_heads,
+	bool move_to_gpu
 )
 {
 	using namespace torch::indexing;
@@ -91,9 +92,12 @@ std::vector<std::map<std::string, torch::Tensor>> split_projections(
 		std::map<std::string, torch::Tensor> pdict;
 
 		auto pred_masked = pred_merged.index({(det_head_mappings == i)});
-		pdict["pred_boxes"] = pred_masked.index({Slice(), Slice(None, -2)});
-		pdict["pred_scores"] = pred_masked.index({Slice(), -2});
-		pdict["pred_labels"] = pred_masked.index({Slice(), -1}).to(torch::kLong);
+		auto pb = pred_masked.index({Slice(), Slice(None, -2)});
+		auto ps = pred_masked.index({Slice(), -2});
+		auto pl = pred_masked.index({Slice(), -1}).to(torch::kLong);
+		pdict["pred_boxes"] = (move_to_gpu ? pb.to(torch::kCUDA) : pb);
+		pdict["pred_scores"] = (move_to_gpu ? ps.to(torch::kCUDA) : ps);
+		pdict["pred_labels"] = (move_to_gpu ? pl.to(torch::kCUDA) : pl);
 		proj_dicts[i] = std::move(pdict);
 	}
 	return proj_dicts;

@@ -392,7 +392,7 @@ class CenterHeadGroupSliced(nn.Module):
         return ret_dict
 
     # give topk_outps to this guy if it is available!
-    def generate_predicted_boxes_eval(self, batch_size, pred_dicts):
+    def generate_predicted_boxes_eval(self, batch_size, pred_dicts, projections):
         assert batch_size == 1
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
@@ -406,6 +406,10 @@ class CenterHeadGroupSliced(nn.Module):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
             cls_id_map = self.class_id_mapping_each_head[idx]
             if 'center' not in pred_dict:
+                if projections is not None:
+                    # Add the projections if they exist, no need for NMS
+                    for k in projections[idx].keys():
+                        ret_dict[k].append(projections[idx][k])
                 continue
 
             vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
@@ -429,6 +433,10 @@ class CenterHeadGroupSliced(nn.Module):
             final_dict = final_pred_dicts[0]
             final_dict['pred_labels'] = cls_id_map[final_dict['pred_labels'].long()]
             if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
+                if projections is not None:
+                    # get the projections that match and cat them for NMS
+                    for k in projections[idx].keys():
+                        final_dict[k] = torch.cat((final_dict[k], projections[idx][k]), dim=0)
                 selected, selected_scores = model_nms_utils.class_agnostic_nms(
                     box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
                     nms_config=post_process_cfg.NMS_CONFIG,
@@ -669,7 +677,7 @@ class CenterHeadGroupSliced(nn.Module):
 
 
         pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], data_dict['pred_dicts']
+            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
         )
 
         data_dict['final_box_dicts'] = pred_dicts

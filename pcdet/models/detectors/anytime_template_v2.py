@@ -24,7 +24,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
             self.model_cfg.DENSE_HEAD.METHOD = self.model_cfg.METHOD
-        torch.backends.cudnn.benchmark = False # True
+        torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -98,7 +98,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         for i, cls_ids in enumerate(self.dense_head.class_id_mapping_each_head):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
-        self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
+        #self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
 
         if self.sched_algo == SchedAlgo.AdaptiveRR:
             self.processing_time_limit_sec = 0.650 # Every x ms, reset
@@ -332,6 +332,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         past_poi = self.past_detections['pose_idx']
         poi = torch.full((num_dets,), self.past_poses.size(0)-1, dtype=past_poi.dtype)
         self.past_detections['pose_idx'] = torch.cat((past_poi, poi))
+
         for k in ('pred_boxes', 'pred_labels'):
             self.past_detections[k] = torch.cat((self.past_detections[k], new_dets_dict[k]))
 
@@ -339,6 +340,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def schedule3(self, batch_dict):
         batch_dict['projections'] = None
+        batch_dict['projections_nms'] = None
         if self.enable_projection:
             # Add the detection results of previous sample
             self.add_past_proj_to_queue()
@@ -358,7 +360,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             if self.past_detections['pred_boxes'].size(0) > 0:
                 proj_dict = {}
                 pb = self.past_detections['pred_boxes']
-                proj_dict['pred_scores'] = torch.full((pb.size(0),), 0.009, dtype=torch.float)
+                proj_dict['pred_scores'] = torch.full((pb.size(0),), 0.01, dtype=torch.float)
                 proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
                 with torch.cuda.stream(self.projection_stream):
                     proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
@@ -372,40 +374,50 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     proj_dict['pred_boxes'] = proj_dict['pred_boxes'].cpu()
 
                 # clear up detections which fall under the chosen tiles and also the overtimed ones
-                #box_x = self.past_detections['pred_boxes'][:,0]
                 projb = proj_dict['pred_boxes']
                 box_x = projb[:,0]
-                if box_x.size(0) > 0:
-                    ## mask if falls under chosen tiles
-                    W = self.pc_range[3] - self.pc_range[0]
-                    W_end = self.pc_range[3]
-                    tile_chunk = batch_dict['tile_chunks'][0]
+                # mask under chosen tiles
+                W = self.pc_range[3] - self.pc_range[0]
+                W_end = self.pc_range[3]
+                tile_chunk = batch_dict['tile_chunks'][0]
+                lim1 = tile_chunk[0] * W / self.tcount - W_end
+                lim2 = (tile_chunk[1]+1) * W / self.tcount - W_end
+                nms_mask = torch.logical_and(box_x > lim1, box_x < lim2)
+                for tile_chunk in batch_dict['tile_chunks'][1:]:
                     lim1 = tile_chunk[0] * W / self.tcount - W_end
                     lim2 = (tile_chunk[1]+1) * W / self.tcount - W_end
-                    mask = torch.logical_and(box_x > lim1, box_x < lim2)
-                    for tile_chunk in batch_dict['tile_chunks'][1:]:
-                        lim1 = tile_chunk[0] * W / self.tcount - W_end
-                        lim2 = (tile_chunk[1]+1) * W / self.tcount - W_end
-                        mask = torch.logical_or(mask, torch.logical_and(box_x > lim1, box_x < lim2))
+                    nms_mask = torch.logical_or(nms_mask, \
+                            torch.logical_and(box_x > lim1, box_x < lim2))
 
-                    ## mask if falls outside det area
-                    mask1 = box_x < self.pc_range[0]
-                    mask1 = torch.logical_or(mask1, box_x > self.pc_range[3])
-                    box_y = projb[:,1]
-                    mask1 = torch.logical_or(mask1, box_y < self.pc_range[1])
-                    mask1 = torch.logical_or(mask1, box_y > self.pc_range[4])
+                # these to be given to nms before they are discarded
+                with torch.cuda.stream(self.projection_stream):
+                    pb = proj_dict['pred_boxes'][nms_mask]
+                    batch_dict['projections_nms'] = cuda_projection.split_projections(
+			    pb,
+#                            torch.full((pb.size(0),), self.score_thresh, dtype=torch.float),
+			    proj_dict['pred_scores'][nms_mask],
+			    proj_dict['pred_labels'][nms_mask],
+			    self.cls_id_to_det_head_idx_map,
+			    self.num_det_heads,
+			    True) # moves results to gpu if true
 
-                    mask = torch.logical_or(mask, mask1)
-                    mask = torch.logical_not(mask)
+                ## mask if falls outside det area
+                range_mask = box_x < self.pc_range[0]
+                range_mask = torch.logical_or(range_mask, box_x > self.pc_range[3])
+                box_y = projb[:,1]
+                range_mask = torch.logical_or(range_mask, box_y < self.pc_range[1])
+                range_mask = torch.logical_or(range_mask, box_y > self.pc_range[4])
 
-                    for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
-                        self.past_detections[k] = self.past_detections[k][mask]
+                mask = torch.logical_not(torch.logical_or(nms_mask, range_mask))
 
-                    for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
-                        proj_dict[k] = proj_dict[k][mask]
+                for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
+                    self.past_detections[k] = self.past_detections[k][mask]
+
+                for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
+                    proj_dict[k] = proj_dict[k][mask]
 
                 batch_dict['projections'] = proj_dict
-
+                self.projection_stream.synchronize()
 
         return batch_dict
 
