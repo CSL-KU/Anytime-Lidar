@@ -101,7 +101,7 @@ if [ $1 == 'profile' ]; then
     $CMD --set "MODEL.DEADLINE_SEC" $2
     #export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ]; then
-    mv -f eval_dict_* backup
+    rm eval_dict_*
     OUT_DIR=exp_data_nsc
     mkdir -p $OUT_DIR
 
@@ -165,6 +165,8 @@ elif [ $1 == 'methods' ]; then
     done
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
+elif [ $1 == 'singlem' ]; then
+    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
 elif [ $1 == 'calibm' ]; then
     $CMD  --set "MODEL.METHOD" $2
 fi
