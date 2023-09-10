@@ -127,7 +127,7 @@ MODEL:
             MAX_OBJ_PER_SAMPLE: 500
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
-                NMS_THRESH: 0.01
+                NMS_THRESH: 0.2
                 NMS_PRE_MAXSIZE: 1000
                 NMS_POST_MAXSIZE: 83
 
@@ -137,6 +137,7 @@ MODEL:
         EVAL_METRIC: kitti
 
     DEADLINE_SEC: 9999.9
+    # Need to put a number that can divide 90 I think
     TILE_COUNT: 18
     METHOD: 1
 
