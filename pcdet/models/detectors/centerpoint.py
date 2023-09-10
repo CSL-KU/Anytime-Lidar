@@ -91,7 +91,7 @@ class CenterPoint(Detector3DTemplate):
             pred_boxes = final_pred_dict[index]['pred_boxes']
 
             recall_dict = self.generate_recall_record(
-                box_preds=pred_boxes,
+                box_preds=pred_boxes.cuda(),
                 recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
                 thresh_list=post_process_cfg.RECALL_THRESH_LIST
             )
