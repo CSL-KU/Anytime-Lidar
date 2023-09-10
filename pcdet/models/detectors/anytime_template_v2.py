@@ -38,8 +38,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.tcount_cuda = torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
         self.total_num_tiles = self.tcount
 
-        # This number will be determined by the scheduling algorithm initially for each input
-
         # divide the tiles in X axis only
         self.tile_size_voxels = torch.tensor(\
                 self.dataset.grid_size[1] / self.tcount).cuda().long()
@@ -88,6 +86,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             # Poses include [cst(3) csr(4) ept(3) epr(4)]
             self.past_poses = torch.zeros([0, 14], dtype=torch.float)
             self.past_ts = torch.zeros([0], dtype=torch.long)
+            self.num_dets_per_tile = torch.zeros([self.tcount], dtype=torch.long)
 
         # Needs to be calibrated
         self.score_thresh = self.model_cfg.DENSE_HEAD.POST_PROCESSING.SCORE_THRESH
@@ -108,7 +107,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.projection_stream = torch.cuda.Stream()
 
     def initialize(self, batch_dict):
-        batch_dict['projections'] = None
+        batch_dict['projections_nms'] = None
         latest_token = batch_dict['metadata'][0]['token']
         scene_token = self.token_to_scene[latest_token]
 
@@ -318,17 +317,28 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # Before appending the dets, extract the projected ones
         proj_mask = pred_dict['pred_scores'] >= self.score_thresh
-        new_dets_dict = {}
-        for k in ('pred_boxes', 'pred_labels'):
-            new_dets_dict[k] = pred_dict[k][proj_mask]
+        for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
+            pred_dict[k] = pred_dict[k][proj_mask]
 
-        num_dets = new_dets_dict['pred_boxes'].size(0)
-        # Append new detections
-        #self.past_detections['num_dets'].append(num_dets)
+        new_dets_dict = {}
+        score_inds = torch.argsort(pred_dict['pred_scores'])
+        for k in ('pred_boxes', 'pred_labels'):
+            new_dets_dict[k] = pred_dict[k][score_inds]
+
+        # update num dets per tile
+        W, W_start = self.pc_range[3] - self.pc_range[0], self.pc_range[0]
+        div = W / self.tcount
+        tile_inds = torch.div((new_dets_dict['pred_boxes'][:, 0] - W_start), div, \
+                rounding_mode='trunc').short()
+        tile_bins = torch.bincount(tile_inds, minlength=self.tcount)
+        ctc = torch.from_numpy(batch_dict['chosen_tile_coords']).long()
+        self.num_dets_per_tile[ctc] = tile_bins[ctc]
+
         # NOTE The cur_pose and cur_ts here actually belongs to previous sample
         self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
         self.past_ts = torch.cat((self.past_ts, self.cur_ts))
         # Append the pose idx for the detection that will be added
+        num_dets = new_dets_dict['pred_boxes'].size(0)
         past_poi = self.past_detections['pose_idx']
         poi = torch.full((num_dets,), self.past_poses.size(0)-1, dtype=past_poi.dtype)
         self.past_detections['pose_idx'] = torch.cat((past_poi, poi))
@@ -339,7 +349,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         return batch_dict
 
     def schedule3(self, batch_dict):
-        batch_dict['projections'] = None
         batch_dict['projections_nms'] = None
         if self.enable_projection:
             # Add the detection results of previous sample
@@ -349,22 +358,32 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.cur_pose = self.token_to_pose[latest_token]
             self.cur_ts = self.token_to_ts[latest_token]
 
+            # Remove detections which are no more needed
+            active_num_dets = torch.sum(self.num_dets_per_tile)
+            #NOTE we need to tune the coeff here , 2.0 is giving good results!
+            coeff = 2.0
+            max_num_proj = int(active_num_dets * coeff)
+            if self.past_detections['pred_boxes'].size(0) > max_num_proj:
+                # Remove oldest dets
+                for k in ['pose_idx', 'pred_boxes', 'pred_labels']:
+                    self.past_detections[k] = self.past_detections[k][-max_num_proj:]
+
             # Weed out using the pose_idx of first det
             if self.past_detections['pose_idx'].size(0) > 0:
-                first_pose_idx = self.past_detections['pose_idx'][0]
-                self.past_poses = self.past_poses[first_pose_idx:]
-                self.past_ts = self.past_ts[first_pose_idx:]
-                self.past_detections['pose_idx'] = self.past_detections['pose_idx'] - first_pose_idx
+                pose_idx_0 = self.past_detections['pose_idx'][0]
+                self.past_poses = self.past_poses[pose_idx_0:]
+                self.past_ts = self.past_ts[pose_idx_0:]
+                self.past_detections['pose_idx'] = self.past_detections['pose_idx'] - pose_idx_0
 
             # Do projection in the GPU
             if self.past_detections['pred_boxes'].size(0) > 0:
                 proj_dict = {}
-                pb = self.past_detections['pred_boxes']
-                proj_dict['pred_scores'] = torch.full((pb.size(0),), 0.01, dtype=torch.float)
+                proj_dict['pred_scores'] = self.score_thresh - \
+                        (self.score_thresh / (self.past_detections['pose_idx'] + 2))
                 proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
                 with torch.cuda.stream(self.projection_stream):
                     proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
-                            pb.cuda(),
+                            self.past_detections['pred_boxes'].cuda(),
                             self.past_detections['pose_idx'].cuda(),
                             self.past_poses.cuda(),
                             self.cur_pose.cuda(),
@@ -375,59 +394,30 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
                 # clear up detections which fall under the chosen tiles and also the overtimed ones
                 projb = proj_dict['pred_boxes']
-                box_x = projb[:,0]
-                # mask under chosen tiles
-                W = self.pc_range[3] - self.pc_range[0]
-                W_end = self.pc_range[3]
-                tile_chunk = batch_dict['tile_chunks'][0]
-                lim1 = tile_chunk[0] * W / self.tcount - W_end
-                lim2 = (tile_chunk[1]+1) * W / self.tcount - W_end
-                nms_mask = torch.logical_and(box_x > lim1, box_x < lim2)
-                for tile_chunk in batch_dict['tile_chunks'][1:]:
-                    lim1 = tile_chunk[0] * W / self.tcount - W_end
-                    lim2 = (tile_chunk[1]+1) * W / self.tcount - W_end
-                    nms_mask = torch.logical_or(nms_mask, \
-                            torch.logical_and(box_x > lim1, box_x < lim2))
+                box_x, box_y = projb[:,0], projb[:,1]
+                range_mask = box_x >= self.pc_range[0]
+                range_mask = torch.logical_and(range_mask, box_x <= self.pc_range[3])
+                range_mask = torch.logical_and(range_mask, box_y >= self.pc_range[1])
+                range_mask = torch.logical_and(range_mask, box_y <= self.pc_range[4])
 
-                # these to be given to nms before they are discarded
+                # This op can make nms faster
                 with torch.cuda.stream(self.projection_stream):
-                    pb = proj_dict['pred_boxes'][nms_mask]
                     batch_dict['projections_nms'] = cuda_projection.split_projections(
-			    pb,
-#                            torch.full((pb.size(0),), self.score_thresh, dtype=torch.float),
-			    proj_dict['pred_scores'][nms_mask],
-			    proj_dict['pred_labels'][nms_mask],
+			    proj_dict['pred_boxes'][range_mask],
+			    proj_dict['pred_scores'][range_mask],
+			    proj_dict['pred_labels'][range_mask],
 			    self.cls_id_to_det_head_idx_map,
 			    self.num_det_heads,
 			    True) # moves results to gpu if true
 
-                ## mask if falls outside det area
-                range_mask = box_x < self.pc_range[0]
-                range_mask = torch.logical_or(range_mask, box_x > self.pc_range[3])
-                box_y = projb[:,1]
-                range_mask = torch.logical_or(range_mask, box_y < self.pc_range[1])
-                range_mask = torch.logical_or(range_mask, box_y > self.pc_range[4])
-
-                mask = torch.logical_not(torch.logical_or(nms_mask, range_mask))
-
                 for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
-                    self.past_detections[k] = self.past_detections[k][mask]
+                    self.past_detections[k] = self.past_detections[k][range_mask]
 
-                for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
-                    proj_dict[k] = proj_dict[k][mask]
-
-                batch_dict['projections'] = proj_dict
                 self.projection_stream.synchronize()
 
         return batch_dict
 
     def schedule4(self, batch_dict):
-        if self.enable_projection and batch_dict['projections'] is not None:
-            proj = batch_dict['projections']
-            pred_dicts = batch_dict['final_box_dicts']
-            for k, v in pred_dicts[0].items():
-                pred_dicts[0][k] = torch.cat((v.cpu(), proj[k]), dim=0)
-
         return batch_dict
 
     def get_training_loss(self):
@@ -476,11 +466,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.past_poses, self.past_ts = [], []
         else:
             self.past_detections = self.get_empty_det_dict()
-            #self.past_detections['num_dets'] = []
             self.past_detections['pose_idx'] = torch.zeros([0], dtype=torch.long)
 #                device=self.past_detections["pred_labels"].device)
             self.past_poses = torch.zeros([0, 14], dtype=torch.float)
             self.past_ts = torch.zeros([0], dtype=torch.long)
+            self.num_dets_per_tile = torch.zeros([self.tcount], dtype=torch.long)
         self.last_tile_coord = self.init_tile_coord
 
     def calibrate(self):
