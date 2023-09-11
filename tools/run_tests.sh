@@ -67,6 +67,7 @@ export OMP_NUM_THREADS=4
 # Centerpoint-voxel0075-anytime-v1
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
 #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth"
+#TASKSET="taskset 0x3f"
 #export OMP_NUM_THREADS=2
 
 # Centerpoint-KITTI-voxel
@@ -91,7 +92,7 @@ export OMP_NUM_THREADS=4
 
 #CMD="nice --20 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
 #   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
-CMD="chrt -f 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
+CMD="chrt -r 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
         --ckpt $CKPT_FILE --batch_size=1 --workers 0"
 
 #export CUBLAS_WORKSPACE_CONFIG=":4096:2"
@@ -138,7 +139,7 @@ elif [ $1 == 'methods' ]; then
         CKPT_FILE=${CKPT_FILES[$m]}
 
 	if [ $m == 3 ]; then
-		TSKST=""
+		TSKST="taskset 0xff"
 		MTD=10
 		export OMP_NUM_THREADS=2
 	else
@@ -148,7 +149,7 @@ elif [ $1 == 'methods' ]; then
 	fi	
         #CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
         #   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
-	CMD="chrt -f 90 $TSKST python test.py --cfg_file=$CFG_FILE \
+	CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
 		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
 
         for s in $(seq $2 $3 $4)
@@ -167,6 +168,8 @@ elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
+elif [ $1 == 'singlems' ]; then
+    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True
 elif [ $1 == 'calibm' ]; then
     $CMD  --set "MODEL.METHOD" $2
 fi

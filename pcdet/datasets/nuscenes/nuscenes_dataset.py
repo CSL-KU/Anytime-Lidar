@@ -146,6 +146,16 @@ class NuScenesDataset(DatasetTemplate):
 
         return len(self.infos)
 
+    def get_metadata_dict(self, index):
+        info = copy.deepcopy(self.infos[index])
+
+        input_dict = {
+            'frame_id': Path(info['lidar_path']).stem,
+            'metadata': {'token': info['token']}
+        }
+
+        return input_dict
+
     def getitem_pre(self, index):
         if self._merge_all_iters_to_one_epoch:
             index = index % len(self.infos)

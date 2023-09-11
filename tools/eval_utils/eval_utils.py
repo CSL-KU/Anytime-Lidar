@@ -89,7 +89,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         def get_scene_token(data_dict):
             return token_to_pose[data_dict['metadata']['token']]['scene']
 
-        all_data_dicts = [dataset.getitem_pre(i) for i in range(len(dataloader))]
+        all_data_dicts = [dataset.get_metadata_dict(i) for i in range(len(dataloader))]
+        print('Loaded data dicts')
         all_scene_tokens = [get_scene_token(dd) for dd in all_data_dicts]
         tokens_and_num_samples, idx = [[all_scene_tokens[0], 0]], 0
         for tkn in all_scene_tokens:
@@ -107,8 +108,6 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         all_sample_tokens = []
         for scene_token, num_samples in tokens_and_num_samples:
             # initialize buffer
-            data_dict = all_data_dicts[det_idx]
-            batch_dict = {k:[data_dict[k]] for k in data_dict.keys()}
             buffered_pred_dicts = [model.get_dummy_det_dict()]
 
             scene_end_idx = det_idx + num_samples
