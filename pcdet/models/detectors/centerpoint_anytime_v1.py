@@ -218,7 +218,7 @@ class CenterPointAnytimeV1(Detector3DTemplate):
 
         # prediction
         self.pool_size = 6  # 6 appears to give best results on jetson-agx
-        self.pred_box_pool = Pool(self.pool_size)
+        #self.pred_box_pool = Pool(self.pool_size)
         self.chosen_det_dicts, self.all_indexes = [], []
         self.all_async_results = []
 
@@ -782,6 +782,8 @@ class CenterPointAnytimeV1(Detector3DTemplate):
         return data_dict
 
     def calibrate(self):
+        assert hasattr (self, 'pred_box_pool'), "Please check tools/test.py for ALv1"
+
         super().calibrate()
         self.clear_stats()
 

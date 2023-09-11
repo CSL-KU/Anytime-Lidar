@@ -1,8 +1,15 @@
 import _init_path
+import os
+from multiprocessing import Pool
+# pool for anytime lidar v1
+#NOTE UNCOMMENT THESE FOR ANYTIME LIDAR v1
+pred_box_pool = None
+#pred_box_pool = Pool(6)
+#os.sched_setaffinity(0, [6,7])
+
 import argparse
 import datetime
 import glob
-import os
 import re
 import time
 from pathlib import Path
@@ -194,6 +201,8 @@ def main():
     )
 
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+    global pred_box_pool
+    model.pred_box_pool = pred_box_pool
     with torch.no_grad():
         if args.eval_all:
             repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=dist_test)
