@@ -75,14 +75,15 @@ def post_forward_hook(module, inp_args, outp_args):
         print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
                 module._eval_dict['deadlines_missed'])
 
-        # Assume the program will abort the process when it misses the deadline
-        if module.latest_valid_dets is not None:
-            pred_dicts = module.latest_valid_dets
-        elif module._det_dict_copy is not None:
-            pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
-        else:
-            print('Warning! Using pred_dicts even though the deadline was missed.')
-    else:
+        if not module.do_streaming_eval:
+            # Assume the program will abort the process when it misses the deadline
+            if module.latest_valid_dets is not None:
+                pred_dicts = module.latest_valid_dets
+            elif module._det_dict_copy is not None:
+                pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
+            else:
+                print('Warning! Using pred_dicts even though the deadline was missed.')
+    elif not module.do_streaming_eval:
         module.latest_valid_dets = pred_dicts
 
     #tm = module.finish_time - module.psched_start_time
@@ -124,6 +125,11 @@ class Detector3DTemplate(nn.Module):
             self._eval_dict['deadline_sec'] = 9999.9  # loong deadline
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
+
+
+        self.do_streaming_eval = self.model_cfg.get('STREAMING_EVAL', False)
+        if self.do_streaming_eval:
+            print('Doing streaming evaluation!')
 
         print('Default deadline is:', self._eval_dict['deadline_sec'])
 

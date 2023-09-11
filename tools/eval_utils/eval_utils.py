@@ -2,6 +2,7 @@ import pickle
 import json
 import time
 import gc
+import copy
 
 import numpy as np
 import torch
@@ -78,52 +79,131 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         V.initialize_visualizer()
 
     det_elapsed_musec = []
-    for i in range(len(dataloader)):
-        if speed_test and i == num_samples:
-            break
-        if getattr(args, 'infer_time', False):
-            start_time = time.time()
+    if cfg.MODEL.STREAMING_EVAL:
+        with open('token_to_pos.json', 'r') as handle:
+            token_to_pose = json.load(handle)
 
-        data_indexes = [i*batch_size+j for j in range(batch_size) \
-                if i*batch_size+j < len(dataset)]
-        with torch.no_grad():
-            pred_dicts, ret_dict = model(data_indexes)
-        batch_dict = model.latest_batch_dict
-        det_elapsed_musec.append(model.last_elapsed_time_musec)
-        disp_dict = {}
+        def get_ts(data_dict):
+            return token_to_pose[data_dict['metadata']['token']]['timestamp']
 
-        if getattr(args, 'infer_time', False):
-            inference_time = time.time() - start_time
-            infer_time_meter.update(inference_time * 1000)
-            # use ms to measure inference time
-            disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
+        def get_scene_token(data_dict):
+            return token_to_pose[data_dict['metadata']['token']]['scene']
 
-        if visualize and 'chosen_tile_coords' in batch_dict:
-            # Can infer which detections are projection from the scores
-            # -x -y -z +x +y +z
-            if 'clusters' not in batch_dict:
-                batch_dict['clusters'] = None
-            pd = batch_dict['final_box_dicts'][0]
-            V.draw_scenes(
-                points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
-                gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
-                ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
-                max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                nonempty_tile_coords=batch_dict['nonempty_tile_coords'],
-                tile_coords=batch_dict['chosen_tile_coords'],
-                clusters=batch_dict['clusters'])
+        all_data_dicts = [dataset.getitem_pre(i) for i in range(len(dataloader))]
+        all_scene_tokens = [get_scene_token(dd) for dd in all_data_dicts]
+        tokens_and_num_samples, idx = [[all_scene_tokens[0], 0]], 0
+        for tkn in all_scene_tokens:
+            if tkn != tokens_and_num_samples[idx][0]:
+                tokens_and_num_samples.append([tkn, 0])
+                idx += 1
+            tokens_and_num_samples[idx][1] += 1
 
-        statistics_info(cfg, ret_dict, metric, disp_dict)
-        annos = dataset.generate_prediction_dicts(
-            batch_dict, pred_dicts, class_names,
-            output_path=final_output_dir if args.save_to_file else None
-        )
-        det_annos += annos
-        if cfg.LOCAL_RANK == 0:
-            progress_bar.set_postfix(disp_dict)
-            progress_bar.update()
+        print('Scenes and number samples in them:')
+        for tns in tokens_and_num_samples:
+            print(tns)
 
-        gc.collect()
+        # process each scene seperately
+        det_idx = 0
+        all_sample_tokens = []
+        for scene_token, num_samples in tokens_and_num_samples:
+            # initialize buffer
+            data_dict = all_data_dicts[det_idx]
+            batch_dict = {k:[data_dict[k]] for k in data_dict.keys()}
+            buffered_pred_dicts = [model.get_dummy_det_dict()]
+
+            scene_end_idx = det_idx + num_samples
+            samples_added = 0
+            while det_idx < scene_end_idx:
+                with torch.no_grad():
+                    pred_dicts, ret_dict = model([det_idx])
+
+                disp_dict = {}
+                statistics_info(cfg, ret_dict, metric, disp_dict)
+                #det_elapsed_musec.append(model.last_elapsed_time_musec)
+                det_ts = token_to_pose[model.latest_batch_dict['metadata'][0]['token']]['timestamp']
+                det_end_ts = det_ts + model.last_elapsed_time_musec
+
+                while det_ts < det_end_ts and det_idx < scene_end_idx:
+                    dd = all_data_dicts[det_idx]
+                    bd = {'metadata': [{'token':dd['metadata']['token']}],
+                            'frame_id': [dd['frame_id']]}
+                    all_sample_tokens.append(dd['metadata']['token'])
+                    annos = dataset.generate_prediction_dicts(
+                        bd, copy.deepcopy(buffered_pred_dicts), class_names,
+                        output_path=final_output_dir if args.save_to_file else None
+                    )
+                    det_annos += annos
+                    det_idx += 1
+                    samples_added += 1
+                    progress_bar.set_postfix(disp_dict)
+                    progress_bar.update()
+                    if det_idx < len(all_data_dicts):
+                        det_ts = get_ts(all_data_dicts[det_idx])
+
+                buffered_pred_dicts = pred_dicts
+                gc.collect()
+
+#            while samples_added < num_samples:
+#                bd, pd = buffered_dets
+#                annos = dataset.generate_prediction_dicts(
+#                    bd, pd, class_names,
+#                    output_path=final_output_dir if args.save_to_file else None
+#                )
+#                det_annos += annos
+#                det_idx += 1
+#                samples_added += 1
+#                print('EXTRA SAMPLES')
+#                progress_bar.set_postfix(disp_dict)
+#                progress_bar.update()
+
+            assert samples_added == num_samples
+
+    else:
+        for i in range(len(dataloader)):
+            if speed_test and i == num_samples:
+                break
+            if getattr(args, 'infer_time', False):
+                start_time = time.time()
+            data_indexes = [i*batch_size+j for j in range(batch_size) \
+                    if i*batch_size+j < len(dataset)]
+            with torch.no_grad():
+                pred_dicts, ret_dict = model(data_indexes)
+            batch_dict = model.latest_batch_dict
+            det_elapsed_musec.append(model.last_elapsed_time_musec)
+            disp_dict = {}
+
+            if getattr(args, 'infer_time', False):
+                inference_time = time.time() - start_time
+                infer_time_meter.update(inference_time * 1000)
+                # use ms to measure inference time
+                disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
+
+            if visualize and 'chosen_tile_coords' in batch_dict:
+                # Can infer which detections are projection from the scores
+                # -x -y -z +x +y +z
+                if 'clusters' not in batch_dict:
+                    batch_dict['clusters'] = None
+                pd = batch_dict['final_box_dicts'][0]
+                V.draw_scenes(
+                    points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
+                    gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
+                    ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
+                    max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                    nonempty_tile_coords=batch_dict['nonempty_tile_coords'],
+                    tile_coords=batch_dict['chosen_tile_coords'],
+                    clusters=batch_dict['clusters'])
+
+            statistics_info(cfg, ret_dict, metric, disp_dict)
+            annos = dataset.generate_prediction_dicts(
+                batch_dict, pred_dicts, class_names,
+                output_path=final_output_dir if args.save_to_file else None
+            )
+            det_annos += annos
+            if cfg.LOCAL_RANK == 0:
+                progress_bar.set_postfix(disp_dict)
+                progress_bar.update()
+
+            gc.collect()
     gc.enable()
 
     if visualize:
