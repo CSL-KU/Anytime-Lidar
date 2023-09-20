@@ -78,7 +78,7 @@ def post_forward_hook(module, inp_args, outp_args):
         if not module.do_streaming_eval:
             # Assume the program will abort the process when it misses the deadline
             if module.latest_valid_dets is not None:
-                pred_dicts = module.latest_valid_dets
+                pred_dicts = copy.deepcopy(module.latest_valid_dets)
             elif module._det_dict_copy is not None:
                 pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
             else:

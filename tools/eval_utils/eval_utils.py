@@ -2,6 +2,7 @@ import pickle
 import json
 import time
 import gc
+import os
 import copy
 
 import numpy as np
@@ -104,23 +105,36 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             print(tns)
 
         # process each scene seperately
+        # For anytime lidar, max 300 ms
+        nonblocking = False
+        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.)) * 1000000)
+        print('End to end deadline (microseconds):', e2e_dl_musec)
+        assert (nonblocking and e2e_dl_musec == 0) or (not nonblocking)
         det_idx = 0
         all_sample_tokens = []
         for scene_token, num_samples in tokens_and_num_samples:
             # initialize buffer
             buffered_pred_dicts = [model.get_dummy_det_dict()]
+            #buf_det_idx = -1 #DEBUG
 
             scene_end_idx = det_idx + num_samples
             samples_added = 0
+
+            det_ts = get_ts(all_data_dicts[det_idx])
+
             while det_idx < scene_end_idx:
                 with torch.no_grad():
-                    pred_dicts, ret_dict = model([det_idx])
-
+                    ts = get_ts(all_data_dicts[det_idx])
+                    inf_idx = det_idx if det_ts == ts else det_idx - 1
+                    #print(f'Init detection {inf_idx}')
+                    pred_dicts, ret_dict = model([inf_idx])
+                #save_det_idx = det_idx #DEBUG
                 disp_dict = {}
                 statistics_info(cfg, ret_dict, metric, disp_dict)
-                #det_elapsed_musec.append(model.last_elapsed_time_musec)
-                det_ts = token_to_pose[model.latest_batch_dict['metadata'][0]['token']]['timestamp']
+
                 det_end_ts = det_ts + model.last_elapsed_time_musec
+                if e2e_dl_musec > 0:
+                    e2e_end_ts = det_ts + e2e_dl_musec
 
                 while det_ts < det_end_ts and det_idx < scene_end_idx:
                     dd = all_data_dicts[det_idx]
@@ -132,28 +146,43 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                         output_path=final_output_dir if args.save_to_file else None
                     )
                     det_annos += annos
+                    #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
                     det_idx += 1
                     samples_added += 1
                     progress_bar.set_postfix(disp_dict)
                     progress_bar.update()
-                    if det_idx < len(all_data_dicts):
+                    if det_idx < scene_end_idx:
                         det_ts = get_ts(all_data_dicts[det_idx])
 
+                #buf_det_idx = save_det_idx # DEBUG
+                #print(f'Detected {save_det_idx}') # DEBUG
                 buffered_pred_dicts = pred_dicts
-                gc.collect()
 
-#            while samples_added < num_samples:
-#                bd, pd = buffered_dets
-#                annos = dataset.generate_prediction_dicts(
-#                    bd, pd, class_names,
-#                    output_path=final_output_dir if args.save_to_file else None
-#                )
-#                det_annos += annos
-#                det_idx += 1
-#                samples_added += 1
-#                print('EXTRA SAMPLES')
-#                progress_bar.set_postfix(disp_dict)
-#                progress_bar.update()
+                if nonblocking or (e2e_dl_musec > 0 and e2e_end_ts < det_end_ts):
+                    det_ts = det_end_ts
+                elif e2e_dl_musec > 0:
+                    # since e2e_end_ts is not exact, we break when we are close,
+                    # assuming the time between sapmles are 50000 microseconds
+
+                    while round((e2e_end_ts - det_ts) / 50000.) > 0 and det_idx < scene_end_idx:
+                        dd = all_data_dicts[det_idx]
+                        bd = {'metadata': [{'token':dd['metadata']['token']}],
+                                'frame_id': [dd['frame_id']]}
+                        all_sample_tokens.append(dd['metadata']['token'])
+                        annos = dataset.generate_prediction_dicts(
+                            bd, copy.deepcopy(buffered_pred_dicts), class_names,
+                            output_path=final_output_dir if args.save_to_file else None
+                        )
+                        det_annos += annos
+                        #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
+                        det_idx += 1
+                        samples_added += 1
+                        progress_bar.set_postfix(disp_dict)
+                        progress_bar.update()
+                        if det_idx < scene_end_idx:
+                            det_ts = get_ts(all_data_dicts[det_idx])
+
+                gc.collect()
 
             assert samples_added == num_samples
 
@@ -349,6 +378,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     logger.info(result_str)
     ret_dict.update(result_dict)
     ret_dict['result_str'] = result_str
+    if cfg.MODEL.STREAMING_EVAL:
+        ret_dict['e2e_dl_musec'] = e2e_dl_musec
 
     logger.info('Result is saved to %s' % result_dir)
     logger.info('****************Evaluation done.*****************')
