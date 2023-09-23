@@ -3,9 +3,11 @@ import numpy as np
 
 class SchedAlgo:
     ProjectionOnly = 0
-    RoundRobin = 1
-    MirrorRR = 2
-    AdaptiveRR = 4 # Calib data of method 1 should work fine
+    RoundRobin = 2
+    AdaptiveRR = 3
+    RoundRobin_NoProj = 4
+    # Keep the next ones only for code compability
+    MirrorRR = 98
 
 @numba.jit(nopython=True)
 def get_num_tiles(ctc): # chosen tile coords

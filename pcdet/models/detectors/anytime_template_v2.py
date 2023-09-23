@@ -18,12 +18,21 @@ from .. import load_data_to_gpu
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+
+        self.sched_algo = self.model_cfg.METHOD
+
+        if self.sched_algo == SchedAlgo.RoundRobin_NoProj:
+            self.keep_projection_disabled=True
+            self.sched_algo = SchedAlgo.RoundRobin
+        else:
+            self.keep_projection_disabled=False
+
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
-            self.model_cfg.BACKBONE_2D.METHOD = self.model_cfg.METHOD
+            self.model_cfg.BACKBONE_2D.METHOD = self.sched_algo
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
-            self.model_cfg.DENSE_HEAD.METHOD = self.model_cfg.METHOD
+            self.model_cfg.DENSE_HEAD.METHOD = self.sched_algo
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
@@ -65,8 +74,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.add_dict['nonempty_tiles'] = []
         self.add_dict['chosen_tiles_1'] = []
         self.add_dict['chosen_tiles_2'] = []
-
-        self.sched_algo = self.model_cfg.METHOD
 
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
             self.init_tile_coord = -1
@@ -474,6 +481,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.last_tile_coord = self.init_tile_coord
 
     def calibrate(self):
+
         self.calibrator = AnytimeCalibrator(self)
 
         collect_data = False
@@ -488,7 +496,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = 0.0001
         super().calibrate(1)
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
-        self.enable_projection = True
+
+        self.enable_projection = (not self.keep_projection_disabled)
         self.projection_reset()
         self.sched_reset()
         if self.training:
