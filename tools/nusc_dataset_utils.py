@@ -11,8 +11,12 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 from pyquaternion import Quaternion
 
-nusc = NuScenes(version='v1.0-mini', dataroot='../data/nuscenes/v1.0-mini', verbose=True)
-nusc.list_scenes()
+nusc = None
+
+def read_nusc():
+    global nusc
+    nusc = NuScenes(version='v1.0-mini', dataroot='../data/nuscenes/v1.0-mini', verbose=True)
+    #nusc.list_scenes()
 
 # atan2 to quaternion:
 # Quaternion(axis=[0, 0, 1], radians=atan2results)
@@ -330,6 +334,119 @@ def populate_annos_v2(step):
     nusc.sample_annotation.extend(all_new_annos)
     nusc.sample_data.extend(all_new_sample_datas)
 
+
+def prune_annos(step):
+    global nusc
+    #num_lidar_sample_data = sum([sd['channel'] == 'LIDAR_TOP' for sd in nusc.sample_data])
+    # make sure the number of samples are equal to number of sample_datas
+    #assert len(nusc.sample) == num_lidar_sample_data, \
+    #        "{len(nusc.sample)}, {num_lidar_sample_data}"
+
+    step = step//50
+    print('step', step)
+    num_skips=step-1
+    new_nusc_samples = []
+    for scene in nusc.scene:
+        # skip skip skip get, skip skip skip get...
+        samples_to_del = [] # sample token : replacement sample
+        samples_to_connect = []
+        sample_tkn = scene['first_sample_token']
+        for i in range(num_skips):
+            if sample_tkn != '':
+                sample = nusc.get('sample', sample_tkn)
+                samples_to_del.append(sample)
+                sample_tkn = sample['next']
+        while sample_tkn != '':
+            sample = nusc.get('sample', sample_tkn)
+            samples_to_connect.append(sample)
+            sample_tkn = sample['next']
+            for i in range(num_skips):
+                if sample_tkn != '':
+                    sample = nusc.get('sample', sample_tkn)
+                    samples_to_del.append(sample)
+                    sample_tkn = sample['next']
+
+        print(f'samples to connect {len(samples_to_connect)}')
+        print(f'samples to del {len(samples_to_del)}')
+        # Update the scene
+        scene['first_sample_token'] = samples_to_connect[0]['token']
+        scene['last_sample_token'] = samples_to_connect[-1]['token']
+
+        #update samples
+        samples_to_connect[0]['prev'] = ''
+        for i in range(len(samples_to_connect)-1):
+            s1, s2 = samples_to_connect[i], samples_to_connect[i+1]
+            s1['next'] = s2['token']
+            s2['prev'] = s1['token']
+        samples_to_connect[-1]['next'] = ''
+
+        tokens_c = set([s['token'] for s in samples_to_connect])
+        ts_arr_c = np.array([s['timestamp'] for s in samples_to_connect])
+        tokens_d = set([s['token'] for s in samples_to_del])
+        for sd in nusc.sample_data:
+            tkn = sd['sample_token']
+            if tkn in tokens_c:
+                sd['is_key_frame'] = True
+            elif tkn in tokens_d:
+                sd['is_key_frame'] = False
+                # point to the sample with closest timestamp
+                sd_ts = sd['timestamp']
+                diffs = np.abs(ts_arr_c - sd_ts)
+                min_idx = np.argmin(diffs)
+                sd['sample_token'] = samples_to_connect[min_idx]['token']
+
+        #delete the samples
+        new_nusc_samples.extend(samples_to_connect)
+
+    new_sample_tokens = set([s['token'] for s in new_nusc_samples])
+
+    new_nusc_sample_annos=[]
+    new_nusc_instances=[]
+    # Go through all instances and prune deleted sample annotations
+    for inst in nusc.instance:
+        sa_tkn = inst['first_annotation_token']
+        sa = nusc.get('sample_annotation', sa_tkn)
+        while sa_tkn != '' and sa['sample_token'] not in new_sample_tokens:
+            sa_tkn = sa['next']
+            if sa_tkn != '':
+                sa = nusc.get('sample_annotation', sa_tkn)
+        if sa_tkn == '':
+            #whoops, need to remove this instance!
+            print('Removed an instance')
+            continue
+
+        inst['first_annotation_token'] = sa_tkn
+        sa['prev'] = ''
+        new_nusc_sample_annos.append(sa)
+        cnt = 1
+
+        # find next and connect
+        sa_tkn = sa['next']
+        while sa_tkn != '':
+            sa = nusc.get('sample_annotation', sa_tkn)
+            while sa_tkn != '' and sa['sample_token'] not in new_sample_tokens:
+                sa_tkn = sa['next']
+                if sa_tkn != '':
+                    sa = nusc.get('sample_annotation', sa_tkn)
+            if sa_tkn != '':
+                new_nusc_sample_annos[-1]['next'] = sa_tkn
+                sa['prev'] = new_nusc_sample_annos[-1]['token']
+                new_nusc_sample_annos.append(sa)
+                cnt += 1
+                sa_tkn = sa['next']
+
+        new_nusc_sample_annos[-1]['next'] = ''
+        inst['last_annotation_token'] = new_nusc_sample_annos[-1]['token']
+        inst['nbr_annotations'] = cnt
+        new_nusc_instances.append(inst)
+
+    nusc.sample_annotation = new_nusc_sample_annos
+    nusc.sample = new_nusc_samples
+    nusc.instances = new_nusc_instances
+
+def dump_data():
+    global nusc
+
     # Dump the modified scene, sample, sample_data, sample_annotations, and instance tables
     indent_num=0
     print('Dumping the tables')
@@ -357,9 +474,15 @@ def populate_annos_v2(step):
         json.dump(nusc.instance, handle, indent=indent_num)
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == 'populate_annos':
+    read_nusc()
+    if len(sys.argv) == 3 and sys.argv[1] == 'populate_annos_v2':
         step = int(sys.argv[2])
         populate_annos_v2(step)
+        dump_data()
+    elif len(sys.argv) == 3 and sys.argv[1] == 'prune_annos':
+        step = int(sys.argv[2])
+        prune_annos(step)
+        dump_data()
     elif len(sys.argv) == 2 and sys.argv[1] == 'generate_dicts':
         generate_anns_dict()
         generate_pose_dict()
