@@ -1,11 +1,12 @@
 import _init_path
 import os
 from multiprocessing import Pool
-# pool for anytime lidar v1
-#NOTE UNCOMMENT THESE FOR ANYTIME LIDAR v1
-pred_box_pool = None
-#pred_box_pool = Pool(6)
-#os.sched_setaffinity(0, [6,7])
+if os.getenv('USE_ALV1', False) == '1':
+    # pool for anytime lidar v1
+    pred_box_pool = Pool(6)
+    os.sched_setaffinity(0, [6,7])
+else:
+    pred_box_pool = None
 
 import argparse
 import datetime

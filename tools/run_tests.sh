@@ -69,6 +69,7 @@ export OMP_NUM_THREADS=4
 #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth"
 #TASKSET="taskset 0x3f"
 #export OMP_NUM_THREADS=2
+#export USE_ALV1=1
 
 # Centerpoint-KITTI-voxel
 #CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
@@ -108,44 +109,34 @@ elif [ $1 == 'methods' ]; then
 
     CFG_FILES=( \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml" \
-	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
-#	    "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
-#	    "./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml")
-#           "./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml")
     CKPT_FILES=( \
             "../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
+	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
 	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
-#           "../models/voxelnext_nuscenes_kernel1.pth" \
-#           "../models/voxelnext_nuscenes_kernel1.pth")
-#           "../models/voxelnext_nuscenes_kernel1.pth" \
-#           "../models/cbgs_voxel01_centerpoint_nds_6454.pth" \
-#	    "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth")
-#	    "../models/cbgs_voxel01_centerpoint_anytime_16x16.pth")
 
     for m in ${!CFG_FILES[@]}
     do
 
-	if [ $m == 2 ]; then # MRR
-		continue
-	fi
-
         CFG_FILE=${CFG_FILES[$m]}
         CKPT_FILE=${CKPT_FILES[$m]}
 
-	if [ $m == 3 ]; then
-		TSKST="taskset 0xff"
+	if [ $m == 1 ]; then
+		# need to change test.py
+		TSKST="taskset 0x3f"
 		MTD=10
 		export OMP_NUM_THREADS=2
+		export USE_ALV1=1
 	else
 		TSKST="taskset -c 4-7"
 		MTD=$m
 		export OMP_NUM_THREADS=4
+		export USE_ALV1=0
 	fi	
         #CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
         #   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
