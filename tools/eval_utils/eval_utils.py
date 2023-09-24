@@ -284,105 +284,116 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     logger.info('Average predicted number of objects(%d samples): %.3f'
                 % (len(det_annos), total_pred_objects / max(1, len(det_annos))))
 
-    with open(result_dir / 'result.pkl', 'wb') as f:
-        pickle.dump(det_annos, f)
+    do_eval = (int(os.getenv('DO_EVAL', 1)) == 1)
 
     do_tracking=False
-    if dataset.dataset_cfg.DATASET != 'NuScenesDataset':
-        result_str, result_dict = dataset.evaluation(
-            det_annos, class_names,
-            eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
-            output_path=final_output_dir,
-        )
-    else:
-        nusc_annos = {}
-        result_str, result_dict = dataset.evaluation(
-            det_annos, class_names,
-            eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
-            output_path=final_output_dir,
-            nusc_annos_outp=nusc_annos,
-#            det_elapsed_musec=det_elapsed_musec,
-        )
-
-        if do_tracking:
-            ## NUSC TRACKING START
-            tracker = Tracker(max_age=6, hungarian=False)
-            predictions = nusc_annos['results']
-            with open('frames_meta.json', 'rb') as f:
-                frames=json.load(f)['frames']
-
-            nusc_trk_annos = {
-                "results": {},
-                "meta": None,
-            }
-            size = len(frames)
-
-            print("Begin Tracking\n")
-            start = time.time()
-            for i in range(size):
-                token = frames[i]['token']
-
-                # reset tracking after one video sequence
-                if frames[i]['first']:
-                    # use this for sanity check to ensure your token order is correct
-                    # print("reset ", i)
-                    tracker.reset()
-                    last_time_stamp = frames[i]['timestamp']
-
-                time_lag = (frames[i]['timestamp'] - last_time_stamp)
-                last_time_stamp = frames[i]['timestamp']
-
-                preds = predictions[token]
-
-                outputs = tracker.step_centertrack(preds, time_lag)
-                annos = []
-
-                for item in outputs:
-                    if item['active'] == 0:
-                        continue
-                    nusc_anno = {
-                        "sample_token": token,
-                        "translation": item['translation'],
-                        "size": item['size'],
-                        "rotation": item['rotation'],
-                        "velocity": item['velocity'],
-                        "tracking_id": str(item['tracking_id']),
-                        "tracking_name": item['detection_name'],
-                        "tracking_score": item['detection_score'],
-                    }
-                    annos.append(nusc_anno)
-                nusc_trk_annos["results"].update({token: annos})
-            end = time.time()
-            second = (end-start)
-            speed=size / second
-            print("The speed is {} FPS".format(speed))
-            nusc_trk_annos["meta"] = {
-                "use_camera": False,
-                "use_lidar": True,
-                "use_radar": False,
-                "use_map": False,
-                "use_external": False,
-            }
-
-            with open('tracking_result.json', "w") as f:
-                json.dump(nusc_trk_annos, f)
-
-            #result is nusc_annos
-            dataset.tracking_evaluation(
+    if do_eval:
+        if dataset.dataset_cfg.DATASET != 'NuScenesDataset':
+            result_str, result_dict = dataset.evaluation(
+                det_annos, class_names,
+                eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
                 output_path=final_output_dir,
-                res_path='tracking_result.json'
+            )
+        else:
+            nusc_annos = {}
+            result_str, result_dict = dataset.evaluation(
+                det_annos, class_names,
+                eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+                output_path=final_output_dir,
+                nusc_annos_outp=nusc_annos,
+    #            det_elapsed_musec=det_elapsed_musec,
             )
 
-            ## NUSC TRACKING END
+            if do_tracking:
+                ## NUSC TRACKING START
+                tracker = Tracker(max_age=6, hungarian=False)
+                predictions = nusc_annos['results']
+                with open('frames_meta.json', 'rb') as f:
+                    frames=json.load(f)['frames']
 
-    logger.info(result_str)
-    ret_dict.update(result_dict)
-    ret_dict['result_str'] = result_str
+                nusc_trk_annos = {
+                    "results": {},
+                    "meta": None,
+                }
+                size = len(frames)
+
+                print("Begin Tracking\n")
+                start = time.time()
+                for i in range(size):
+                    token = frames[i]['token']
+
+                    # reset tracking after one video sequence
+                    if frames[i]['first']:
+                        # use this for sanity check to ensure your token order is correct
+                        # print("reset ", i)
+                        tracker.reset()
+                        last_time_stamp = frames[i]['timestamp']
+
+                    time_lag = (frames[i]['timestamp'] - last_time_stamp)
+                    last_time_stamp = frames[i]['timestamp']
+
+                    preds = predictions[token]
+
+                    outputs = tracker.step_centertrack(preds, time_lag)
+                    annos = []
+
+                    for item in outputs:
+                        if item['active'] == 0:
+                            continue
+                        nusc_anno = {
+                            "sample_token": token,
+                            "translation": item['translation'],
+                            "size": item['size'],
+                            "rotation": item['rotation'],
+                            "velocity": item['velocity'],
+                            "tracking_id": str(item['tracking_id']),
+                            "tracking_name": item['detection_name'],
+                            "tracking_score": item['detection_score'],
+                        }
+                        annos.append(nusc_anno)
+                    nusc_trk_annos["results"].update({token: annos})
+                end = time.time()
+                second = (end-start)
+                speed=size / second
+                print("The speed is {} FPS".format(speed))
+                nusc_trk_annos["meta"] = {
+                    "use_camera": False,
+                    "use_lidar": True,
+                    "use_radar": False,
+                    "use_map": False,
+                    "use_external": False,
+                }
+
+                with open('tracking_result.json', "w") as f:
+                    json.dump(nusc_trk_annos, f)
+
+                #result is nusc_annos
+                dataset.tracking_evaluation(
+                    output_path=final_output_dir,
+                    res_path='tracking_result.json'
+                )
+
+                ## NUSC TRACKING END
+
+    if do_eval:
+        logger.info(result_str)
+        ret_dict.update(result_dict)
+        ret_dict['result_str'] = result_str
+    else:
+        print('Skipping evaluation.')
+        print('Dumping eval data')
+        t0 = time.time()
+        with open('eval.pkl', 'wb') as f:
+            all_data = [dataset, det_annos, class_names,cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+                final_output_dir, {}, det_elapsed_musec]
+            pickle.dump(all_data, f)
+        print(f'Dumping took {(time.time() - t0):.2f} seconds.')
+
     if cfg.MODEL.STREAMING_EVAL:
         ret_dict['e2e_dl_musec'] = e2e_dl_musec
 
-    logger.info('Result is saved to %s' % result_dir)
-    logger.info('****************Evaluation done.*****************')
+#    logger.info('Result is saved to %s' % result_dir)
+#    logger.info('****************Evaluation done.*****************')
 
     model.dump_eval_dict(ret_dict)
     model.clear_stats()

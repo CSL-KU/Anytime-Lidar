@@ -38,7 +38,7 @@ class NuScenesDataset(DatasetTemplate):
         self.infos = []
 
         # Force using train data for calibration
-        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
         self.include_nuscenes_data("train" if do_calib else self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
@@ -206,7 +206,11 @@ class NuScenesDataset(DatasetTemplate):
         import json
         from nuscenes.nuscenes import NuScenes
         from . import nuscenes_utils
-        nusc = NuScenes(version=self.dataset_cfg.VERSION, dataroot=str(self.root_path), verbose=True)
+        if 'loaded_nusc' in kwargs:
+            nusc = kwargs['loaded_nusc']
+        else:
+            nusc = NuScenes(version=self.dataset_cfg.VERSION, dataroot=str(self.root_path),
+                    verbose=True)
         nusc_annos = nuscenes_utils.transform_det_annos_to_nusc_annos(det_annos, nusc)
         nusc_annos['meta'] = {
             'use_camera': False,
@@ -224,6 +228,8 @@ class NuScenesDataset(DatasetTemplate):
         with open(res_path, 'w') as f:
             json.dump(nusc_annos, f)
 
+        if not hasattr(self, 'logger'):
+            self.logger=common_utils.create_logger()
         self.logger.info(f'The predictions of NuScenes have been saved to {res_path}')
 
         if self.dataset_cfg.VERSION == 'v1.0-test':
@@ -245,7 +251,8 @@ class NuScenesDataset(DatasetTemplate):
             eval_config = config_factory(eval_version)
 
         dt = kwargs['det_elapsed_musec'] if 'det_elapsed_musec' in kwargs else None
-        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
+        print('Do calibration flag is', do_calib)
         es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = NuScenesEval(
             nusc,
@@ -276,7 +283,7 @@ class NuScenesDataset(DatasetTemplate):
             'v1.0-test': 'test'
         }
 
-        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
         es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = TrackingEval(
             config=cfg,

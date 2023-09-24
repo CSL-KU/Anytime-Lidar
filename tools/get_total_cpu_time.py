@@ -7,8 +7,8 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-ALv2_res_path = './streaming_eval_50_alv2_e2e'
-BL_res_path = './streaming_eval_50_baseline_e2e'
+ALv2_res_path = './streaming_eval_ALv2'
+BL_res_path = './streaming_eval_baseline'
 
 def get_data_dict(results_path, budgets_str, e2e_deadlines_str):
     data_dict = {e2e_dl:{b:list() for b in budgets_str} for e2e_dl in e2e_deadlines_str}
@@ -30,9 +30,9 @@ def get_data_dict(results_path, budgets_str, e2e_deadlines_str):
                 data_dict[e2e_dl][budget].extend([mAP, NDS, utilization])
     return data_dict
 
-max_mAP=0.68
+max_mAP=0.65
 budgets = np.arange(0.180, 0.241, 0.020)
-e2e_deadlines = np.arange(0.200, 0.501, 0.050)
+e2e_deadlines = np.arange(0.200, 0.501, 0.100)
 budgets_str = [str(round(b,3)) for b in budgets]
 e2e_deadlines_str = [str(round(e2e_dl,3)) for e2e_dl in e2e_deadlines]
 
@@ -60,6 +60,6 @@ for ax, idx, ylabel, div, ylim in zip (axes, (0, 2), ('Normalized accuracy(%)', 
     ax.invert_xaxis()
     ax.set_ylabel(ylabel, fontsize='x-large')
     ax.set_xlabel('Period (sec)', fontsize='x-large')
-    ax.legend(ncol=1)
+    ax.legend(ncol=2)
     ax.set_ylim(ylim)
 plt.savefig("/root/shared_data/stream_eval.png")
