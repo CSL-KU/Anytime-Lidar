@@ -1,4 +1,4 @@
-#!/root/miniconda3/envs/pointpillars/bin/python
+#!/root/trainvalconda3/envs/pointpillars/bin/python
 import sys
 import json
 import math
@@ -11,21 +11,29 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 from pyquaternion import Quaternion
 
+from nuscenes.utils.splits import train, val, mini_train, mini_val
+
+all_scenes = set(train + val + mini_train + mini_val)
 nusc = None
 
 def read_nusc():
     global nusc
-    nusc = NuScenes(version='v1.0-mini', dataroot='../data/nuscenes/v1.0-mini', verbose=True)
+    nusc = NuScenes(version='v1.0-trainval', dataroot='../data/nuscenes/v1.0-trainval', verbose=True)
     #nusc.list_scenes()
 
 # atan2 to quaternion:
 # Quaternion(axis=[0, 0, 1], radians=atan2results)
 
 def generate_pose_dict():
+    print('generating pose dict')
     global nusc
     token_to_cs_and_pose = {}
 
+    global all_scenes
     for scene in nusc.scene:
+        if scene['name'] not in all_scenes:
+            #print(f'Skipping {scene["name"]}')
+            continue
         tkn = scene['first_sample_token']
         while tkn != "":
             #print('token:',tkn)
@@ -57,6 +65,7 @@ def generate_pose_dict():
 
 
 def generate_anns_dict():
+    print('generating annotations dict')
     global nusc
 
     map_name_from_general_to_detection = {
@@ -90,9 +99,13 @@ def generate_anns_dict():
 
     token_to_anns = {}
 
+    global all_scenes
     for scene in nusc.scene:
+        if scene['name'] not in all_scenes:
+            #print(f'Skipping {scene["name"]}')
+            continue
         tkn = scene['first_sample_token']
-        print(scene['name'])
+        #print(scene['name'])
         categories_in_scene = set()
         while tkn != "":
             #print('token:',tkn)
@@ -152,7 +165,7 @@ def generate_anns_dict():
             tkn = sample['next']
         print(len(categories_in_scene), categories_in_scene)
 
-    print('Dict size:', sys.getsizeof(token_to_anns)/1024/1024, ' MB')
+    #print('Dict size:', sys.getsizeof(token_to_anns)/1024/1024, ' MB')
 
     with open('token_to_anns.json', 'w') as handle:
         json.dump(token_to_anns, handle, indent=4)
@@ -173,6 +186,7 @@ def gen_new_token(table_name):
 # step defines the time between populated annotations in milliseconds
 # step 50ms, 100ms, 150ms, ...
 def populate_annos_v2(step):
+    print('populating annotations')
     global nusc
     step = step//50
     scene_to_sd = {}
@@ -197,12 +211,16 @@ def populate_annos_v2(step):
         is_kf_arr = [sd['is_key_frame'] for sd in v]
         kf_indexes = [i for i in range(len(is_kf_arr)) if is_kf_arr[i]]
         scene_to_kf_indexes[k] = kf_indexes
-    
+
     all_new_sample_datas = []
     all_new_samples = []
     all_new_annos = []
+    global all_scenes
     for scene in nusc.scene:
-        print('Processing scene', scene['name'])
+        if scene['name'] not in all_scenes:
+            #print(f'Skipping {scene["name"]}')
+            continue
+        #print('Processing scene', scene['name'])
         sd_records = scene_to_sd[scene['token']]
         sd_records_cam = scene_to_sd_cam[scene['token']]
         kf_indexes = scene_to_kf_indexes[scene['token']]
@@ -336,6 +354,7 @@ def populate_annos_v2(step):
 
 
 def prune_annos(step):
+    print('pruning annotations')
     global nusc
     #num_lidar_sample_data = sum([sd['channel'] == 'LIDAR_TOP' for sd in nusc.sample_data])
     # make sure the number of samples are equal to number of sample_datas
@@ -346,7 +365,12 @@ def prune_annos(step):
     print('step', step)
     num_skips=step-1
     new_nusc_samples = []
+    discarded_nusc_samples = []
+    global all_scenes
     for scene in nusc.scene:
+        if scene['name'] not in all_scenes:
+            #print(f'Skipping {scene["name"]}')
+            continue
         # skip skip skip get, skip skip skip get...
         samples_to_del = [] # sample token : replacement sample
         samples_to_connect = []
@@ -366,8 +390,8 @@ def prune_annos(step):
                     samples_to_del.append(sample)
                     sample_tkn = sample['next']
 
-        print(f'samples to connect {len(samples_to_connect)}')
-        print(f'samples to del {len(samples_to_del)}')
+        #print(f'samples to connect {len(samples_to_connect)}')
+        #print(f'samples to del {len(samples_to_del)}')
         # Update the scene
         scene['first_sample_token'] = samples_to_connect[0]['token']
         scene['last_sample_token'] = samples_to_connect[-1]['token']
@@ -380,39 +404,46 @@ def prune_annos(step):
             s2['prev'] = s1['token']
         samples_to_connect[-1]['next'] = ''
 
-        tokens_c = set([s['token'] for s in samples_to_connect])
-        ts_arr_c = np.array([s['timestamp'] for s in samples_to_connect])
-        tokens_d = set([s['token'] for s in samples_to_del])
-        for sd in nusc.sample_data:
-            tkn = sd['sample_token']
-            if tkn in tokens_c:
-                sd['is_key_frame'] = True
-            elif tkn in tokens_d:
-                sd['is_key_frame'] = False
-                # point to the sample with closest timestamp
-                sd_ts = sd['timestamp']
-                diffs = np.abs(ts_arr_c - sd_ts)
-                min_idx = np.argmin(diffs)
-                sd['sample_token'] = samples_to_connect[min_idx]['token']
-
         #delete the samples
         new_nusc_samples.extend(samples_to_connect)
+        discarded_nusc_samples.extend(samples_to_del)
 
-    new_sample_tokens = set([s['token'] for s in new_nusc_samples])
+    tokens_c = set([s['token'] for s in new_nusc_samples])
+    ts_arr_c = np.array([s['timestamp'] for s in new_nusc_samples])
+    tokens_d = set([s['token'] for s in discarded_nusc_samples])
+
+    new_nusc_sample_datas = []
+    for sd in nusc.sample_data:
+        tkn = sd['sample_token']
+        if tkn in tokens_c:
+            sd['is_key_frame'] = True
+            new_nusc_sample_datas.append(sd)
+        elif tkn in tokens_d:
+            sd['is_key_frame'] = False
+            new_nusc_sample_datas.append(sd)
+            # point to the sample with closest timestamp
+
+            sd_ts = sd['timestamp']
+            diffs = np.abs(ts_arr_c - sd_ts)
+            min_idx = np.argmin(diffs)
+            s = new_nusc_samples[min_idx]
+            assert nusc.get('sample', tkn)['scene_token'] == s['scene_token']
+            sd['sample_token'] = s['token']
 
     new_nusc_sample_annos=[]
     new_nusc_instances=[]
     # Go through all instances and prune deleted sample annotations
+    num_removed_instances = 0
     for inst in nusc.instance:
         sa_tkn = inst['first_annotation_token']
         sa = nusc.get('sample_annotation', sa_tkn)
-        while sa_tkn != '' and sa['sample_token'] not in new_sample_tokens:
+        while sa_tkn != '' and sa['sample_token'] not in tokens_c:
             sa_tkn = sa['next']
             if sa_tkn != '':
                 sa = nusc.get('sample_annotation', sa_tkn)
         if sa_tkn == '':
             #whoops, need to remove this instance!
-            print('Removed an instance')
+            num_removed_instances += 1
             continue
 
         inst['first_annotation_token'] = sa_tkn
@@ -424,7 +455,7 @@ def prune_annos(step):
         sa_tkn = sa['next']
         while sa_tkn != '':
             sa = nusc.get('sample_annotation', sa_tkn)
-            while sa_tkn != '' and sa['sample_token'] not in new_sample_tokens:
+            while sa_tkn != '' and sa['sample_token'] not in tokens_c:
                 sa_tkn = sa['next']
                 if sa_tkn != '':
                     sa = nusc.get('sample_annotation', sa_tkn)
@@ -440,9 +471,14 @@ def prune_annos(step):
         inst['nbr_annotations'] = cnt
         new_nusc_instances.append(inst)
 
+    print('Num prev instances:', len(nusc.instance))
+    print('Num new instances:', len(new_nusc_instances))
+    print('Num removed instances:', num_removed_instances)
     nusc.sample_annotation = new_nusc_sample_annos
     nusc.sample = new_nusc_samples
+    nusc.sample_data = new_nusc_sample_datas
     nusc.instances = new_nusc_instances
+
 
 def dump_data():
     global nusc

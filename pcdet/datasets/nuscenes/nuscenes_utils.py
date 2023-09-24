@@ -12,6 +12,7 @@ import tqdm
 from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import transform_matrix
 from pyquaternion import Quaternion
+from nuscenes.utils.splits import train, val, mini_train, mini_val
 
 map_name_from_general_to_detection = {
     'human.pedestrian.adult': 'pedestrian',
@@ -156,8 +157,11 @@ cls_attr_dist = {
 
 def get_available_scenes(nusc):
     available_scenes = []
-    print('total scene num:', len(nusc.scene))
+    all_scenes = set(train + val + mini_train + mini_val)
+    print('total scene num:', len(all_scenes))
     for scene in nusc.scene:
+        if scene['name'] not in all_scenes:
+            continue
         scene_token = scene['token']
         scene_rec = nusc.get('scene', scene_token)
         sample_rec = nusc.get('sample', scene_rec['first_sample_token'])
@@ -250,15 +254,18 @@ def quaternion_yaw(q: Quaternion) -> float:
 
 
 def fill_trainval_infos(data_path, nusc, train_scenes, val_scenes, test=False, max_sweeps=10):
+    all_scenes = set(train + val + mini_train + mini_val)
     train_nusc_infos = []
     val_nusc_infos = []
-    progress_bar = tqdm.tqdm(total=len(nusc.scene), desc='create_info', dynamic_ncols=True)
+    progress_bar = tqdm.tqdm(total=len(all_scenes), desc='create_info', dynamic_ncols=True)
 
     ref_chan = 'LIDAR_TOP'  # The radar channel from which we track back n sweeps to aggregate the point cloud.
     chan = 'LIDAR_TOP'  # The reference channel of the current sample_rec that the point clouds are mapped to.
 
     #for index, sample in enumerate(nusc.sample):
     for scene in nusc.scene:
+        if scene['name'] not in all_scenes:
+            continue
         progress_bar.update()
         sample = nusc.get('sample', scene['first_sample_token'])
         #if sample['scene_token'] not in val_scenes:

@@ -1,76 +1,24 @@
 #!/bin/bash
-
-clear_data()
-{
-	pushd ../data/nuscenes/v1.0-mini
-	rm -rf gt_database* *pkl
-	popd
-}
-
-copy_data()
-{
-	clear_data
-	data_path="./nusc_generated_data/$1/$2"
-	echo "Copying from "$data_path
-	cp -r $data_path/* ../data/nuscenes/v1.0-mini
-}
-
-gen_data()
-{
-	clear_data
-	pushd ..
-	python -m pcdet.datasets.nuscenes.nuscenes_dataset \
-		--func create_nuscenes_infos \
-		--cfg_file tools/cfgs/dataset_configs/nuscenes_mini_dataset.yaml \
-		--version v1.0-mini
-	popd
-	sleep 1
-}
-
-link_tables_and_dicts()
-{
-	. nusc_revert_tables.sh
-	. nusc_link_tables.sh $1/tables
-	for f in token_to_anns.json token_to_pos.json
-	do
-		rm -f $f
-		ln -s $1/$f
-	done
-}
-
-test_prep()
-{
-	link_tables_and_dicts "nusc_tables_and_dicts/$1"
-	cp splits.py.test $SPLITS_PY_DIR/splits.py
-	gen_data
-}
-
-export SPLITS_PY_DIR="/root/nuscenes-devkit/python-sdk/nuscenes/utils"
+. nusc_sh_utils.sh
 
 ## CALIBRATION
-link_tables_and_dicts "nusc_tables_and_dicts/500"
-cp splits.py.calib $SPLITS_PY_DIR/splits.py
-gen_data
-./run_tests.sh calib
+export CALIBRATION="1"
+link_data 250
+./run_tests.sh calibm 2
 
 ## TEST
-
-#test_prep 500
-#./run_tests.sh methods 0.350 -0.025 0.251
-test_prep 250
-./run_tests.sh methods 0.250 -0.050 0.101
-test_prep 100
-./run_tests.sh methods 0.100 -0.050 0.051
-
-#test_prep 200
+export CALIBRATION="0"
+link_data 350
+./run_tests.sh methods 0.350 -0.050 0.301
+#link_data 300
+#./run_tests.sh methods 0.300 -0.050 0.251
+#link_data 250
+#./run_tests.sh methods 0.250 -0.050 0.201
+#link_data 200
 #./run_tests.sh methods 0.200 -0.050 0.151
-#test_prep 150
+#link_data 150
 #./run_tests.sh methods 0.150 -0.050 0.101
-#test_prep 100
+#link_data 100
 #./run_tests.sh methods 0.100 -0.050 0.051
-
-##Plot
-#for s in 0 1 2 3
-#do
-#	python3 log_plotter.py exp_data_nsc/ $s
-#done
+#link_data 50
+#. streaming_test.sh streaming_eval_ALv2

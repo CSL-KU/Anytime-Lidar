@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
+import os
 
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import common_utils
@@ -35,7 +36,10 @@ class NuScenesDataset(DatasetTemplate):
             dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger
         )
         self.infos = []
-        self.include_nuscenes_data(self.mode)
+
+        # Force using train data for calibration
+        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        self.include_nuscenes_data("train" if do_calib else self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
 
@@ -241,11 +245,13 @@ class NuScenesDataset(DatasetTemplate):
             eval_config = config_factory(eval_version)
 
         dt = kwargs['det_elapsed_musec'] if 'det_elapsed_musec' in kwargs else None
+        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = NuScenesEval(
             nusc,
             config=eval_config,
             result_path=res_path,
-            eval_set=eval_set_map[self.dataset_cfg.VERSION],
+            eval_set=es,
             output_dir=str(output_path),
             verbose=True,
             det_elapsed_musec=dt,
@@ -270,10 +276,12 @@ class NuScenesDataset(DatasetTemplate):
             'v1.0-test': 'test'
         }
 
+        do_calib = (os.getenv('CALIBRATION', False) == '1')
+        es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = TrackingEval(
             config=cfg,
             result_path=res_path,
-            eval_set=eval_set_map[self.dataset_cfg.VERSION],
+            eval_set=es,
             output_dir=str(output_path),
             verbose=True,
             nusc_version=self.dataset_cfg.VERSION,
