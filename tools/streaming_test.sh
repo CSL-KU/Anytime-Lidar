@@ -44,7 +44,7 @@ do
 				printf "Skipping $fpath test.\n"
 			else
 				printf "Doing $fpath test.\n"
-				./run_tests.sh singlems $method ${BUDGET}0
+				./run_tests.sh singlemsp $method ${BUDGET}0 $PROJECTION_COEFF
 				mv -f eval_dict_*.json $fpath
 				fpath=$(echo $fpath | sed 's/json/pkl/g')
 				mv -f 'eval.pkl' $fpath

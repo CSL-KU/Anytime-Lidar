@@ -5,8 +5,7 @@ fi
 
 #export IGNORE_DL_MISS=0
 export DO_EVAL=0
-export E2E_REL_DEADLINE=0.0
-#export PROJECTION_COEFF=2.0
+export E2E_REL_DEADLINE_S=0.0
 export CALIBRATION=0
 
 PROF_CMD=""
@@ -163,7 +162,7 @@ elif [ $1 == 'methods' ]; then
 elif [ $1 == 'proj_calibm' ]; then
 	export IGNORE_DL_MISS=1
 	export DO_EVAL=0
-	export E2E_REL_DEADLINE=0.0 # not streaming
+	export E2E_REL_DEADLINE_S=0.0 # not streaming
 	export CALIBRATION=1
 	export USE_ALV1=0
 
@@ -180,7 +179,6 @@ elif [ $1 == 'proj_calibm' ]; then
 	. nusc_sh_utils.sh # for link_data
 	for proj_coeff in $(seq 1.0 0.5 2.0)
 	do
-		export PROJECTION_COEFF=$proj_coeff
 		for period in $(seq 200 100 500)
 		do
 			link_data $period
@@ -191,7 +189,8 @@ elif [ $1 == 'proj_calibm' ]; then
 				printf "Skipping $fpath test.\n"
 			    else
 				printf "Running $fpath test.\n"
-				$CMD --set "MODEL.DEADLINE_SEC" $budget "MODEL.METHOD" $2
+				$CMD --set "MODEL.DEADLINE_SEC" $budget "MODEL.METHOD" $2 \
+					"MODEL.PROJECTION_COEFF" $proj_coeff
 				# rename the output and move the corresponding directory
 				mv -f eval_dict_*.json $fpath
 				mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
@@ -205,6 +204,9 @@ elif [ $1 == 'singlem' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
 elif [ $1 == 'singlems' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True
+elif [ $1 == 'singlemsp' ]; then
+    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True "MODEL.PROJECTION_COEFF" $4
 elif [ $1 == 'calibm' ]; then
+    export CALIBRATION=1
     $CMD  --set "MODEL.METHOD" $2
 fi

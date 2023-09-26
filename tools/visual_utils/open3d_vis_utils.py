@@ -215,8 +215,9 @@ def draw_box(vis, gt_boxes, color=(0., 1., 0.), ref_labels=None, score=None):
         #else:
         #    line_set.paint_uniform_color(box_colormap[ref_labels[i]])
 
+        #print(score)
         if score is not None: 
-            c = np.array([142., 68., 173.], dtype=np.float64)/255. if score[i] <= 0.009 else \
+            c = np.array([142., 68., 173.], dtype=np.float64)/255. if score[i] <= 0.3 else \
                     np.array([39., 174., 96.], dtype=np.float64)/255.
         else:
             c = np.array(color, dtype=np.float64)

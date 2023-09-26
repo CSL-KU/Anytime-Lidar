@@ -114,8 +114,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.pc_range = self.vfe.point_cloud_range.cpu()
         self.projection_stream = torch.cuda.Stream()
 
-        self.projection_coeff = float(os.getenv("PROJECTION_COEFF", 1.0))
-        print('Projection coefficient is 1.0')
+        self.projection_coeff = float(self.model_cfg.PROJECTION_COEFF)
+        print('Projection coefficient is', self.projection_coeff)
 
     def initialize(self, batch_dict):
         batch_dict['projections_nms'] = None
@@ -371,7 +371,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             # Remove detections which are no more needed
             active_num_dets = torch.sum(self.num_dets_per_tile)
-            #NOTE we need to tune the coeff here , 2.0 is giving good results! not for 150 ms...
+            #NOTE we need to tune the coeff here , 2.0 is giving good results but not always!
             max_num_proj = int(active_num_dets * self.projection_coeff)
             if self.past_detections['pred_boxes'].size(0) > max_num_proj:
                 # Remove oldest dets

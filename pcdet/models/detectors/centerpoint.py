@@ -5,7 +5,8 @@ class CenterPoint(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.benchmark_limit = 0
+        if torch.backends.cudnn.benchmark:
+            torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)

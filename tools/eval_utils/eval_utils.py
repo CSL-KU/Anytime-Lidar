@@ -146,6 +146,26 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                         output_path=final_output_dir if args.save_to_file else None
                     )
                     det_annos += annos
+
+                    if visualize:
+                        # Can infer which detections are projection from the scores
+                        # -x -y -z +x +y +z
+                        batch_dict = dataset.getitem_pre(det_idx)
+                        pd = buffered_pred_dicts[0]
+                        #print(batch_dict['gt_boxes'][:5, :])
+                        lbd = model.latest_batch_dict
+                        V.draw_scenes(
+                            points=batch_dict['points'],
+                            ref_boxes=pd['pred_boxes'],
+                            gt_boxes=batch_dict['gt_boxes'],
+                            ref_scores=pd['pred_scores'],
+                            ref_labels=pd['pred_labels'],
+                            max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
+                            pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                            nonempty_tile_coords=lbd.get('nonempty_tile_coords', None),
+                            tile_coords=lbd.get('chosen_tile_coords', None),
+                            clusters=lbd.get('clusters', None))
+
                     #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
                     det_idx += 1
                     samples_added += 1
@@ -156,7 +176,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
                 #buf_det_idx = save_det_idx # DEBUG
                 #print(f'Detected {save_det_idx}') # DEBUG
-                buffered_pred_dicts = pred_dicts
+                buffered_pred_dicts = copy.deepcopy(pred_dicts)
 
                 if nonblocking or (e2e_dl_musec > 0 and e2e_end_ts < det_end_ts):
                     det_ts = det_end_ts
@@ -175,6 +195,23 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                         )
                         det_annos += annos
                         #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
+
+                        if visualize:
+                            # Can infer which detections are projection from the scores
+                            # -x -y -z +x +y +z
+                            batch_dict = dataset.getitem_pre(det_idx)
+                            pd = buffered_pred_dicts[0]
+                            lbd = model.latest_batch_dict
+                            V.draw_scenes(
+                                points=batch_dict['points'], ref_boxes=pd['pred_boxes'],
+                                gt_boxes=batch_dict['gt_boxes'],# ???
+                                ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
+                                max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
+                                pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                                nonempty_tile_coords=lbd.get('nonempty_tile_coords', None),
+                                tile_coords=lbd.get('chosen_tile_coords', None),
+                                clusters=lbd.get('clusters', None))
+
                         det_idx += 1
                         samples_added += 1
                         progress_bar.set_postfix(disp_dict)
@@ -206,20 +243,19 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 # use ms to measure inference time
                 disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
 
-            if visualize and 'chosen_tile_coords' in batch_dict:
+            if visualize:
                 # Can infer which detections are projection from the scores
                 # -x -y -z +x +y +z
-                if 'clusters' not in batch_dict:
-                    batch_dict['clusters'] = None
                 pd = batch_dict['final_box_dicts'][0]
                 V.draw_scenes(
                     points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
                     gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
                     ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
-                    max_num_tiles=model.tcount, pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                    nonempty_tile_coords=batch_dict['nonempty_tile_coords'],
-                    tile_coords=batch_dict['chosen_tile_coords'],
-                    clusters=batch_dict['clusters'])
+                    max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
+                    pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                    nonempty_tile_coords=batch_dict.get('nonempty_tile_coords', None),
+                    tile_coords=batch_dict.get('chosen_tile_coords', None),
+                    clusters=batch_dict.get('clusters', None))
 
             statistics_info(cfg, ret_dict, metric, disp_dict)
             annos = dataset.generate_prediction_dicts(
