@@ -3,6 +3,12 @@ if [ -z $1 ]; then
     exit
 fi
 
+#export IGNORE_DL_MISS=0
+export DO_EVAL=0
+export E2E_REL_DEADLINE=0.0
+#export PROJECTION_COEFF=2.0
+export CALIBRATION=0
+
 PROF_CMD=""
 if [ $1 == 'profile' ]; then
     PROF_CMD="nsys profile -w true \
@@ -122,7 +128,6 @@ elif [ $1 == 'methods' ]; then
 
     for m in ${!CFG_FILES[@]}
     do
-
         CFG_FILE=${CFG_FILES[$m]}
         CKPT_FILE=${CKPT_FILES[$m]}
 
@@ -155,6 +160,45 @@ elif [ $1 == 'methods' ]; then
             fi
         done
     done
+elif [ $1 == 'proj_calibm' ]; then
+	export IGNORE_DL_MISS=1
+	export DO_EVAL=0
+	export E2E_REL_DEADLINE=0.0 # not streaming
+	export CALIBRATION=1
+	export USE_ALV1=0
+
+	rm eval_dict_*
+	OUT_DIR=exp_data_proj
+	mkdir -p $OUT_DIR
+
+	CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
+	CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+
+	CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
+		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
+
+	. nusc_sh_utils.sh # for link_data
+	for proj_coeff in $(seq 1.0 0.5 2.0)
+	do
+		export PROJECTION_COEFF=$proj_coeff
+		for period in $(seq 200 100 500)
+		do
+			link_data $period
+			for budget in $(seq 0.150 0.050 0.250)
+			do
+			    fpath=$OUT_DIR/eval_dict_m$2_b${budget}_p${period}_pc${proj_coeff}.json
+			    if [ -f $fpath ]; then
+				printf "Skipping $fpath test.\n"
+			    else
+				printf "Running $fpath test.\n"
+				$CMD --set "MODEL.DEADLINE_SEC" $budget "MODEL.METHOD" $2
+				# rename the output and move the corresponding directory
+				mv -f eval_dict_*.json $fpath
+				mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
+			    fi
+			done
+		done
+	done
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
