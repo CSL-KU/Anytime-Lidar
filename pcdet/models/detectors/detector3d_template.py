@@ -70,21 +70,23 @@ def post_forward_hook(module, inp_args, outp_args):
     dl_missed = (tdiff > 0)
 
    # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
-    if dl_missed:
-        module._eval_dict['deadlines_missed'] += 1
-        print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
-                module._eval_dict['deadlines_missed'])
+    ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
+    if not ignore_dl_miss:
+        if dl_missed:
+            module._eval_dict['deadlines_missed'] += 1
+            print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
+                    module._eval_dict['deadlines_missed'])
 
-        if not module.do_streaming_eval:
-            # Assume the program will abort the process when it misses the deadline
-            if module.latest_valid_dets is not None:
-                pred_dicts = copy.deepcopy(module.latest_valid_dets)
-            elif module._det_dict_copy is not None:
-                pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
-            else:
-                print('Warning! Using pred_dicts even though the deadline was missed.')
-    elif not module.do_streaming_eval:
-        module.latest_valid_dets = pred_dicts
+            if not module.do_streaming_eval:
+                # Assume the program will abort the process when it misses the deadline
+                if module.latest_valid_dets is not None:
+                    pred_dicts = copy.deepcopy(module.latest_valid_dets)
+                elif module._det_dict_copy is not None:
+                    pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
+                else:
+                    print('Warning! Using pred_dicts even though the deadline was missed.')
+        elif not module.do_streaming_eval:
+            module.latest_valid_dets = pred_dicts
 
     #tm = module.finish_time - module.psched_start_time
     #module._eval_dict['additional']['PostSched'].append(tm)
