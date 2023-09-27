@@ -21,6 +21,9 @@ class CenterPoint(Detector3DTemplate):
                     'VFE': [],
                     'MapToBEV': [],
                     'Backbone2D': [],
+                    'CenterHead-Pre': [],
+                    'CenterHead-Post': [],
+                    'CenterHead-GenBox': [],
                     'CenterHead': [],})
         else:
             #voxel
@@ -32,6 +35,9 @@ class CenterPoint(Detector3DTemplate):
                     'Backbone3D':[],
                     'MapToBEV': [],
                     'Backbone2D': [],
+                    'CenterHead-Pre': [],
+                    'CenterHead-Post': [],
+                    'CenterHead-GenBox': [],
                     'CenterHead': [],})
 
     def forward(self, batch_dict):
@@ -51,7 +57,15 @@ class CenterPoint(Detector3DTemplate):
         batch_dict = self.backbone_2d(batch_dict)
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
-        batch_dict = self.dense_head(batch_dict)
+        self.measure_time_start('CenterHead-Pre')
+        batch_dict = self.dense_head.forward_pre(batch_dict)
+        self.measure_time_end('CenterHead-Pre')
+        self.measure_time_start('CenterHead-Post')
+        batch_dict = self.dense_head.forward_post(batch_dict)
+        self.measure_time_end('CenterHead-Post')
+        self.measure_time_start('CenterHead-GenBox')
+        batch_dict = self.dense_head.forward_genbox(batch_dict)
+        self.measure_time_end('CenterHead-GenBox')
         self.measure_time_end('CenterHead')
 
         if self.training:

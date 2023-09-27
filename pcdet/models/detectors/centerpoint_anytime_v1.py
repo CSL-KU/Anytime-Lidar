@@ -859,8 +859,8 @@ class CenterPointAnytimeV1(Detector3DTemplate):
         for i in range(1, self._num_stages+1):
             for j in range(hstart, self.dense_head.num_heads+1):
                 self._calib_test_cases.append((i,j))
-        nusc = NuScenes(version='v1.0-mini', \
-                dataroot='../data/nuscenes/v1.0-mini', verbose=True)
+        nusc = NuScenes(version='v1.0-trainval', \
+                dataroot='../data/nuscenes/v1.0-trainval', verbose=True)
         gc.disable()
 
         if self._default_method == self.IMPR_Dryrun:

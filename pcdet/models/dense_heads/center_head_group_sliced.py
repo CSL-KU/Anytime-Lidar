@@ -592,7 +592,15 @@ class CenterHeadGroupSliced(nn.Module):
         return data_dict
 
     def forward_eval(self, data_dict):
-        return self.forward_eval_post(self.forward_eval_pre(data_dict))
+        data_dict = self.forward_eval_post(self.forward_eval_pre(data_dict))
+
+        pred_dicts = self.generate_predicted_boxes_eval(
+            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
+        )
+
+        data_dict['final_box_dicts'] = pred_dicts
+
+        return data_dict
 
     def forward_eval_pre(self, data_dict):
         assert data_dict['batch_size'] == 1
@@ -676,11 +684,11 @@ class CenterHeadGroupSliced(nn.Module):
                 pd[name] = attr.flatten(-3)
 
 
-        pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
-        )
-
-        data_dict['final_box_dicts'] = pred_dicts
+#        pred_dicts = self.generate_predicted_boxes_eval(
+#            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
+#        )
+#
+#        data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict
 

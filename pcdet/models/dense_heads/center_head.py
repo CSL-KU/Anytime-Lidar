@@ -37,6 +37,17 @@ class SeparateHead(nn.Module):
 
             self.__setattr__(cur_name, fc)
 
+    def forward_hm(self, x):
+        return {'hm': self.__getattr__('hm')(x)}
+
+    def forward_attr(self, x):
+        ret_dict = {}
+        for cur_name in self.sep_head_dict:
+            if cur_name != 'hm':
+                ret_dict[cur_name] = self.__getattr__(cur_name)(x)
+
+        return ret_dict
+
     def forward(self, x):
         ret_dict = {}
         for cur_name in self.sep_head_dict:
@@ -330,23 +341,36 @@ class CenterHead(nn.Module):
         return rois, roi_scores, roi_labels
 
     def forward(self, data_dict):
+        data_dict = self.forward_pre(data_dict)
+        data_dict = self.forward_post(data_dict)
+        data_dict = self.forward_genbox(data_dict)
+        return data_dict
+
+    def forward_pre(self, data_dict):
         spatial_features_2d = data_dict['spatial_features_2d']
         x = self.shared_conv(spatial_features_2d)
+        data_dict['pred_dicts'] = [head.forward_hm(x) for head in self.heads_list]
+        data_dict['shared_conv_outp'] = x
+        return data_dict
 
-        pred_dicts = []
-        for head in self.heads_list:
-            pred_dicts.append(head(x))
+    def forward_post(self, data_dict):
+        x = data_dict['shared_conv_outp']
+        for head, pd in zip(self.heads_list, data_dict['pred_dicts']):
+            pd.update(head.forward_attr(x))
 
         if self.training:
             target_dict = self.assign_targets(
-                data_dict['gt_boxes'], feature_map_size=spatial_features_2d.size()[2:],
+                data_dict['gt_boxes'], feature_map_size=data_dict['spatial_features_2d'].size()[2:],
                 feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
             )
             self.forward_ret_dict['target_dicts'] = target_dict
 
-        self.forward_ret_dict['pred_dicts'] = pred_dicts
+        self.forward_ret_dict['pred_dicts'] = data_dict['pred_dicts']
+        return data_dict
 
+    def forward_genbox(self, data_dict):
         if not self.training or self.predict_boxes_when_training:
+            pred_dicts = data_dict['pred_dicts']
             pred_dicts = self.generate_predicted_boxes(
                 data_dict['batch_size'], pred_dicts
             )

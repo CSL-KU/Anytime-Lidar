@@ -155,7 +155,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.training:
             batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords)
             return batch_dict
-        self.measure_time_start('Sched')
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
         vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
         vcount_area[netc] = netc_vcounts
@@ -273,7 +272,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
         elif self.sched_algo == SchedAlgo.ProjectionOnly:
             batch_dict['chosen_tile_coords'] = netc
-        self.measure_time_end('Sched')
 
         batch_dict['record_int_vcoords'] = True
         batch_dict['tile_size_voxels'] = self.tile_size_voxels_int
