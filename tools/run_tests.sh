@@ -108,6 +108,11 @@ if [ $1 == 'profile' ]; then
     $CMD --set "MODEL.DEADLINE_SEC" $2
     #export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ]; then
+    export IGNORE_DL_MISS=1
+    export DO_EVAL=0
+    export E2E_REL_DEADLINE_S=0.0 # not streaming
+    export CALIBRATION=0
+
     rm eval_dict_*
     OUT_DIR=exp_data_nsc
     mkdir -p $OUT_DIR
@@ -155,7 +160,9 @@ elif [ $1 == 'methods' ]; then
             else
 	        $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
                 # rename the output and move the corresponding directory
-                mv -f eval_dict_*.json $OUT_DIR/eval_dict_m"$m"_d"$s".json
+		fpath=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+                mv -f eval_dict_*.json $fpath
+		mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
             fi
         done
     done
@@ -192,8 +199,8 @@ elif [ $1 == 'proj_calibm' ]; then
 				$CMD --set "MODEL.DEADLINE_SEC" $budget "MODEL.METHOD" $2 \
 					"MODEL.PROJECTION_COEFF" $proj_coeff
 				# rename the output and move the corresponding directory
-				mv -f eval_dict_*.json $fpath
-				mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
+                                mv -f eval_dict_*.json $fpath
+                                mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
 			    fi
 			done
 		done
