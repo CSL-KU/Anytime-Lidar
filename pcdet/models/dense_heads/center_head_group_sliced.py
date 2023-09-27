@@ -592,7 +592,8 @@ class CenterHeadGroupSliced(nn.Module):
         return data_dict
 
     def forward_eval(self, data_dict):
-        data_dict = self.forward_eval_post(self.forward_eval_pre(data_dict))
+        data_dict = self.forward_eval_topk(self.forward_eval_pre(data_dict))
+        data_dict = self.forward_eval_post(data_dict)
 
         pred_dicts = self.generate_predicted_boxes_eval(
             data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
@@ -602,30 +603,27 @@ class CenterHeadGroupSliced(nn.Module):
 
         return data_dict
 
-    def forward_eval_pre(self, data_dict):
+    def forward_eval_conv(self, data_dict):
         assert data_dict['batch_size'] == 1
         x = data_dict['spatial_features_2d']
 
         shr_conv_outp = self.shared_conv(x)
+        data_dict['shr_conv_outp'] = shr_conv_outp
 
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
         heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        data_dict['pred_dicts'] = [{'hm' : hm} for hm in heatmaps]
 
-        pred_dicts = [{'hm' : hm} for hm in heatmaps]
+        return data_dict
 
-        ##########
-        # For each heatmap, do slicing and forwarding
-        # Every head has a pred dict,
+    def forward_eval_topk(self, data_dict):
+        pred_dicts = data_dict['pred_dicts']
+
         post_process_cfg = self.model_cfg.POST_PROCESSING
         score_thres = post_process_cfg.SCORE_THRESH
-        p = pad_size = self.slice_size//2
-        shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
-                [shr_conv_outp])
-        shr_conv_outp = shr_conv_outp[0]
-        shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
-        data_dict['padded_x'] = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
+
         for pd in pred_dicts:
             topk_score, topk_inds, topk_classes, topk_ys, topk_xs = \
                     centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample, \
@@ -643,13 +641,23 @@ class CenterHeadGroupSliced(nn.Module):
                 nonempty_det_head_indexes.append(idx)
 
         # Code is synched here due to masks
-
         data_dict['pred_dicts'] = pred_dicts
         data_dict['dethead_indexes'] = np.array(nonempty_det_head_indexes)
 
         return data_dict
 
     def forward_eval_post(self, data_dict):
+
+
+        p = pad_size = self.slice_size//2
+        shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
+                [data_dict['shr_conv_outp']])
+        shr_conv_outp = shr_conv_outp[0]
+        shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
+        padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
+
+
+
         slc_indices, x_inds, y_inds, i = [], [], [], 0
         for pd in data_dict['pred_dicts']:
             topk_outp = pd['topk_outp']
@@ -666,7 +674,7 @@ class CenterHeadGroupSliced(nn.Module):
         if i > 0:
             b_id = torch.full((i,), 0, dtype=torch.short, device='cuda') # since batch size is 1
             indices = torch.stack((b_id, torch.cat(x_inds).short(), torch.cat(y_inds).short()), dim=1)
-            all_slices = cuda_slicer.slice_and_batch_nhwc(data_dict['padded_x'], indices, self.slice_size)
+            all_slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
 
         for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
             slc_i_1, slc_i_2 = slc_indices[det_idx]

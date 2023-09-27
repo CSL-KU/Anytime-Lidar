@@ -23,6 +23,7 @@ class CenterPoint(Detector3DTemplate):
                     'Backbone2D': [],
                     'CenterHead-Pre': [],
                     'CenterHead-Post': [],
+                    'CenterHead-Topk': [],
                     'CenterHead-GenBox': [],
                     'CenterHead': [],})
         else:
@@ -37,6 +38,7 @@ class CenterPoint(Detector3DTemplate):
                     'Backbone2D': [],
                     'CenterHead-Pre': [],
                     'CenterHead-Post': [],
+                    'CenterHead-Topk': [],
                     'CenterHead-GenBox': [],
                     'CenterHead': [],})
 
@@ -63,6 +65,9 @@ class CenterPoint(Detector3DTemplate):
         self.measure_time_start('CenterHead-Post')
         batch_dict = self.dense_head.forward_post(batch_dict)
         self.measure_time_end('CenterHead-Post')
+        self.measure_time_start('CenterHead-Topk')
+        batch_dict = self.dense_head.forward_topk(batch_dict)
+        self.measure_time_end('CenterHead-Topk')
         self.measure_time_start('CenterHead-GenBox')
         batch_dict = self.dense_head.forward_genbox(batch_dict)
         self.measure_time_end('CenterHead-GenBox')

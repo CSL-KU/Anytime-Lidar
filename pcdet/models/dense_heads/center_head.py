@@ -38,7 +38,7 @@ class SeparateHead(nn.Module):
             self.__setattr__(cur_name, fc)
 
     def forward_hm(self, x):
-        return {'hm': self.__getattr__('hm')(x)}
+        return {'hm': self.__getattr__('hm')(x).sigmoid()}
 
     def forward_attr(self, x):
         ret_dict = {}
@@ -266,7 +266,7 @@ class CenterHead(nn.Module):
         tb_dict['rpn_loss'] = loss.item()
         return loss, tb_dict
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -276,7 +276,9 @@ class CenterHead(nn.Module):
             'pred_labels': [],
         } for k in range(batch_size)]
         for idx, pred_dict in enumerate(pred_dicts):
-            batch_hm = pred_dict['hm'].sigmoid()
+            #batch_hm = pred_dict['hm'].sigmoid()
+            topk_outp = topk_outputs[idx]
+            batch_hm = pred_dict['hm'] # already did sigmoid
             batch_center = pred_dict['center']
             batch_center_z = pred_dict['center_z']
             batch_dim = pred_dict['dim'].exp()
@@ -287,6 +289,7 @@ class CenterHead(nn.Module):
             final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
                 heatmap=batch_hm, rot_cos=batch_rot_cos, rot_sin=batch_rot_sin,
                 center=batch_center, center_z=batch_center_z, dim=batch_dim, vel=batch_vel,
+                topk_outp=topk_outp,
                 point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
                 feature_map_stride=self.feature_map_stride,
                 K=post_process_cfg.MAX_OBJ_PER_SAMPLE,
@@ -368,11 +371,25 @@ class CenterHead(nn.Module):
         self.forward_ret_dict['pred_dicts'] = data_dict['pred_dicts']
         return data_dict
 
+    def forward_topk(self, data_dict):
+        if not self.training or self.predict_boxes_when_training:
+            topk_outputs = []
+            pred_dicts = data_dict['pred_dicts']
+            post_process_cfg = self.model_cfg.POST_PROCESSING
+            for pd in pred_dicts:
+                scores, inds, class_ids, ys, xs = centernet_utils._topk(pd['hm'],
+                        K=post_process_cfg.MAX_OBJ_PER_SAMPLE)
+                topk_outputs.append((scores, inds, class_ids, ys, xs))
+            data_dict['topk_outputs'] = topk_outputs
+
+        return data_dict
+
+
     def forward_genbox(self, data_dict):
         if not self.training or self.predict_boxes_when_training:
             pred_dicts = data_dict['pred_dicts']
             pred_dicts = self.generate_predicted_boxes(
-                data_dict['batch_size'], pred_dicts
+                data_dict['batch_size'], pred_dicts, data_dict['topk_outputs']
             )
 
             if self.predict_boxes_when_training:

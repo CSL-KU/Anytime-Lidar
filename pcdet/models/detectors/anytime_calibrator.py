@@ -198,13 +198,18 @@ class AnytimeCalibrator():
             batch_dict = self.model.map_to_bev(batch_dict)
             batch_dict = self.model.backbone_2d(batch_dict)
             batch_dict = self.model.schedule3(batch_dict)
-            batch_dict = self.model.dense_head.forward_eval_pre(batch_dict)
+            batch_dict = self.model.dense_head.forward_eval_conv(batch_dict)
+            batch_dict = self.model.dense_head.forward_eval_topk(batch_dict)
             ## synchronized here
 
             if record:
                 cuda_events[1].record()
 
             batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
+            pred_dicts = self.model.dense_head.generate_predicted_boxes_eval(
+                batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict['projections_nms']
+            )
+            batch_dict['final_box_dicts'] = pred_dicts
             batch_dict = self.model.schedule4(batch_dict)
 
             if record:

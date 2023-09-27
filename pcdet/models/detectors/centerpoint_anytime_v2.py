@@ -18,6 +18,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'MapToBEV': [],
                     'Backbone2D': [],
                     'CenterHead-Pre': [],
+                    'CenterHead-Topk': [],
                     'CenterHead-Post': [],
                     'CenterHead-GenBox': [],
                     'CenterHead': []})
@@ -34,6 +35,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'MapToBEV': [],
                     'Backbone2D': [],
                     'CenterHead-Pre': [],
+                    'CenterHead-Topk': [],
                     'CenterHead-Post': [],
                     'CenterHead-GenBox': [],
                     'CenterHead': []})
@@ -73,12 +75,15 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
 
         self.measure_time_start('Backbone2D')
         batch_dict = self.backbone_2d(batch_dict)
-        batch_dict = self.schedule3(batch_dict) # run oin parallel with bb2d
+        batch_dict = self.schedule3(batch_dict) # run in parallel with bb2d and dethead
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
         self.measure_time_start('CenterHead-Pre')
-        batch_dict = self.dense_head.forward_eval_pre(batch_dict)
+        batch_dict = self.dense_head.forward_eval_conv(batch_dict)
         self.measure_time_end('CenterHead-Pre')
+        self.measure_time_start('CenterHead-Topk')
+        batch_dict = self.dense_head.forward_eval_topk(batch_dict)
+        self.measure_time_end('CenterHead-Topk')
         self.measure_time_start('CenterHead-Post')
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead-Post')
@@ -116,6 +121,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         for i in range(1, self.tcount+1):
             dummy_dict['chosen_tile_coords'] = torch.arange(i)
             dummy_dict = self.backbone_2d(dummy_dict)
-            self.dense_head.forward_eval_pre(dummy_dict)
+            self.dense_head.forward_eval_conv(dummy_dict)
         print('done.')
         self.calibrated = True

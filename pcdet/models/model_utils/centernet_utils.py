@@ -219,7 +219,7 @@ def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z,
     return ret_pred_dicts
 
 
-def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim,
+def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim, topk_outp=None,
                              point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, K=100,
                              circle_nms=False, score_thresh=None, post_center_limit_range=None):
     batch_size, num_class, _, _ = heatmap.size()
@@ -229,7 +229,10 @@ def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim,
         assert False, 'not checked yet'
         heatmap = _nms(heatmap)
 
-    scores, inds, class_ids, ys, xs = _topk(heatmap, K=K)
+    if topk_outp is None:
+        scores, inds, class_ids, ys, xs = _topk(heatmap, K=K)
+    else:
+        scores, inds, class_ids, ys, xs = topk_outp
     center = _transpose_and_gather_feat(center, inds).view(batch_size, K, 2)
     rot_sin = _transpose_and_gather_feat(rot_sin, inds).view(batch_size, K, 1)
     rot_cos = _transpose_and_gather_feat(rot_cos, inds).view(batch_size, K, 1)
