@@ -28,6 +28,12 @@ def pre_forward_hook(module, inp_args):
     dataset_indexes = inp_args[0]
     data_dicts = [module.dataset.getitem_pre(i) for i in dataset_indexes]
     #data_dict = module.dataset.getitem_pre(dataset_index)
+
+    # NOTE The following prevents orin from spending unnecessary 50 ms
+    # for tensor initialization, seems like a BUG
+    ###dummy_tensor = torch.zeros(1024, device='cuda')
+    ###torch.cuda.synchronize()
+
     start_time = time.time()
     torch.cuda.nvtx.range_push('End-to-end')
     module.measure_time_start('End-to-end')
@@ -71,22 +77,26 @@ def post_forward_hook(module, inp_args, outp_args):
 
    # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
     ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
-    if not ignore_dl_miss:
+    if not ignore_dl_miss and not module.do_streaming_eval:
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
+            module.dl_miss_streak += 1
             print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
                     module._eval_dict['deadlines_missed'])
 
-            if not module.do_streaming_eval:
-                # Assume the program will abort the process when it misses the deadline
-                if module.latest_valid_dets is not None:
-                    pred_dicts = copy.deepcopy(module.latest_valid_dets)
-                elif module._det_dict_copy is not None:
-                    pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
-                else:
-                    print('Warning! Using pred_dicts even though the deadline was missed.')
-        elif not module.do_streaming_eval:
+            # Assume the program will abort the process when it misses the deadline
+            if module.latest_valid_dets is not None:
+                pred_dicts = copy.deepcopy(module.latest_valid_dets)
+            elif module._det_dict_copy is not None:
+                pred_dicts = [ module.get_dummy_det_dict() for p in pred_dicts ]
+            else:
+                print('Warning! Using pred_dicts even though the deadline was missed.')
+        else:
+            module.dl_miss_streak = 0
             module.latest_valid_dets = pred_dicts
+        if module.dl_miss_streak == 1000:
+            # This guy is dead, don't run it anymore
+            pass
 
     #tm = module.finish_time - module.psched_start_time
     #module._eval_dict['additional']['PostSched'].append(tm)
@@ -145,6 +155,7 @@ class Detector3DTemplate(nn.Module):
     
         self.latest_batch_dict = None
         self.latest_valid_dets = None
+        self.dl_miss_streak = 0
         #self.psched_start_time = 0
 
     def train(self, mode=True):
