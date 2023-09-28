@@ -1,7 +1,8 @@
 import _init_path
 import os
 from multiprocessing import Pool
-if os.getenv('USE_ALV1', False) == '1':
+if int(os.getenv('USE_ALV1', 0)) == 1:
+    print('ANYTIME LIDAR v1 MODE ON')
     # pool for anytime lidar v1
     pred_box_pool = Pool(6)
     os.sched_setaffinity(0, [6,7])

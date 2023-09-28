@@ -38,7 +38,8 @@ class SeparateHead(nn.Module):
             self.__setattr__(cur_name, fc)
 
     def forward_hm(self, x):
-        return {'hm': self.__getattr__('hm')(x).sigmoid()}
+        hm_out = self.__getattr__('hm')(x)
+        return {'hm': hm_out if self.training else hm_out.sigmoid()}
 
     def forward_attr(self, x):
         ret_dict = {}
