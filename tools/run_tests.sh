@@ -7,6 +7,8 @@ fi
 export DO_EVAL=0
 export E2E_REL_DEADLINE_S=0.0
 export CALIBRATION=0
+export OMP_NUM_THREADS=4
+TASKSET="taskset -c 4-7"
 
 PROF_CMD=""
 if [ $1 == 'profile' ]; then
@@ -25,7 +27,6 @@ if [ $1 == 'profile' ]; then
     #   --sampling-frequency=50000 --cuda-memory-usage=true"
 fi
 
-TASKSET=""
 
 # Imprecise model
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_multihead_imprecise.yaml"
@@ -66,8 +67,6 @@ TASKSET=""
 # Centerpoint-voxel0075-anytime-v2
 CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
 CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
-TASKSET="taskset -c 4-7"
-export OMP_NUM_THREADS=4
 
 # Centerpoint-voxel0075-anytime-v1
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
