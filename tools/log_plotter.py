@@ -30,8 +30,8 @@ method_num_to_str = [
         '0CenterPoint',
         '1AnytimeV1',
         '2AnytimeV2-RR',
-        '3AnytimeV2-MRR',
-        '4AnytimeV2-ARR',
+        '3AnytimeV2-ARR',
+        '4AnytimeV2-RR-NoForc',
 #        '3Anytime-NoPrj',
         #'2PointPillars-2',
         #'1PointPillars-3',
@@ -44,13 +44,13 @@ method_num_to_str = [
 ]
 
 method_remap = {
-        0:0, 1:2, 2:3, 10:1, 4:4,
+        0:0, 2:2, 10:1, 3:3, 4:4,
 }
 
 if __name__ == '__main__':
     inp_dir = sys.argv[1]
    
-    any_path = glob.glob(inp_dir + "/eval_dict_*")[0]
+    any_path = glob.glob(inp_dir + "/eval_dict_*json")[0]
     with open(any_path, 'r') as handle:
         eval_d = json.load(handle)
         dataset = eval_d.get('dataset','NuScenesDataset')
@@ -61,7 +61,7 @@ if __name__ == '__main__':
     m_to_c_ls = [(method_colors[i], linestyles[i]) for i in range(len(method_colors))]
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futs = []
-        paths = sorted(glob.glob(inp_dir + "/eval_dict_*"))
+        paths = sorted(glob.glob(inp_dir + "/eval_dict_*json"))
         for path in paths:
             futs.append(executor.submit(load_eval_dict, path))
         for f in concurrent.futures.as_completed(futs):
@@ -85,8 +85,8 @@ if __name__ == '__main__':
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint',
             'AnytimeV1',
+            'AnytimeV2-RR-NoForc',
             'AnytimeV2-RR',
-#            'AnytimeV2-MRR',
             'AnytimeV2-ARR',
     ]})
 
