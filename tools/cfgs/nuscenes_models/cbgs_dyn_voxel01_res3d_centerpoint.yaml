@@ -5,6 +5,15 @@ DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
 
     DATA_PROCESSOR:
+        - NAME: mask_points_and_boxes_outside_range
+          REMOVE_OUTSIDE_BOXES: True
+
+        - NAME: shuffle_points
+          SHUFFLE_ENABLED: {
+            'train': True,
+            'test': False
+          }
+
         - NAME: transform_points_to_voxels_placeholder
           VOXEL_SIZE: [0.1, 0.1, 0.2]
           MAX_POINTS_PER_VOXEL: 10
@@ -75,7 +84,7 @@ MODEL:
             }
 
         POST_PROCESSING:
-            SCORE_THRESH: 0.1
+            SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
             MAX_OBJ_PER_SAMPLE: 500
             NMS_CONFIG:
@@ -89,7 +98,9 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-
+    DEADLINE_SEC: 9999.9
+    STREAMING_EVAL: False
+    METHOD: 0
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4
