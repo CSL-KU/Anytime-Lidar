@@ -347,6 +347,7 @@ class CenterHead(nn.Module):
     def forward(self, data_dict):
         data_dict = self.forward_pre(data_dict)
         data_dict = self.forward_post(data_dict)
+        data_dict = self.forward_topk(data_dict)
         data_dict = self.forward_genbox(data_dict)
         return data_dict
 
