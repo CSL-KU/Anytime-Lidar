@@ -248,36 +248,120 @@ def plot_func_eted(out_path, exps_dict):
         ax.scatter(x, y, color=l2d[0].get_c())
     ax.invert_xaxis()
     ax.set_ylim(.0, 400)
-    ax.legend(fontsize='medium')
+    ax.legend(fontsize='medium', ncol=2)
     ax.set_ylabel('End-to-end time (msec)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
     #fig.suptitle("Average end-to-end time over different deadlines", fontsize=16)
     plt.savefig(out_path + "/end-to-end_deadlines.png")
 
+
+# box plan can be cdf as well
+def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
+    # compare three different cases
+    e1, e2 = 'CenterPoint .075', 'AnytimeLidarV2'
+    if e1 not in exps_dict or e2 not in exps_dict:
+        return
+
+
+    bl_eval_dict = exps_dict[e1][-1]
+    alv2_eval_dict_1 = exps_dict[e2][-1]
+    alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
+    eval_data = [bl_eval_dict, alv2_eval_dict_1, alv2_eval_dict_2]
+
+#    # Create CenterHead-PostAll
+#    for data in eval_data:
+#        et = data['exec_times']
+#        et['CenterHead-PostAll'] = np.array(et['CenterHead-Topk']) + \
+#                np.array(et['CenterHead-Post']) + np.array(et['CenterHead-GenBox'])
+
+    components = ['Backbone3D', 'Backbone2D', 'CenterHead']
+
+    fig, axes = plt.subplots(1, 1, figsize=(4, 6), constrained_layout=True)
+    #axes = axes.ravel()
+
+    labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
+    labels[0] = 'CP .075 ' + labels[0]
+    labels[1] = 'ALv2 ' + labels[1]
+    labels[2] = 'ALv2 ' + labels[2]
+
+    for comp in components:
+        fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
+        time_data = [np.array(ed['exec_times'][comp]) for ed in  eval_data]
+        #bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
+
+        for i, (label, data) in enumerate(zip(labels, time_data)):
+            if plot_type == 'boxplot':
+                ax.boxplot(data, labels=[label], positions=[i], sym=".")
+            elif plot_type == 'cdf':
+                data.sort()
+                perc99 = np.percentile(data, 99)
+                data = data[data < perc99]
+
+                # Calculate the histogram
+                hist, bin_edges = np.histogram(data, bins=100, density=True)
+                # Calculate the CDF from the histogram
+                cdf = np.cumsum(hist * np.diff(bin_edges))
+                ax.plot(bin_edges[1:], cdf, marker='.', linestyle='-', markersize=2, label=label)
+
+        #ax.invert_xaxis()
+        ax.set_xlim(0.)
+        ax.grid('True', ls='--')
+        #ax.set_title(f'{comp}', fontsize='x-large')
+        if plot_type == 'boxplot':
+            ax.set_ylabel('Execution time (msec)', fontsize='x-large')
+        elif plot_type == 'cdf':
+            ax.set_ylabel('CDF', fontsize='x-large')
+            ax.set_xlabel('Execution time (msec)', fontsize='x-large')
+            ax.legend(fontsize='medium')
+        plt.savefig(out_path + f"/{comp}_time_cdf.png")
+
+    #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
+
+
+
+
+
 def plot_func_bb3d_time_diff(out_path, exps_dict):
     # compare execution times end to end
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
-        if 'bb3d_preds' not in evals[0]:
+        if 'bb3d_preds' not in evals[0] or not evals[0]['bb3d_preds']:
             continue
+
+        evals = evals[:4] # use periods 100 150 200 250
+
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        labels = [str(e['deadline_msec']) for e in evals]
+        labels = [f"ALv2 {str(e['deadline_msec'])} ms period" for e in evals]
         bb3d_pred_err = [np.array(e['exec_times']['Backbone3D']) - np.array(e['bb3d_preds']) \
                 for e in evals]
-        bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
+        #bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
+
         for i, (label, data) in enumerate(zip(labels, bb3d_pred_err)):
-            ax.boxplot(data, labels=[label], positions=[i], sym=".")
-        ax.invert_xaxis()
-        ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
-        ax.set_xlabel('Deadline (msec)', fontsize='x-large')
-        #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
+            data_abs = np.abs(data)
+            #data.sort()
+            perc99 = np.percentile(data_abs, 99)
+            data99 = data[data_abs < perc99]
+
+            # Calculate the histogram
+            hist, bin_edges = np.histogram(data99, bins=100, density=True)
+            # Calculate the CDF from the histogram
+            cdf = np.cumsum(hist * np.diff(bin_edges))
+            ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
+
+        ax.set_ylabel('CDF', fontsize='large')
+        ax.set_xlabel('Actual - Predicted execution time (msec)', fontsize='large')
+        ax.legend()
+        ax.grid('True', ls='--')
+        #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
+        #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
+        #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
         plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.png")
 
 
 def plot_func_area_processed(out_path, exps_dict):
     # compare execution times end to end
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
-        if 'nonempty_tiles' not in evals[0]:
+        if 'nonempty_tiles' not in evals[0] or not evals[0]['nonempty_tiles']:
             continue
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
         labels = [str(e['deadline_msec']) for e in evals]
@@ -303,25 +387,49 @@ def plot_func_area_processed(out_path, exps_dict):
 def plot_func_tile_drop_rate(out_path, exps_dict):
     # compare execution times end to end
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
-        if 'chosen_tiles_1' not in evals[0]:
+        if exp_name != 'AnytimeLidarV2' or 'chosen_tiles_1' not in evals[0] or not evals[0]['chosen_tiles_1']:
             continue
+
+        evals = evals[:4] # use periods 100 150 200 250
+
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        labels = [str(e['deadline_msec']) for e in evals]
+        labels = [f"ALv2 {str(e['deadline_msec'])} ms period" for e in evals]
         chosen_tiles = [e['chosen_tiles_1']  for e in evals]
         num_chosen_tiles = [np.array([len(t) for t in net]) for net in chosen_tiles]
         processed_tiles = [e['chosen_tiles_2']  for e in evals]
         num_processed_tiles = [np.array([len(t) for t in net]) for net in processed_tiles]
 
-        dropped_area_perc = [np.expand_dims((1. - p/c)*100., -1) \
-                for p, c in zip(num_processed_tiles, num_chosen_tiles)]
+        num_dropped_tiles = [c - p for p, c in zip(num_processed_tiles, num_chosen_tiles)]
+        #dropped_area_perc = [np.expand_dims((1. - p/c)*100., -1) \
+        #        for p, c in zip(num_processed_tiles, num_chosen_tiles)]
 
 #        bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
-        for i, (label, data) in enumerate(zip(labels, dropped_area_perc)):
-            ax.boxplot(data, labels=[label], positions=[i], sym=".")
+        for i, (label, data) in enumerate(zip(labels, num_dropped_tiles)):
+            #perc99 = np.percentile(data, 99)
+            #data99 = data[data_abs < perc99]
+            unq, cnts = np.unique(data, return_counts=True)
+
+            print(label, ', num droped tiles:', unq, ', perc', \
+                    np.round((cnts/data.shape[0])*1000)/10)
+
+            # Calculate the histogram
+            hist, bin_edges = np.histogram(data, bins=100, density=True)
+            # Calculate the CDF from the histogram
+            cdf = np.cumsum(hist * np.diff(bin_edges))
+            ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
+
+        ax.set_ylabel('CDF', fontsize='x-large')
+        ax.set_xlabel('Number of dropped tiles after Backbone3D', fontsize='x-large')
+        ax.legend()
+        ax.set_ylim(0., 1.)
+        ax.grid('True', ls='--')
+
+
+#            ax.boxplot(data, labels=[label], positions=[i], sym=".")
 #        i+=1
-        ax.invert_xaxis()
-        ax.set_ylabel('Dropped tiles after\nBackbone 3D (%)', fontsize='x-large')
-        ax.set_xlabel('Deadline (msec)', fontsize='x-large')
+#        ax.invert_xaxis()
+#        ax.set_ylabel('Dropped tiles after\nBackbone 3D (%)', fontsize='x-large')
+#        ax.set_xlabel('Deadline (msec)', fontsize='x-large')
 #        #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
         plt.savefig(out_path + f"/{exp_name}_dropped_area.png")
 

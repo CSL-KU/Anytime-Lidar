@@ -14,7 +14,7 @@ method_colors= [
     'tab:red', 
     'tab:green', 
     'tab:olive', 
-    'tab:purple', 
+    'tab:orange', 
     'tab:brown',
     'tab:blue', 
     'tab:red',  #'xkcd:coral', 
@@ -27,24 +27,18 @@ method_colors= [
 ]
 
 method_num_to_str = [
-        '0CenterPoint',
-        '1AnytimeV1',
-        '2AnytimeV2-RR',
-        '3AnytimeV2-ARR',
-        '4AnytimeV2-RR-NoForc',
-#        '3Anytime-NoPrj',
-        #'2PointPillars-2',
-        #'1PointPillars-3',
-#        '4MultiStage',
-#        '5StaticHS',
-#        '6RoundRobin-NoPrj',
-#        '8Ours-NoPrj',
-#        '9PConfHS-P',
-#        'ARoundRobin',
+        '0CenterPoint .075',
+        '1AnytimeLidarV1',
+        '2AnytimeLidarV2',
+        '3AnytimeLidarV2 ARR',
+        '4AnytimeLidarV2 NF',
+        '5CenterPoint .1',
+        '6CenterPoint PP',
+        '7AnytimeLidarV2 NSNF',
 ]
 
 method_remap = {
-        0:0, 2:2, 10:1, 3:3, 4:4,
+        0:0, 2:2, 10:1, 3:3, 4:4, 5:5, 6:6, 7:7
 }
 
 if __name__ == '__main__':
@@ -83,24 +77,26 @@ if __name__ == '__main__':
 
     plot_sets=[]
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint',
-            'AnytimeV1',
-            'AnytimeV2-RR-NoForc',
-            'AnytimeV2-RR',
-            'AnytimeV2-ARR',
+            'CenterPoint .075',
+            'CenterPoint .1',
+            'CenterPoint PP',
+            'AnytimeLidarV1',
+#            'AnytimeLidarV2-NF',
+            'AnytimeLidarV2',
+#            'AnytimeV2-ARR',
     ]})
 
-    #plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-    #        'ClsScrSum-NoPrj',
-    #        'RoundRobin-NoPrj',
-    #        'Ours-NoPrj',
-    #        'NearOptimal-NoPrj',
-    #]})
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+            'CenterPoint .075',
+            'AnytimeLidarV2 NSNF',
+            'AnytimeLidarV2 NF',
+            'AnytimeLidarV2',
+    ]})
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]
-    out_path="./exp_plots/set" + sys.argv[2]
-    for p in ["./exp_plots", out_path]:
+    out_path="/root/shared_data/exp_plots/set" + sys.argv[2]
+    for p in ["/root/shared_data/exp_plots", out_path]:
         try:
             os.mkdir(p)
         except FileExistsError:
@@ -140,7 +136,10 @@ if __name__ == '__main__':
 
     procs.append(Process(target=plot_func_bb3d_time_diff, args=(out_path, exps_dict)))
     procs[-1].start()
-    
+   
+    procs.append(Process(target=plot_func_component_time, args=(out_path, exps_dict, 'cdf')))
+    procs[-1].start()
+
     procs.append(Process(target=plot_func_area_processed, args=(out_path, exps_dict)))
     procs[-1].start()
     
