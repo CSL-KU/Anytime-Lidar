@@ -22,11 +22,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.sched_algo = self.model_cfg.METHOD
 
-        if self.sched_algo == SchedAlgo.RoundRobin_NoProj:
+        self.sched_disabled = (self.sched_algo == SchedAlgo.RoundRobin_NoSchedNoProj)
+        if self.sched_algo == SchedAlgo.RoundRobin_NoProj or \
+                self.sched_algo == SchedAlgo.RoundRobin_NoSchedNoProj:
             self.keep_projection_disabled=True
             self.sched_algo = SchedAlgo.RoundRobin
         else:
             self.keep_projection_disabled=False
+
 
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
@@ -118,7 +121,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
         print('Projection coefficient is', self.projection_coeff)
 
     def initialize(self, batch_dict):
-        batch_dict['projections_nms'] = None
+        batch_dict['projections_nms'] = None # redundant?
+        if self.sched_disabled:
+            return batch_dict
+
         latest_token = batch_dict['metadata'][0]['token']
         scene_token = self.token_to_scene[latest_token]
 
@@ -130,12 +136,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
-    def get_nonempty_tiles(self, voxel_coords):
+    def get_nonempty_tiles(self, voxel_coords, training=False):
         # Calculate where each voxel resides in which tile
         voxel_tile_coords = torch.div(voxel_coords[:, -1], self.tile_size_voxels, \
                 rounding_mode='trunc').long()
 
-        if self.training:
+        if training:
             nonempty_tile_coords = torch.unique(voxel_tile_coords, sorted=True)
             return nonempty_tile_coords
         else:
@@ -152,9 +158,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def schedule1(self, batch_dict):
         voxel_coords = batch_dict['voxel_coords']
-        if self.training:
-            batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords)
+        if self.training or self.sched_disabled:
+            batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords, True)
             return batch_dict
+
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
         vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
         vcount_area[netc] = netc_vcounts
@@ -281,6 +288,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     # Recalculate chosen tiles based on the time spent on bb3d
     def schedule2(self, batch_dict):
+        if self.sched_disabled:
+            return batch_dict
         torch.cuda.synchronize()
         vcoords = batch_dict['bb3d_intermediary_vcoords']
         vcoords.insert(0, batch_dict['vcount_area'])

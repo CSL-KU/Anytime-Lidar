@@ -3,8 +3,8 @@ if [ -z $1 ]; then
     exit
 fi
 
-#export IGNORE_DL_MISS=0
-export DO_EVAL=0
+export IGNORE_DL_MISS=0
+export DO_EVAL=1
 export E2E_REL_DEADLINE_S=0.0
 export CALIBRATION=0
 export OMP_NUM_THREADS=4
@@ -46,14 +46,14 @@ fi
 
 # Centerpoint-pointpillar
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_12_5_data.pth"
+#CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
 
 # Centerpoint-pointpillar-anytime
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
 #CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
 
 # Centerpoint-voxel01
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
 
 # Centerpoint-voxel01-anytime
@@ -61,12 +61,13 @@ fi
 #CKPT_FILE="../models/cbgs_voxel01_centerpoint_anytime_16x16.pth"
 
 # Centerpoint-voxel0075
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
+CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml"
+CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
+#CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
 # Centerpoint-voxel0075-anytime-v2
-CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
-CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
+#CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
 
 # Centerpoint-voxel0075-anytime-v1
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
@@ -121,13 +122,19 @@ elif [ $1 == 'methods' ]; then
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
+	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
     CKPT_FILES=( \
             "../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
 	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
+	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
+            "../models/cbgs_voxel01_centerpoint_nds_6454.pth" \
+            "../models/cbgs_pp_centerpoint_nds6070.pth" \
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
 
     for m in ${!CFG_FILES[@]}
     do

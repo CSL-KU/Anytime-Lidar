@@ -6,6 +6,8 @@ class SchedAlgo:
     RoundRobin = 2
     AdaptiveRR = 3
     RoundRobin_NoProj = 4
+    # 5 and 6 are other baselines 01 and pillar
+    RoundRobin_NoSchedNoProj = 7
     # Keep the next ones only for code compability
     MirrorRR = 98
 

@@ -7,11 +7,11 @@
 
 ## TEST
 #AGX Orin
-start_period_ms=300
-end_period_ms=50
+#start_period_ms=300
+#end_period_ms=50
 #AGX Xavier
-#start_period_ms=500
-#end_period_ms=200
+start_period_ms=350
+end_period_ms=100
 
 step_ms=50 # better not change it
 step_s=$(echo "$step_ms / 1000.0" | bc -l)
