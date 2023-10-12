@@ -2,9 +2,10 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_mini_dataset.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
 
-    POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+    #POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+    POINT_CLOUD_RANGE: [-53.6, -53.6, -5.0, 53.6, 53.6, 3.0]
     DATA_PROCESSOR:
         -   NAME: mask_points_and_boxes_outside_range
             REMOVE_OUTSIDE_BOXES: True
@@ -206,7 +207,7 @@ MODEL:
 
     POST_PROCESSING:
         RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-        SCORE_THRESH: 0.1
+        SCORE_THRESH: 0.3
         OUTPUT_RAW_SCORE: False
 
         EVAL_METRIC: kitti
@@ -217,11 +218,12 @@ MODEL:
             NMS_THRESH: 0.2
             NMS_PRE_MAXSIZE: 1000
             NMS_POST_MAXSIZE: 83
+    STREAMING_EVAL: False
     METHOD: 3
     DEADLINE_SEC: 10.0
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 2
+    BATCH_SIZE_PER_GPU: 1
     NUM_EPOCHS: 20
 
     OPTIMIZER: adam_onecycle

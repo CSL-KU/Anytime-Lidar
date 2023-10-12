@@ -28,9 +28,10 @@ def get_stats(np_arr):
     min_, max_, mean_ = np.min(np_arr), np.max(np_arr), np.mean(np_arr)
     perc5_ = np.percentile(np_arr, 5, method='lower')
     perc95_ = np.percentile(np_arr, 95, method='lower')
-    print("Min\t5Perc\tMean\t95Perc\tMax")
-    print(f'{min_:.2f}\t{perc5_:.2f}\t{mean_:.2f}\t{perc95_:.2f}\t{max_:.2f}')
-    return min_, mean_, perc5_, perc95_, max_
+    perc99_ = np.percentile(np_arr, 99, method='lower')
+    print("Min\t5Perc\tMean\t95Perc\t99Perc\tMax")
+    print(f'{min_:.2f}\t{perc5_:.2f}\t{mean_:.2f}\t{perc95_:.2f}\t{perc99_:.2f}\t{max_:.2f}')
+    return (min_, mean_, perc5_, perc95_, perc99_, max_)
 
 
 class AnytimeCalibrator():
@@ -46,18 +47,27 @@ class AnytimeCalibrator():
             self.num_det_heads = len(model.dense_head.class_names_each_head)
             self.num_tiles = model.model_cfg.TILE_COUNT
 
-        # backbone2d and detection head heatmap convolutions
-        # first elem unused
-        self.bb2d_times_ms = np.zeros((self.num_tiles+1,), dtype=float)
-        self.det_head_post_times_ms = np.zeros((2**self.num_det_heads,), dtype=float)
-
         self.time_reg_degree = 2
         self.bb3d_num_l_groups  =self.model.backbone_3d.num_layer_groups
+        if self.model.use_voxelnext:
+            # count the convolutions of the detection head to be
+            # a part of 3D backbone
+            self.bb3d_num_l_groups += 1 # detection head convolutions
+
         self.time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
         self.time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
 
         self.voxel_coeffs_over_layers = np.array([[1.] * self.num_tiles \
                 for _ in range(self.bb3d_num_l_groups)])
+
+        # backbone2d and detection head heatmap convolutions
+        # first elem unused
+        if self.model.use_voxelnext:
+            self.det_head_post_wcet_ms = .0
+            self.bb3d_expected_max_error = 0.
+        else:
+            self.bb2d_times_ms = np.zeros((self.num_tiles+1,), dtype=float)
+            self.det_head_post_times_ms = np.zeros((2**self.num_det_heads,), dtype=float)
 
     # voxel dists should be [self.bb3d_num_l_groups, num_tiles]
     def commit_bb3d_updates(self, ctc, voxel_dists):
@@ -81,8 +91,12 @@ class AnytimeCalibrator():
                     self.time_reg_intercepts
             bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
 
-        return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
-                self.det_head_post_times_ms[-1]
+        if self.model.use_voxelnext:
+            return bb3d_time_preds + self.bb3d_expected_max_error, self.det_head_post_wcet_ms
+            #return bb3d_time_preds, self.det_head_post_wcet_ms
+        else:
+            return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
+                    self.det_head_post_times_ms[-1]
 
     def pred_final_req_time_ms(self, dethead_indexes):
         hid = tile_coords_to_id(dethead_indexes)
@@ -126,8 +140,10 @@ class AnytimeCalibrator():
         all_voxels = np.concatenate((all_voxels, np.square(all_voxels)), axis=-1)
         all_preds = np.sum(all_voxels * self.time_reg_coeffs, axis=-1) + self.time_reg_intercepts
         diffs = all_preds - all_times
+        self.bb3d_expected_max_error = 0.
         for i in range(self.bb3d_num_l_groups):
-            get_stats(diffs[:,i])
+            self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
+        print('BB3D expected max error:', self.bb3d_expected_max_error)
 
         # Predicting how voxel counts will change over layers is hard
         # Use history to approximate
@@ -147,17 +163,23 @@ class AnytimeCalibrator():
         print('coefficient that guess the changes in number of voxels in bb3d:')
         print(self.voxel_coeffs_over_layers.T)
 
-        bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
-        self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
-                for arr in bb2d_time_data])
-        print('bb2d_times_ms')
-        print(self.bb2d_times_ms)
-        dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
-        self.det_head_post_times_ms = np.array([np.percentile(arr if arr else [0], \
-                99, method='lower') for arr in dh_post_time_data])
+        if self.model.use_voxelnext:
+            dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
+            self.det_head_post_wcet_ms = np.percentile(dh_post_time_data, \
+                    99, method='lower')
+            print('det_head_post_wcet_ms', self.det_head_post_wcet_ms)
+        else:
+            bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
+            self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
+                    for arr in bb2d_time_data])
+            print('bb2d_times_ms')
+            print(self.bb2d_times_ms)
+            dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
+            self.det_head_post_times_ms = np.array([np.percentile(arr if arr else [0], \
+                    99, method='lower') for arr in dh_post_time_data])
 
-        print('det_head_post_times_ms')
-        print(self.det_head_post_times_ms)
+            print('det_head_post_times_ms')
+            print(self.det_head_post_times_ms)
 
     def get_points(self, index):
         batch_dict = self.dataset.collate_batch([self.dataset[index]])
@@ -169,12 +191,11 @@ class AnytimeCalibrator():
         # I need to use cuda events to measure the time of each section
         bb3d_times_ms, bb3d_voxels, bb2d_time_ms, det_head_post_time_ms, hid = [], [], 0., 0., 0
         with torch.no_grad():
-            cuda_events = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
             voxel_tile_coords = batch_dict['voxel_tile_coords']
             chosen_tile_coords = batch_dict['chosen_tile_coords']
             torch.cuda.synchronize()
             if record:
-                #cuda_events[0].record()
+                e1, e2, e3 = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 batch_dict['record_time'] = True
                 batch_dict['record_int_vcounts'] = True
                 batch_dict['record_int_vcoords'] = True
@@ -188,43 +209,72 @@ class AnytimeCalibrator():
 
             # it will sync itself when recording
             batch_dict = self.model.backbone_3d(batch_dict)
-            #torch.cuda.synchronize()
 
-            if record:
-                bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
-                bb3d_voxels = batch_dict['bb3d_num_voxels']
-                cuda_events[0].record()
+            if self.model.use_voxelnext:
+                if record:
+                    bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
+                    bb3d_voxels = batch_dict['bb3d_num_voxels']
+                    e1.record()
 
-            batch_dict = self.model.map_to_bev(batch_dict)
-            batch_dict = self.model.backbone_2d(batch_dict)
-            batch_dict = self.model.schedule3(batch_dict)
-            batch_dict = self.model.dense_head.forward_eval_conv(batch_dict)
-            batch_dict = self.model.dense_head.forward_eval_topk(batch_dict)
-            ## synchronized here
+                    out = batch_dict['encoded_spconv_tensor']
+                    bb3d_voxels.append(out.indices.size(0)) # append num voxels
+                    #############
+                    voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels // 8, \
+                            rounding_mode='trunc')
+                    voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.num_tiles)
+                    # just for the sake of timing
+                    batch_dict['bb3d_intermediary_vcoords'].append(voxel_dist.unsqueeze(0))
+                    #############
+                batch_dict = self.model.dense_head.forward_conv(batch_dict)
+                #batch_dict = self.model.schedule2(batch_dict)  # skip
+                if record:
+                    e2.record()
 
-            if record:
-                cuda_events[1].record()
+                batch_dict = self.model.schedule3(batch_dict) # projection
+                batch_dict = self.model.dense_head.forward_post(batch_dict)
 
-            batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
-            pred_dicts = self.model.dense_head.generate_predicted_boxes_eval(
-                batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict['projections_nms']
-            )
-            batch_dict['final_box_dicts'] = pred_dicts
-            batch_dict = self.model.schedule4(batch_dict)
+                if record:
+                    e3.record()
+                    torch.cuda.synchronize()
+                    bb3d_times_ms.append(e1.elapsed_time(e2)) # append time
+                    det_head_post_time_ms = e2.elapsed_time(e3) # append time
+                hid = None
 
-            if record:
-                cuda_events[2].record()
+            else:
+                if record:
+                    bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
+                    bb3d_voxels = batch_dict['bb3d_num_voxels']
+                    e1.record()
 
-            torch.cuda.synchronize()
+                batch_dict = self.model.map_to_bev(batch_dict)
+                batch_dict = self.model.backbone_2d(batch_dict)
+                batch_dict = self.model.schedule3(batch_dict)
+                batch_dict = self.model.dense_head.forward_eval_conv(batch_dict)
+                batch_dict = self.model.dense_head.forward_eval_topk(batch_dict)
 
-            if record:
-                # timing doesn't change much
-                #bb3d_time_ms = cuda_events[0].elapsed_time(cuda_events[1]) # return
-                bb2d_time_ms = cuda_events[0].elapsed_time(cuda_events[1])
+                ## synchronized here
+                if record:
+                    e2.record()
 
-                # all possibilities are touched from what I see in the calib data
-                det_head_post_time_ms = cuda_events[1].elapsed_time(cuda_events[2])
-                hid = tile_coords_to_id(batch_dict['dethead_indexes'])
+                batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
+                pred_dicts = self.model.dense_head.generate_predicted_boxes_eval(
+                    batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict['projections_nms']
+                )
+                batch_dict['final_box_dicts'] = pred_dicts
+
+                if record:
+                    e3.record()
+
+                torch.cuda.synchronize()
+
+                if record:
+                    # timing doesn't change much
+                    #bb3d_time_ms = cuda_events[0].elapsed_time(cuda_events[1]) # return
+                    bb2d_time_ms = e1.elapsed_time(e2)
+
+                    # all possibilities are touched from what I see in the calib data
+                    det_head_post_time_ms = e2.elapsed_time(e3)
+                    hid = tile_coords_to_id(batch_dict['dethead_indexes'])
 
         if record and not noprint:
             print(f'Elapsed times: {bb3d_times_ms}, {bb2d_time_ms}'
@@ -261,8 +311,11 @@ class AnytimeCalibrator():
         bb3d_time_series = [list() for _ in range(num_samples)]
         bb3d_voxel_series = [list() for _ in range(num_samples)]
 
-        bb2d_time_data =  [list() for _ in range(self.bb2d_times_ms.shape[0])]
-        dh_post_time_data =  [list() for _ in range(self.det_head_post_times_ms.shape[0])]
+        if self.model.use_voxelnext:
+            dh_post_time_data = []
+        else:
+            bb2d_time_data =  [list() for _ in range(self.bb2d_times_ms.shape[0])]
+            dh_post_time_data =  [list() for _ in range(self.det_head_post_times_ms.shape[0])]
 
         gc.disable()
         for sample_idx in range(num_samples):
@@ -283,35 +336,7 @@ class AnytimeCalibrator():
                     self.model.get_nonempty_tiles(voxel_coords)
             batch_dict['voxel_tile_coords'] = voxel_tile_coords
 
-            if sched_algo == SchedAlgo.MirrorRR:
-                m2 = self.num_tiles//2
-                m1 = m2 - 1
-                mandatory_tiles = np.array([m1, m2], dtype=int)
-                rtiles = np.arange(m2+1, nonempty_tile_coords[-1]+1)
-                ltiles = np.arange(m1-1, nonempty_tile_coords[0]-1, -1)
-                rltiles = np.concatenate((rtiles, ltiles, rtiles, ltiles))
-                v = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-                v[nonempty_tile_coords] = voxel_counts
-                voxel_counts = v
-
-                # Initially, process only the mandatory tiles
-                chosen_tc_series[sample_idx].append(mandatory_tiles)
-                batch_dict['voxel_coords'] = voxel_coords
-                batch_dict['voxel_features'] = voxel_features
-                batch_dict['chosen_tile_coords'] = mandatory_tiles
-                bb3d_time, bb3d_voxels, bb2d_time, dh_post_time, hid = self.process(batch_dict,
-                        record=True, noprint=True)
-
-                bb3d_time_series[sample_idx].append(bb3d_time)
-                bb3d_voxel_series[sample_idx].append(bb3d_voxels)
-                nt = mandatory_tiles.shape[0]
-                bb2d_time_data[nt].append(bb2d_time)
-                dh_post_time_data[hid].append(dh_post_time)
-                vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-                vcounts[mandatory_tiles] = voxel_counts[mandatory_tiles]
-                voxel_counts_series[sample_idx].append(vcounts)
-                tiles_range = rltiles.shape[0]//2
-            elif sched_algo == SchedAlgo.RoundRobin:
+            if sched_algo == SchedAlgo.RoundRobin:
                 all_tiles = np.concatenate((nonempty_tile_coords, nonempty_tile_coords))
                 all_voxel_counts= np.concatenate((voxel_counts, voxel_counts))
                 ntc_sz = nonempty_tile_coords.shape[0]
@@ -325,12 +350,6 @@ class AnytimeCalibrator():
                         chosen_tc_series[sample_idx].append(chosen_tile_coords)
                         chosen_voxel_counts = all_voxel_counts[start_idx:(start_idx+tiles)]
                         nt = get_num_tiles(chosen_tile_coords)
-                    elif sched_algo == SchedAlgo.MirrorRR:
-                        chosen_tile_coords = np.concatenate((mandatory_tiles, \
-                                rltiles[start_idx:(start_idx+tiles)]))
-                        chosen_tc_series[sample_idx].append(chosen_tile_coords)
-                        chosen_voxel_counts = voxel_counts[chosen_tile_coords]
-                        nt = chosen_tile_coords.shape[0]
 
                     batch_dict['voxel_coords'] = voxel_coords
                     batch_dict['voxel_features'] = voxel_features
@@ -339,8 +358,12 @@ class AnytimeCalibrator():
                             record=True, noprint=True)
                     bb3d_time_series[sample_idx].append(bb3d_time)
                     bb3d_voxel_series[sample_idx].append(bb3d_voxels)
-                    bb2d_time_data[nt].append(bb2d_time)
-                    dh_post_time_data[hid].append(dh_post_time)
+
+                    if self.model.use_voxelnext:
+                        dh_post_time_data.append(dh_post_time)
+                    else:
+                        bb2d_time_data[nt].append(bb2d_time)
+                        dh_post_time_data[hid].append(dh_post_time)
 
                     vcounts = np.zeros((self.num_tiles,), dtype=chosen_voxel_counts.dtype)
                     vcounts[chosen_tile_coords] = chosen_voxel_counts
@@ -358,16 +381,16 @@ class AnytimeCalibrator():
             bb3d_voxel_series[sample_idx].append(bb3d_voxels)
             if sched_algo == SchedAlgo.RoundRobin:
                 nt = get_num_tiles(nonempty_tile_coords)
-                bb2d_time_data[nt].append(bb2d_time)
-                dh_post_time_data[hid].append(dh_post_time)
+
+                if self.model.use_voxelnext:
+                    dh_post_time_data.append(dh_post_time)
+                else:
+                    bb2d_time_data[nt].append(bb2d_time)
+                    dh_post_time_data[hid].append(dh_post_time)
+
                 vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
                 vcounts[nonempty_tile_coords] = voxel_counts
                 voxel_counts_series[sample_idx].append(vcounts)
-            elif sched_algo == SchedAlgo.MirrorRR:
-                nt = nonempty_tile_coords.shape[0]
-                bb2d_time_data[nt].append(bb2d_time)
-                dh_post_time_data[hid].append(dh_post_time)
-                voxel_counts_series[sample_idx].append(voxel_counts)
 
             gc.collect()
             time_end = time.time()
@@ -386,11 +409,13 @@ class AnytimeCalibrator():
                 "bb3d_voxels": bb3d_voxel_series,
                 "scene_tokens": scene_tokens,
                 "chosen_tile_coords": chosen_tc_series,
-                "bb2d_time_ms": bb2d_time_data,
                 "det_head_post_time_ms": dh_post_time_data,
                 "num_tiles": self.num_tiles,
                 "num_det_heads" : self.num_det_heads,
         }
+
+        if not self.model.use_voxelnext:
+            self.calib_data_dict["bb2d_time_ms"] = bb2d_time_data
 
         with open(fname, "w") as outfile:
             json.dump(self.calib_data_dict, outfile, indent=4)

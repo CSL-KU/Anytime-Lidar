@@ -17,28 +17,30 @@ method_colors= [
     'tab:orange', 
     'tab:brown',
     'tab:blue', 
-    'tab:red',  #'xkcd:coral', 
-    'tab:pink', 
-    'tab:orange', 
-    'tab:red',
-    'tab:green', 
-    'tab:purple', 
+    'tab:pink',  #'xkcd:coral', 
     'xkcd:coral', 
+    'tab:pink', 
+#    'tab:orange', 
+#    'tab:red',
+#    'tab:green', 
+#    'tab:purple', 
 ]
 
 method_num_to_str = [
-        '0CenterPoint .075',
-        '1AnytimeLidarV1',
-        '2AnytimeLidarV2',
-        '3AnytimeLidarV2 ARR',
-        '4AnytimeLidarV2 NF',
-        '5CenterPoint .1',
-        '6CenterPoint PP',
-        '7AnytimeLidarV2 NSNF',
+        '0CenterPoint-75',
+        '1AnytimeLidar',
+        '2VALO',
+        '3VALO-ARR',
+        '4VALO-NF',
+        '5CenterPoint-100',
+        '6CenterPoint-PP',
+        '7VALO-NSNF',
+        '8VoxelNeXt-75',
+        '9VALO-VoxelNeXt-75',
 ]
 
 method_remap = {
-        0:0, 2:2, 10:1, 3:3, 4:4, 5:5, 6:6, 7:7
+        0:0, 2:2, 10:1, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9
 }
 
 if __name__ == '__main__':
@@ -77,21 +79,33 @@ if __name__ == '__main__':
 
     plot_sets=[]
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint .075',
-            'CenterPoint .1',
-            'CenterPoint PP',
-            'AnytimeLidarV1',
-#            'AnytimeLidarV2-NF',
-            'AnytimeLidarV2',
-#            'AnytimeV2-ARR',
+            'CenterPoint-75',
+            'CenterPoint-100',
+            'CenterPoint-PP',
+            'AnytimeLidar',
+            'VALO',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint .075',
-            'AnytimeLidarV2 NSNF',
-            'AnytimeLidarV2 NF',
-            'AnytimeLidarV2',
+            'CenterPoint-75',
+            'VALO-NSNF',
+            'VALO-NF',
+            'VALO',
     ]})
+
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+            'VoxelNeXt-75',
+            'VALO-VoxelNeXt-75',
+    ]})
+
+
+
+#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#            'CenterPoint-75',
+#            'CenterPoint-100',
+#            'CenterPoint-PP',
+#            'VALO',
+#    ]})
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]
@@ -137,7 +151,7 @@ if __name__ == '__main__':
     procs.append(Process(target=plot_func_bb3d_time_diff, args=(out_path, exps_dict)))
     procs[-1].start()
    
-    procs.append(Process(target=plot_func_component_time, args=(out_path, exps_dict, 'cdf')))
+    procs.append(Process(target=plot_func_component_time, args=(out_path, exps_dict, 'boxplot')))
     procs[-1].start()
 
     procs.append(Process(target=plot_func_area_processed, args=(out_path, exps_dict)))

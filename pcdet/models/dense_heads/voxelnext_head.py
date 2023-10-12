@@ -6,8 +6,10 @@ from ..model_utils import centernet_utils
 from ..model_utils import model_nms_utils
 from ...utils import loss_utils
 from ...utils.spconv_utils import replace_feature, spconv
+from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 import copy
 from easydict import EasyDict
+import time
 
 
 class SeparateHead(nn.Module):
@@ -39,12 +41,31 @@ class SeparateHead(nn.Module):
 
             self.__setattr__(cur_name, fc)
 
+    def forward_hm(self, x):
+        hm_out = self.__getattr__('hm')(x).features
+        return {'hm': hm_out if self.training else hm_out.sigmoid()}
+
+    def forward_attr(self, x):
+        ret_dict = {}
+        for cur_name in self.sep_head_dict:
+            if cur_name != 'hm':
+                ret_dict[cur_name] = self.__getattr__(cur_name)(x).features
+
+        return ret_dict
+
     def forward(self, x):
         ret_dict = {}
         for cur_name in self.sep_head_dict:
             ret_dict[cur_name] = self.__getattr__(cur_name)(x).features
 
         return ret_dict
+
+#    def forward(self, x):
+#        ret_dict = {}
+#        for cur_name in self.sep_head_dict:
+#            ret_dict[cur_name] = self.__getattr__(cur_name)(x).features
+#
+#        return ret_dict
 
 
 class VoxelNeXtHead(nn.Module):
@@ -415,7 +436,7 @@ class VoxelNeXtHead(nn.Module):
 
         return batch_hm, batch_center, batch_center_z, batch_dim, batch_rot_cos, batch_rot_sin, batch_vel, None, voxel_indices_
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts, voxel_indices, spatial_shape):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, voxel_indices, spatial_shape, projections):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -458,6 +479,10 @@ class VoxelNeXtHead(nn.Module):
             for k, final_dict in enumerate(final_pred_dicts):
                 final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
                 if not self.iou_branch:
+                    if projections is not None:
+                        # get the projections that match and cat them for NMS
+                        for key in projections[idx].keys():
+                            final_dict[key] = torch.cat((final_dict[key], projections[idx][key]), dim=0)
                     selected, selected_scores = model_nms_utils.class_agnostic_nms(
                         box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
                         nms_config=post_process_cfg.NMS_CONFIG,
@@ -520,15 +545,63 @@ class VoxelNeXtHead(nn.Module):
 
         return spatial_shape, batch_index, voxel_indices, spatial_indices, num_voxels
 
-    def forward(self, data_dict):
+
+    def forward_conv(self, data_dict, optimized=False):
         x = data_dict['encoded_spconv_tensor']
 
-        spatial_shape, batch_index, voxel_indices, spatial_indices, num_voxels = self._get_voxel_infos(x)
+        spatial_shape, batch_index, voxel_indices, spatial_indices,\
+                num_voxels = self._get_voxel_infos(x)
+        data_dict['voxel_infos'] = (spatial_shape, batch_index, voxel_indices, \
+                spatial_indices, num_voxels)
         self.forward_ret_dict['batch_index'] = batch_index
         
         pred_dicts = []
-        for head in self.heads_list:
-            pred_dicts.append(head(x))
+        if optimized:
+            pred_dicts = [head.forward_hm(x) for head in self.heads_list]
+
+            post_process_cfg = self.model_cfg.POST_PROCESSING
+            topk_outputs=[]
+            print('****')
+            for pd in pred_dicts:
+                batch_hm = pd['hm']
+                scores, inds, class_ids = centernet_utils._topk_1d(None,
+                        data_dict['batch_size'], batch_index, batch_hm,
+                        K=min(batch_hm.size(0), post_process_cfg.MAX_OBJ_PER_SAMPLE),
+                        nuscenes=True)
+                # Filter scores
+                #print(scores.size(), scores)
+                mask = (scores.flatten() > post_process_cfg.SCORE_THRESH)
+                scores, inds, class_ids = scores[:,mask], inds[:,mask], class_ids[:,mask]
+                topk_outputs.append((scores, inds, class_ids))
+                #print(inds.size(), inds) # assume it is h_idx * W + w_idx
+                H, W = x.spatial_shape # assume batch size of 1
+                #h_coords = inds // W
+                #w_coords = inds % W
+                #hw_coords = torch.cat((h_coords, w_coords))
+                torch.cuda.synchronize()
+                t1 = time.time()
+                x_inds = x.indices.int().clone().detach()
+                x_inds = x_inds[:,1] * W + x_inds[:,2]
+
+                topk_inds = inds.flatten().int()
+                inds_filter = cuda_point_tile_mask.point_tile_mask(x_inds, topk_inds - W - 1)
+                for i in range(1,3):
+                    inds_tmp = topk_inds + W*(i-1)
+                    for j in range(3):
+                        f = cuda_point_tile_mask.point_tile_mask(x_inds, inds_tmp + (j-1))
+                        inds_filter = torch.logical_or(inds_filter, f)
+                x_copy = copy.deepcopy(x) # would this work?
+                x_copy_indices = x_inds[inds_filter]
+                torch.cuda.synchronize()
+                t2 = time.time()
+                print((t2-t1)*1000, 'ms') # takes 4 ms, too much...
+            # TODO Combine inds, reduce input, forward attr convs
+
+            data_dict['topk_outputs'] = topk_outputs
+
+        else:
+            for head in self.heads_list:
+                pred_dicts.append(head(x))
 
         if self.training:
             target_dict = self.assign_targets(
@@ -539,12 +612,21 @@ class VoxelNeXtHead(nn.Module):
         self.forward_ret_dict['pred_dicts'] = pred_dicts
         self.forward_ret_dict['voxel_indices'] = voxel_indices
 
+        return data_dict
+
+    def forward_post(self, data_dict):
+        spatial_shape, batch_index, voxel_indices, spatial_indices,\
+                num_voxels = data_dict['voxel_infos']
+        pred_dicts = self.forward_ret_dict['pred_dicts']
+        voxel_indices = self.forward_ret_dict['voxel_indices']
+
         if not self.training or self.predict_boxes_when_training:
             if self.double_flip:
                 data_dict['batch_size'] = data_dict['batch_size'] // 4
             pred_dicts = self.generate_predicted_boxes(
                 data_dict['batch_size'], 
-                pred_dicts, voxel_indices, spatial_shape
+                pred_dicts, voxel_indices, spatial_shape,
+                projections=data_dict.get('projections_nms', None)
             )
 
             if self.predict_boxes_when_training:
@@ -557,3 +639,6 @@ class VoxelNeXtHead(nn.Module):
                 data_dict['final_box_dicts'] = pred_dicts
 
         return data_dict
+
+    def forward(self, data_dict):
+        return self.forward_post(self.forward_conv(data_dict))

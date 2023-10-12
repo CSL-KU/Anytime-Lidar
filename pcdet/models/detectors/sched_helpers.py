@@ -8,6 +8,8 @@ class SchedAlgo:
     RoundRobin_NoProj = 4
     # 5 and 6 are other baselines 01 and pillar
     RoundRobin_NoSchedNoProj = 7
+    # 8 is VoxelNeXt
+    RoundRobin_VN = 9  # VoxelNeXt
     # Keep the next ones only for code compability
     MirrorRR = 98
 

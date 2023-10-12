@@ -87,7 +87,7 @@ class DynamicPillarVFE(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
-    def forward(self, batch_dict, **kwargs):
+    def forward_gen_pillars(self, batch_dict, **kwargs):
         points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
 
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
@@ -95,14 +95,13 @@ class DynamicPillarVFE(VFETemplate):
         points = points[mask]
         points_coords = points_coords[mask]
 
-        if 'model' in kwargs:
-            batch_dict['voxel_coords'] = points_coords[:, [1,0]]
-            batch_dict = kwargs['model'].schedule(batch_dict)
-            if batch_dict['mask'] is not None:
-                mask = batch_dict['mask']
-                points_coords = batch_dict['voxel_coords'][:, [1,0]]
-                points = points[mask]
-
+#        if 'model' in kwargs:
+#            batch_dict['voxel_coords'] = points_coords[:, [1,0]]
+#            batch_dict = kwargs['model'].schedule(batch_dict)
+#            if batch_dict['mask'] is not None:
+#                mask = batch_dict['mask']
+#                points_coords = batch_dict['voxel_coords'][:, [1,0]]
+#                points = points[mask]
 
         points_xyz = points[:, [1, 2, 3]].contiguous()
 
@@ -139,17 +138,22 @@ class DynamicPillarVFE(VFETemplate):
                                    ), dim=1)
         voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
         batch_dict['voxel_coords'] = voxel_coords
+        batch_dict['features'] = features
+        batch_dict['unq_inv'] = unq_inv
+        return batch_dict
+
+    def forward_nn(self, batch_dict):
+        features = batch_dict['features']
+        unq_inv= batch_dict['unq_inv']
 
         for pfn in self.pfn_layers:
             features = pfn(features, unq_inv)
-        # features = self.linear1(features)
-        # features_max = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
-        # features = torch.cat([features, features_max[unq_inv, :]], dim=1)
-        # features = self.linear2(features)
-        # features = torch_scatter.scatter_max(features, unq_inv, dim=0)[0]
 
         batch_dict['voxel_features'] = batch_dict['pillar_features'] = features
         return batch_dict
+
+    def forward(self, batch_dict, **kwargs):
+        return self.forward_nn(self.forward_gen_pillars(batch_dict, **kwargs))
 
 
 class DynamicPillarVFESimple2D(VFETemplate):

@@ -31,8 +31,8 @@ def pre_forward_hook(module, inp_args):
 
     # NOTE The following prevents orin from spending unnecessary 50 ms
     # for tensor initialization, seems like a BUG
-    ###dummy_tensor = torch.zeros(1024, device='cuda')
-    ###torch.cuda.synchronize()
+    dummy_tensor = torch.zeros(1024*1024, device='cuda')
+    torch.cuda.synchronize()
 
     start_time = time.time()
     torch.cuda.nvtx.range_push('End-to-end')
@@ -59,9 +59,16 @@ def pre_forward_hook(module, inp_args):
 def post_forward_hook(module, inp_args, outp_args):
     assert not isinstance(outp_args, tuple)
     batch_dict = outp_args
-    for k,v in batch_dict['final_box_dicts'][0].items():
-        batch_dict['final_box_dicts'][0][k] = v.cpu()
     pp_args = module.post_processing_pre(batch_dict) # NMS
+    if 'final_box_dicts' in  batch_dict:
+        if 'pred_ious' in batch_dict['final_box_dicts'][0]:
+            del batch_dict['final_box_dicts'][0]['pred_ious']
+        for k,v in batch_dict['final_box_dicts'][0].items():
+            batch_dict['final_box_dicts'][0][k] = v.cpu()
+    elif 'batch_cls_preds' in  batch_dict:
+        for arg_arr in pp_args[:3]:
+            arg_arr[0].cpu()
+        module.measure_time_end('DetectionHead')
     torch.cuda.synchronize()
     module.finish_time = time.time()
     #print(finish_time - batch_dict['PostSched_start'])
@@ -433,16 +440,16 @@ class Detector3DTemplate(nn.Module):
         pred_dicts = []
         for index in range(batch_size):
             recall_dict = self.generate_recall_record(
-                box_preds=final_boxes[index] if 'rois' not in batch_dict \
+                box_preds=final_boxes_arr[index] if 'rois' not in batch_dict \
                         else src_box_preds_arr[index],
                 recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
                 thresh_list=post_process_cfg.RECALL_THRESH_LIST
             )
 
             record_dict = {
-                'pred_boxes': final_boxes[index],
-                'pred_scores': final_scores[index],
-                'pred_labels': final_labels[index]
+                'pred_boxes': final_boxes_arr[index],
+                'pred_scores': final_scores_arr[index],
+                'pred_labels': final_labels_arr[index]
             }
             pred_dicts.append(record_dict)
 

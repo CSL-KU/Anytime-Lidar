@@ -4,11 +4,13 @@ from .detector3d_template import Detector3DTemplate
 class VoxelNeXt(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
-        self.module_list = self.build_networks()
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.benchmark = True
+        if torch.backends.cudnn.benchmark:
+            torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.manual_seed(0)
+        self.module_list = self.build_networks()
 
         self.vfe, self.backbone_3d, self.dense_head = self.module_list
         self.update_time_dict( {
@@ -60,7 +62,7 @@ class VoxelNeXt(Detector3DTemplate):
             pred_boxes = final_pred_dict[index]['pred_boxes']
 
             recall_dict = self.generate_recall_record(
-                box_preds=pred_boxes,
+                box_preds=pred_boxes.cuda(),
                 recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
                 thresh_list=post_process_cfg.RECALL_THRESH_LIST
             )
@@ -68,4 +70,4 @@ class VoxelNeXt(Detector3DTemplate):
         return final_pred_dict, recall_dict
     
     def calibrate(self, batch_size=1):
-        return super().calibrate()
+        return super().calibrate(1)

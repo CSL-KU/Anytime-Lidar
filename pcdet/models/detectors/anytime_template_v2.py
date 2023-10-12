@@ -30,6 +30,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
         else:
             self.keep_projection_disabled=False
 
+        if self.sched_algo == SchedAlgo.RoundRobin_VN:
+            self.use_voxelnext = True
+            self.sched_algo = SchedAlgo.RoundRobin
+        else:
+            self.use_voxelnext = False # needed?
+
+        self.projection_coeff = float(self.model_cfg.PROJECTION_COEFF)
+        print('Projection coefficient is', self.projection_coeff)
 
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
@@ -49,12 +57,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
         ################################################################################
         self.tcount = self.model_cfg.TILE_COUNT
         self.tcount_cuda = torch.tensor(self.model_cfg.TILE_COUNT).long().cuda()
-        self.total_num_tiles = self.tcount
+        #self.total_num_tiles = self.tcount
 
         # divide the tiles in X axis only
         self.tile_size_voxels = torch.tensor(\
-                self.dataset.grid_size[1] / self.tcount).cuda().long()
-        self.tile_size_voxels_int = self.tile_size_voxels.int()
+                self.dataset.grid_size[1] / self.tcount).long().item()
 
         ####Projection###
         self.enable_projection = False
@@ -117,8 +124,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.pc_range = self.vfe.point_cloud_range.cpu()
         self.projection_stream = torch.cuda.Stream()
 
-        self.projection_coeff = float(self.model_cfg.PROJECTION_COEFF)
-        print('Projection coefficient is', self.projection_coeff)
 
     def initialize(self, batch_dict):
         batch_dict['projections_nms'] = None # redundant?
@@ -220,10 +225,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
             num_tiles, tiles_queue = round_robin_sched_helper(
                     netc, self.last_tile_coord, self.tcount)
-        elif self.sched_algo == SchedAlgo.MirrorRR:
-            num_tiles, vcounts_all, tiles_queue = mirror_sched_helper(
-                    netc, netc_vcounts,
-                    self.last_tile_coord, self.tcount)
 
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR or \
                 self.sched_algo == SchedAlgo.AdaptiveRR:
@@ -281,7 +282,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
 
         batch_dict['record_int_vcoords'] = True
-        batch_dict['tile_size_voxels'] = self.tile_size_voxels_int
+        batch_dict['tile_size_voxels'] = self.tile_size_voxels
         batch_dict['num_tiles'] = self.tcount
 
         return batch_dict
@@ -290,33 +291,43 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def schedule2(self, batch_dict):
         if self.sched_disabled:
             return batch_dict
-        torch.cuda.synchronize()
+
         vcoords = batch_dict['bb3d_intermediary_vcoords']
+        if self.use_voxelnext:
+            out = batch_dict['encoded_spconv_tensor']
+            voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels // 8, \
+                    rounding_mode='trunc')
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.tcount)
+            # just for the sake of timing
+            vcoords.append(voxel_dist.unsqueeze(0))
+
         vcoords.insert(0, batch_dict['vcount_area'])
         voxel_dists = torch.cat(vcoords, dim=0).cpu().numpy() # 4 x 18
 
         self.calibrator.commit_bb3d_updates(batch_dict['chosen_tile_coords'], voxel_dists)
+        if not self.use_voxelnext:
+            torch.cuda.synchronize()
+            post_bb3d_times = batch_dict['post_bb3d_times']
+            rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
+            diffs = post_bb3d_times < rem_time_ms
 
-        post_bb3d_times = batch_dict['post_bb3d_times']
-        rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
-        diffs = post_bb3d_times < rem_time_ms
+            m = int(self.sched_algo == SchedAlgo.MirrorRR)
+            if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1-m]:
+                tiles_idx=1
+                while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
+                    tiles_idx += 1
 
-        m = int(self.sched_algo == SchedAlgo.MirrorRR)
-        if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1-m]:
-            tiles_idx=1
-            while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
-                tiles_idx += 1
+                ctc = batch_dict['tiles_queue'][:tiles_idx-m]
+                if self.sched_algo == SchedAlgo.MirrorRR:
+                    batch_dict['chosen_tile_coords'] = np.concatenate((self.mtiles, ctc))
+                elif self.sched_algo == SchedAlgo.RoundRobin or \
+                        self.sched_algo == SchedAlgo.AdaptiveRR:
+                    batch_dict['chosen_tile_coords'] = ctc
+                    self.last_tile_coord = ctc[-1].item()
 
-            ctc = batch_dict['tiles_queue'][:tiles_idx-m]
-            if self.sched_algo == SchedAlgo.MirrorRR:
-                batch_dict['chosen_tile_coords'] = np.concatenate((self.mtiles, ctc))
-            elif self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-                batch_dict['chosen_tile_coords'] = ctc
-                self.last_tile_coord = ctc[-1].item()
-
-        if self.sched_algo == SchedAlgo.MirrorRR and \
-                batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
-            self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
+            if self.sched_algo == SchedAlgo.MirrorRR and \
+                    batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
+                self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
         ctc = batch_dict['chosen_tile_coords'].tolist()
         self.add_dict['chosen_tiles_2'].append(ctc)
 
@@ -434,9 +445,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
-    def schedule4(self, batch_dict):
-        return batch_dict
-
     def get_training_loss(self):
         disp_dict = {}
 
@@ -496,7 +504,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         collect_data = False
         try:
-            self.calibrator.read_calib_data(f"calib_data_{self.sched_algo}.json")
+            fname = f"calib_data_{self.sched_algo}"
+            if self.use_voxelnext:
+                fname += '_vn'
+            fname += '.json'
+            self.calibrator.read_calib_data(fname)
         except OSError:
             collect_data = True
 
@@ -514,7 +526,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             return None
 
         if collect_data:
-            self.calibrator.collect_data(self.sched_algo, f"calib_data_{self.sched_algo}.json")
+            self.calibrator.collect_data(self.sched_algo, fname)
 
         return None
 

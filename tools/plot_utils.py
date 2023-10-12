@@ -206,7 +206,7 @@ def plot_func_dm(out_path, exps_dict):
         i+=1
         #ax.scatter(x, y, color=l2d[0].get_c())
     ax.invert_xaxis()
-    ax.set_ylim(0., 105.)
+    ax.set_ylim(-1.0, 105.)
     ax.legend(fontsize='medium')
     ax.set_ylabel('Deadline miss ratio (%)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
@@ -247,7 +247,7 @@ def plot_func_eted(out_path, exps_dict):
         i+=1
         ax.scatter(x, y, color=l2d[0].get_c())
     ax.invert_xaxis()
-    ax.set_ylim(.0, 400)
+    ax.set_ylim(-1.0, 400)
     ax.legend(fontsize='medium', ncol=2)
     ax.set_ylabel('End-to-end time (msec)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
@@ -259,7 +259,7 @@ def plot_func_eted(out_path, exps_dict):
 # box plan can be cdf as well
 def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     # compare three different cases
-    e1, e2 = 'CenterPoint .075', 'AnytimeLidarV2'
+    e1, e2 = 'CenterPoint-75', 'VALO'
     if e1 not in exps_dict or e2 not in exps_dict:
         return
 
@@ -281,9 +281,9 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     #axes = axes.ravel()
 
     labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
-    labels[0] = 'CP .075 ' + labels[0]
-    labels[1] = 'ALv2 ' + labels[1]
-    labels[2] = 'ALv2 ' + labels[2]
+    labels[0] = 'CP-75 '
+    labels[1] = 'VALO '
+    labels[2] = 'VALO ' + labels[2]
 
     for comp in components:
         fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
@@ -305,12 +305,12 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
                 ax.plot(bin_edges[1:], cdf, marker='.', linestyle='-', markersize=2, label=label)
 
         #ax.invert_xaxis()
-        ax.set_xlim(0.)
-        ax.grid('True', ls='--')
         #ax.set_title(f'{comp}', fontsize='x-large')
         if plot_type == 'boxplot':
             ax.set_ylabel('Execution time (msec)', fontsize='x-large')
         elif plot_type == 'cdf':
+            ax.set_xlim(0.)
+            ax.grid('True', ls='--')
             ax.set_ylabel('CDF', fontsize='x-large')
             ax.set_xlabel('Execution time (msec)', fontsize='x-large')
             ax.legend(fontsize='medium')
@@ -331,9 +331,12 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         evals = evals[:4] # use periods 100 150 200 250
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        labels = [f"ALv2 {str(e['deadline_msec'])} ms period" for e in evals]
+        labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
         bb3d_pred_err = [np.array(e['exec_times']['Backbone3D']) - np.array(e['bb3d_preds']) \
                 for e in evals]
+        if 'VoxelHead-conv' in evals[0]['exec_times']:
+            bb3d_pred_err2 = [np.array(e['exec_times']['VoxelHead-conv']) for e in evals]
+            bb3d_pred_err = [e1 + e2 for e1, e2 in zip(bb3d_pred_err, bb3d_pred_err2)]
         #bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
 
         for i, (label, data) in enumerate(zip(labels, bb3d_pred_err)):
@@ -387,13 +390,13 @@ def plot_func_area_processed(out_path, exps_dict):
 def plot_func_tile_drop_rate(out_path, exps_dict):
     # compare execution times end to end
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
-        if exp_name != 'AnytimeLidarV2' or 'chosen_tiles_1' not in evals[0] or not evals[0]['chosen_tiles_1']:
+        if exp_name != 'VALO' or 'chosen_tiles_1' not in evals[0] or not evals[0]['chosen_tiles_1']:
             continue
 
         evals = evals[:4] # use periods 100 150 200 250
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        labels = [f"ALv2 {str(e['deadline_msec'])} ms period" for e in evals]
+        labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
         chosen_tiles = [e['chosen_tiles_1']  for e in evals]
         num_chosen_tiles = [np.array([len(t) for t in net]) for net in chosen_tiles]
         processed_tiles = [e['chosen_tiles_2']  for e in evals]
@@ -547,7 +550,7 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
-    ax.set_ylim(0.0, 105.)
+    ax.set_ylim(-1.0, 105.)
 
     plt.savefig(out_path + "/normalized_NDS_deadlines.png")
 
@@ -583,7 +586,7 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     ax.set_ylabel('Average accuracy (%)', fontsize='x-large')
     #ax.set_xlabel(')', fontsize='x-large')
     #ax.grid('True', ls='--')
-    ax.set_ylim(0.0, 119.)
+    ax.set_ylim(-1.0, 119.)
 
     plt.savefig(out_path + "/normalized_NDS_bar.png")
 
