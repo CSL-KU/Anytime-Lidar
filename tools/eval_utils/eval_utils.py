@@ -107,8 +107,10 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         # process each scene seperately
         # For anytime lidar, max 300 ms
         nonblocking = False
-        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.)) * 1000000)
+        do_dyn_sched = bool(int(os.getenv('DO_DYN_SCHED', '0')))
+        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.5)) * 1000000)
         print('End to end deadline (microseconds):', e2e_dl_musec)
+        print('Dynamic Scheduling:', 'ON' if do_dyn_sched else 'OFF')
         assert (nonblocking and e2e_dl_musec == 0) or (not nonblocking)
         det_idx = 0
         all_sample_tokens = []
@@ -121,6 +123,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             samples_added = 0
 
             det_ts = get_ts(all_data_dicts[det_idx])
+            #init_ts = det_ts # DEBUG
 
             while det_idx < scene_end_idx:
                 with torch.no_grad():
@@ -132,8 +135,37 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 disp_dict = {}
                 statistics_info(cfg, ret_dict, metric, disp_dict)
 
-                det_end_ts = det_ts + model.last_elapsed_time_musec
-                if e2e_dl_musec > 0:
+                etm = model.last_elapsed_time_musec
+                det_end_ts = det_ts + etm
+                if do_dyn_sched:
+                    # Below three lines are not the real dyn sched
+                    #etm_cut = (etm - (etm % 50000))
+                    #etm = etm_cut if etm % 50000 < 25000 else etm_cut + 50000
+                    #e2e_end_ts = det_ts + etm
+
+                    # Compute the cur tail and approx next tail
+                    while inf_idx+1 < scene_end_idx and \
+                            get_ts(all_data_dicts[inf_idx+1]) < det_end_ts:
+                        inf_idx += 1
+
+                    wait_idx = inf_idx + 1
+                    cur_tail = det_end_ts - get_ts(all_data_dicts[inf_idx])
+
+                    # Assume the next execution time will be same (etm)
+                    next_det_end_ts = det_end_ts + etm
+                    while inf_idx+1 < scene_end_idx and \
+                            get_ts(all_data_dicts[inf_idx+1]) < next_det_end_ts:
+                        inf_idx += 1
+                    next_tail = next_det_end_ts - get_ts(all_data_dicts[inf_idx])
+
+                    # 0 will force nonblocking
+                    #print(f'cur_tail: {cur_tail}, next_tail: {next_tail}')
+                    if wait_idx < scene_end_idx and next_tail < cur_tail:
+                        e2e_end_ts = get_ts(all_data_dicts[wait_idx])
+                    else:
+                        e2e_end_ts = 0
+
+                elif e2e_dl_musec > 0:
                     e2e_end_ts = det_ts + e2e_dl_musec
 
                 while det_ts < det_end_ts and det_idx < scene_end_idx:
@@ -337,7 +369,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
                 output_path=final_output_dir,
                 nusc_annos_outp=nusc_annos,
-    #            det_elapsed_musec=det_elapsed_musec,
+                det_elapsed_musec=det_elapsed_musec,
             )
 
             if do_tracking:
