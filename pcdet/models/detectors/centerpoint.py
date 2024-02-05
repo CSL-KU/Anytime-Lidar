@@ -53,7 +53,7 @@ class CenterPoint(Detector3DTemplate):
                     'CenterHead-GenBox': [],
                     'CenterHead': [],})
 
-        self.do_frag_test = True
+        self.do_frag_test = False
         if self.do_frag_test:
             self.tcount = 4 # for voxel01
             self.tile_size_voxels = torch.tensor(\
@@ -98,7 +98,7 @@ class CenterPoint(Detector3DTemplate):
             #print('scat', scat.size())
             for i, t in enumerate(sf):
                 #print('t slice', (netc[i] * slc_sz), ((netc[i]+1) * slc_sz))
-                scat[..., :]  = t[..., (netc[i] * slc_sz):((netc[i]+1) * slc_sz)]
+                scat[i, ..., :]  = t[..., (netc[i] * slc_sz):((netc[i]+1) * slc_sz)]
             batch_dict['spatial_features'] = scat
 
         self.measure_time_start('Backbone2D')
