@@ -82,7 +82,12 @@ class DataProcessor(object):
             return partial(self.mask_points_and_boxes_outside_range, config=config)
 
         if data_dict.get('points', None) is not None:
-            mask = common_utils.mask_points_by_range(data_dict['points'], self.point_cloud_range)
+            points = data_dict['points']
+            mask1 = common_utils.mask_points_by_range(points, self.point_cloud_range)
+            # also remove points on top of the car
+            mask2 = (points[:, 0] <= 1.) & (points[:, 0] >= -1) \
+                   & (points[:, 1] <= 2.5) & (points[:, 1] >= -2.5)
+            mask = np.logical_and(mask1, np.logical_not(mask2))
             data_dict['points'] = data_dict['points'][mask]
 
         if data_dict.get('gt_boxes', None) is not None and config.REMOVE_OUTSIDE_BOXES and self.training:
