@@ -7,7 +7,7 @@ from .point_intra_part_head import PointIntraPartOffsetHead
 from .center_head import CenterHead
 from .center_head_imprecise import CenterHeadMultiImprecise
 from .center_head_group_sliced import CenterHeadGroupSliced
-from .center_head_group_sbnet import CenterHeadGroupSbnet
+#from .center_head_group_sbnet import CenterHeadGroupSbnet
 from .voxelnext_head import VoxelNeXtHead
 
 __all__ = {
@@ -20,6 +20,6 @@ __all__ = {
     'CenterHead': CenterHead,
     'CenterHeadMultiImprecise': CenterHeadMultiImprecise,
     'CenterHeadGroupSliced': CenterHeadGroupSliced,
-    'CenterHeadGroupSbnet': CenterHeadGroupSbnet,
+#    'CenterHeadGroupSbnet': CenterHeadGroupSbnet,
     'VoxelNeXtHead': VoxelNeXtHead,
 }

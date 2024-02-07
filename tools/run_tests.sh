@@ -46,23 +46,23 @@ fi
 
 # Centerpoint-pointpillar
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
+#CKPT_FILE="../models/cbgs_pp_centerpoint_5swipes.pth"
 
 # Centerpoint-pointpillar-anytime
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
 #CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
 
 # Centerpoint-voxel01
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml"
-#CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
+CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml"
+CKPT_FILE="../models/cbgs_voxel01_centerpoint_5swipes.pth"
 
 # Centerpoint-voxel01-anytime
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml"
 #CKPT_FILE="../models/cbgs_voxel01_centerpoint_anytime_16x16.pth"
 
 # Centerpoint-voxel0075
-CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml"
-CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml"
+#CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
 #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
 # Centerpoint-voxel0075-anytime-v2
@@ -96,10 +96,10 @@ CKPT_FILE="../models/cbgs_voxel0075_centerpoint_5swipes.pth"
 #ARG=$ARG"/_BASE_CONFIG_: cfgs\/dataset_configs\/$DATASET/g"
 #sed -i "$ARG" $CFG_FILE
 
-#CMD="nice --20 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
-#   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
-CMD="chrt -r 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
-        --ckpt $CKPT_FILE --batch_size=1 --workers 0"
+CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
+   --ckpt $CKPT_FILE --batch_size=32 --workers 0"
+#CMD="chrt -r 90 $PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
+#        --ckpt $CKPT_FILE --batch_size=1 --workers 0"
 
 #export CUBLAS_WORKSPACE_CONFIG=":4096:2"
 set -x
