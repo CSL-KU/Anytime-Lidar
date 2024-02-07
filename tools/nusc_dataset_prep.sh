@@ -2,9 +2,9 @@
 
 . nusc_sh_utils.sh
 
-rm token_to_*.json
+rm -rf token_to_*.json
 nusc_revert_tables
-for period in "50" "100" "150" "200" "250" "300" "350"
+for period in "50" #"100" "150" "200" "250" "300" "350"
 do
 	TABLES_PATH="nusc_tables_and_dicts/$period"
 	rm -rf $TABLES_PATH

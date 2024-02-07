@@ -480,6 +480,59 @@ def prune_annos(step):
     nusc.instances = new_nusc_instances
 
 
+def calc_scene_velos():
+    global nusc
+
+    scene_to_velos={}
+    sample_to_egovel={}
+    for sample in nusc.sample:
+        # Get egovel
+        sd_tkn = sample['data']['LIDAR_TOP']
+        sample_data = nusc.get('sample_data', sd_tkn)
+        ep = nusc.get('ego_pose', sample_data['ego_pose_token'])
+        # timestamps are in microseconds
+        ts = sample_data['timestamp']
+        if sample_data['prev'] == '':
+            #No prev data, calc speed w.r.t next
+            next_sample_data = nusc.get('sample_data', sample_data['next'])
+            next_ep = nusc.get('ego_pose', next_sample_data['ego_pose_token'])
+            next_ts = next_sample_data['timestamp']
+            trnsl = np.array(ep['translation'])
+            next_trnsl = np.array(next_ep['translation'])
+            egovel = (next_trnsl - trnsl)[:2] / ((next_ts - ts) / 1000000.)
+        else:
+            prev_sample_data = nusc.get('sample_data', sample_data['prev'])
+            prev_ep = nusc.get('ego_pose', prev_sample_data['ego_pose_token'])
+            prev_ts = prev_sample_data['timestamp']
+            trnsl = np.array(ep['translation'])
+            prev_trnsl = np.array(prev_ep['translation'])
+            egovel = (trnsl - prev_trnsl)[:2] / ((ts - prev_ts) / 1000000.)
+
+        st = sample['scene_token']
+        if st not in scene_to_velos:
+            scene_to_velos[st] = []
+
+        for sa_tkn in sample['anns']:
+            velo = nusc.box_velocity(sa_tkn)[:2]
+            if np.any(np.isnan(velo)):
+                continue
+
+            # Calculate the relative velocity
+            relv = np.linalg.norm(velo - egovel)
+            scene_to_velos[st].append(relv)
+
+    scene_tuples = []
+    for scene_tkn, velos in scene_to_velos.items():
+        scene = nusc.get('scene', scene_tkn)
+        scene_tuples.append((scene['name'], sum(velos), scene['description']))
+        #print(scene['name'], sum(velos), scene['description'])
+    scene_tuples = sorted(scene_tuples, key=lambda x: x[1])
+    for t in scene_tuples:
+        if t[0] in val:
+            print(t[0], t[1], t[2])
+
+
+
 def dump_data():
     global nusc
 
@@ -522,6 +575,8 @@ def main():
     elif len(sys.argv) == 2 and sys.argv[1] == 'generate_dicts':
         generate_anns_dict()
         generate_pose_dict()
+    elif len(sys.argv) == 2 and sys.argv[1] == 'calc_velos':
+        calc_scene_velos()
     else:
         print('Usage error, doing nothing.')
 

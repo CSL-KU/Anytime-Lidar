@@ -3,9 +3,11 @@ if [ -z $1 ]; then
     exit
 fi
 
+. nusc_sh_utils.sh
+
 export IGNORE_DL_MISS=0
 export DO_EVAL=1
-export E2E_REL_DEADLINE_S=0.0
+#export E2E_REL_DEADLINE_S=0.0
 export CALIBRATION=0
 export OMP_NUM_THREADS=4
 TASKSET="taskset -c 4-7"
@@ -47,14 +49,17 @@ fi
 # Centerpoint-pointpillar
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml"
 #CKPT_FILE="../models/cbgs_pp_centerpoint_5swipes.pth"
+#CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
 
 # Centerpoint-pointpillar-anytime
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_anytime_16x16.yaml"
 #CKPT_FILE="../models/cbgs_dyn_pp_centerpoint_anytime_16x16_12_5_data.pth"
 
 # Centerpoint-voxel01
-CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint.yaml"
+CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml"
 CKPT_FILE="../models/cbgs_voxel01_centerpoint_5swipes.pth"
+CKPT_FILE="../models/cbgs_voxel01_centerpoint_5swipes_20epochs.pth"
+#CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
 
 # Centerpoint-voxel01-anytime
 #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel01_res3d_centerpoint_anytime_16x16.yaml"
@@ -82,8 +87,8 @@ CKPT_FILE="../models/cbgs_voxel01_centerpoint_5swipes.pth"
 
 # VoxelNeXt
 #NDS:     0.5501 End-to-end,202.77,315.00,347.92,354.18,363.76,22.32
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext.yaml"
-#CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel0075_voxelnext_anytime.yaml"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml"
+#CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml"
 #CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
 
 # PillarNet
@@ -125,21 +130,30 @@ elif [ $1 == 'methods' ]; then
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml" \
-           "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml")
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml")
     CKPT_FILES=( \
             "../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
 	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
 	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-            "../models/cbgs_voxel01_centerpoint_nds_6454.pth" \
-            "../models/cbgs_pp_centerpoint_nds6070.pth" \
-            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth")
+            "../models/cbgs_voxel01_centerpoint_5swipes.pth" \
+            "../models/cbgs_pp_centerpoint_5swipes.pth" \
+            "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
+            "../models/voxelnext_nuscenes_kernel1.pth" \
+            "../models/voxelnext_nuscenes_kernel1.pth")
 
     for m in ${!CFG_FILES[@]}
     do
         CFG_FILE=${CFG_FILES[$m]}
         CKPT_FILE=${CKPT_FILES[$m]}
+
+	if [ $m == 3 ]; then
+		# don't test adaptive RR (3)
+		continue
+	fi
 
 	if [ $m == 1 ]; then
 		# need to change test.py
@@ -172,6 +186,45 @@ elif [ $1 == 'methods' ]; then
             fi
         done
     done
+elif [ $1 == 'periods' ]; then
+	export IGNORE_DL_MISS=0
+	export DO_EVAL=1
+	export E2E_REL_DEADLINE_S=0.0 # not streaming
+	export CALIBRATION=0
+
+	rm eval_dict_*
+	m=$2
+	OUT_DIR=exp_data_nsc_$m
+	mkdir -p $OUT_DIR
+
+	if [ $m == 1 ]; then
+		# need to change test.py
+		TSKST="taskset 0x3f"
+		MTD=10
+		export OMP_NUM_THREADS=2
+		export USE_ALV1=1
+	else
+		TSKST="taskset -c 4-7"
+		MTD=$m
+		export OMP_NUM_THREADS=4
+		export USE_ALV1=0
+	fi
+
+	link_data $3
+	for s in $(seq 0.350 -0.050 0.099)
+	do
+	    OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+	    if [ -f $OUT_FILE ]; then
+		printf "Skipping $OUT_FILE test.\n"
+	    else
+		$CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
+		# rename the output and move the corresponding directory
+		fpath=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+		mv -f eval_dict_*.json $fpath
+		mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
+	    fi
+	done
+
 elif [ $1 == 'proj_calibm' ]; then
 	export IGNORE_DL_MISS=1
 	export DO_EVAL=0

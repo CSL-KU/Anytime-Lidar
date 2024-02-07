@@ -181,6 +181,14 @@ class AnytimeCalibrator():
             print('det_head_post_times_ms')
             print(self.det_head_post_times_ms)
 
+            tbl = np.array(self.bb2d_times_ms[1:]) + self.det_head_post_times_ms[-1]
+            tbl = np.round(tbl, 1)
+
+            for i in range(tbl.shape[0]//3):
+                for j in [0, 6, 12]:
+                    print(f'\\textbf{{{i+j+1}}} & {tbl[i+j]} & ', end='')
+                print('\\\\')
+
     def get_points(self, index):
         batch_dict = self.dataset.collate_batch([self.dataset[index]])
         batch_dict['points'] = torch.from_numpy(batch_dict['points']).cuda()

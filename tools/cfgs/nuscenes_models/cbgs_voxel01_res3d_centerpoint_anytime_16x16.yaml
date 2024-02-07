@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_mini_dataset.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
 
 MODEL:
     NAME: CenterPointAnytime
@@ -19,6 +19,7 @@ MODEL:
 
     BACKBONE_2D:
         NAME: BaseBEVBackboneSbnet
+        TILE_COUNT: [16, 16]
 
         LAYER_NUMS: [5, 5]
         LAYER_STRIDES: [1, 2]
@@ -29,6 +30,7 @@ MODEL:
 
     DENSE_HEAD:
         NAME: CenterHeadGroupSbnet
+        TILE_COUNT: [16, 16]
         CLASS_AGNOSTIC: False
 
         CLASS_NAMES_EACH_HEAD: [
@@ -83,7 +85,7 @@ MODEL:
 
     TILE_COUNT: [16, 16]
     DEADLINE_SEC: 9999.9
-    METHOD: 0
+    METHOD: 1
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4

@@ -26,17 +26,28 @@ method_colors= [
 #    'tab:purple', 
 ]
 
+##HACK
+#method_num_to_str = [
+#        '0VALO-CP75-500ms',
+#        '1VALO-CP75-350ms',
+#        '2VALO-CP75-250ms',
+#        '3VALO-CP75-150ms',
+#]
+#method_remap = {
+#        0:1, 1:2, 2:3, 3:0
+#}
+
 method_num_to_str = [
-        '0CenterPoint-75',
-        '1AnytimeLidar',
-        '2VALO',
+        '0CenterPoint75',
+        '1AnytimeLidar-CP75',
+        '2VALO-CP75',
         '3VALO-ARR',
-        '4VALO-NF',
-        '5CenterPoint-100',
-        '6CenterPoint-PP',
-        '7VALO-NSNF',
-        '8VoxelNeXt-75',
-        '9VALO-VoxelNeXt-75',
+        '4VALO-NF-CP75',
+        '5CenterPoint100',
+        '6CenterPointPP',
+        '7VALO-NSNF-CP75',
+        '8VoxelNext75',
+        '9VALO-VN75',
 ]
 
 method_remap = {
@@ -78,24 +89,38 @@ if __name__ == '__main__':
     #exps_dict = {nm:exps_dict[nm] for nm in ['Baseline-3', 'Baseline-2', 'Baseline-1', 'Impr-MS-HS-A-P']}
 
     plot_sets=[]
+
+
+#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#        'VALO-CP75-150ms',
+##        'VALO-CP75-250ms',
+#        'VALO-CP75-350ms',
+#        'VALO-CP75-500ms',
+#    ]})
+
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint-75',
-            'CenterPoint-100',
-            'CenterPoint-PP',
-            'AnytimeLidar',
-            'VALO',
+            'CenterPoint75',
+            'AnytimeLidar-CP75',
+            'VALO-CP75',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint-75',
-            'VALO-NSNF',
-            'VALO-NF',
-            'VALO',
+            'CenterPoint75',
+            'CenterPoint100',
+#            'CenterPointPP',
+            'VALO-CP75',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'VoxelNeXt-75',
-            'VALO-VoxelNeXt-75',
+            'CenterPoint75',
+            'VALO-NSNF-CP75',
+            'VALO-NF-CP75',
+            'VALO-CP75',
+    ]})
+
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+            'VoxelNext75',
+            'VALO-VN75',
     ]})
 
 

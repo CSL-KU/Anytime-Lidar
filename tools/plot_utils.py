@@ -259,10 +259,9 @@ def plot_func_eted(out_path, exps_dict):
 # box plan can be cdf as well
 def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     # compare three different cases
-    e1, e2 = 'CenterPoint-75', 'VALO'
+    e1, e2 = 'CenterPoint75', 'VALO-CP75'
     if e1 not in exps_dict or e2 not in exps_dict:
         return
-
 
     bl_eval_dict = exps_dict[e1][-1]
     alv2_eval_dict_1 = exps_dict[e2][-1]
@@ -280,10 +279,11 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     fig, axes = plt.subplots(1, 1, figsize=(4, 6), constrained_layout=True)
     #axes = axes.ravel()
 
-    labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
-    labels[0] = 'CP-75 '
-    labels[1] = 'VALO '
-    labels[2] = 'VALO ' + labels[2]
+    #labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
+    labels = [ \
+        'CenterPoint75\nNo Deadline', \
+        'VALO-CP75\nNo Deadline', \
+        'VALO-CP75\n100 ms Deadline']
 
     for comp in components:
         fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
@@ -534,6 +534,18 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
 
     for exp_name, evals in merged_exps_dict.items():
         evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
+ 
+#def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
+#    max_NDS = [0., 0., 0.]
+#    for i, (exp_name, evals) in enumerate(exps_dict.items()):
+#        print(len(evals))
+#        NDS_arr = [e['mAP']['NDS'] for e in evals]
+#        max_NDS[i] = max(NDS_arr)
+#    print(max_NDS)
+#
+#    for i, (exp_name, evals) in enumerate(merged_exps_dict.items()):
+#        print(np.array(evals['mAP']['NDS']))
+#        evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS[i] * 100.
        
     #Add normalized accuracy
     i = 0

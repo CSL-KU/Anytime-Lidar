@@ -7,8 +7,8 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-ALv2_res_path = '/root/shared_data/streaming_eval_ALv2_method2'
-BL_res_path = '/root/shared_data/streaming_eval_baseline'
+ALv2_res_path = '/root/shared_data/streaming_eval_hs_cp100'
+BL_res_path = '/root/Anytime-Lidar/tools/streaming_eval_hs_cp075'
 
 def get_data_dict(results_path, budgets_str, e2e_deadlines_str):
     data_dict = {e2e_dl:{b:list() for b in budgets_str} for e2e_dl in e2e_deadlines_str}
@@ -25,18 +25,23 @@ def get_data_dict(results_path, budgets_str, e2e_deadlines_str):
                 e2e_times_ms = eval_dict['exec_times']['End-to-end'] 
                 total_e2e_time_ms = sum(e2e_times_ms)
                 #utilization = total_e2e_time_ms / (1961 * 50.)
-                utilization = total_e2e_time_ms / (7385 * 50. + 19 * 300)
+                utilization = total_e2e_time_ms / (5089* 50. + 13 * 300)
 
                 data_dict[e2e_dl][budget].extend([mAP, NDS, utilization])
     return data_dict
+
+
+e2e_deadlines = np.arange(0.100, 0.401, 0.100)
+e2e_deadlines_str = [str(round(e2e_dl,3)) for e2e_dl in e2e_deadlines]
+data_dict = get_data_dict(BL_res_path, ['10.0'], e2e_deadlines_str)
+print(data_dict)
+sys.exit(0)
 
 eval_type="mAP"
 #eval_type="NDS"
 eval_map = {"mAP": [0, 0.55235], "NDS": [1, 0.6311]}
 budgets = np.arange(0.150, 0.251, 0.050)
-e2e_deadlines = np.arange(0.200, 0.501, 0.100)
 budgets_str = [str(round(b,3)) for b in budgets]
-e2e_deadlines_str = [str(round(e2e_dl,3)) for e2e_dl in e2e_deadlines]
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 6), constrained_layout=True)
 for ax, idx, ylabel, div, ylim in zip (axes, (eval_map[eval_type][0], 2), \
