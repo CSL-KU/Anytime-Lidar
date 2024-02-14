@@ -105,13 +105,11 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             print(tns)
 
         # process each scene seperately
-        # For anytime lidar, max 300 ms
-        nonblocking = False
+        # NOTE For nonblocking, set E2E_REL_DEADLINE_S to 0
         do_dyn_sched = bool(int(os.getenv('DO_DYN_SCHED', '0')))
-        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.5)) * 1000000)
-        print('End to end deadline (microseconds):', e2e_dl_musec)
+        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.1)) * 1000000)
         print('Dynamic Scheduling:', 'ON' if do_dyn_sched else 'OFF')
-        assert (nonblocking and e2e_dl_musec == 0) or (not nonblocking)
+        print('End to end deadline (microseconds):', 'IGNORED' if do_dyn_sched else e2e_dl_musec)
         det_idx = 0
         all_sample_tokens = []
         for scene_token, num_samples in tokens_and_num_samples:
@@ -210,9 +208,10 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 #print(f'Detected {save_det_idx}') # DEBUG
                 buffered_pred_dicts = copy.deepcopy(pred_dicts)
 
-                if nonblocking or (e2e_dl_musec > 0 and e2e_end_ts < det_end_ts):
+                late = (e2e_end_ts < det_end_ts)
+                if late:
                     det_ts = det_end_ts
-                elif e2e_dl_musec > 0:
+                else:
                     # since e2e_end_ts is not exact, we break when we are close,
                     # assuming the time between sapmles are 50000 microseconds
 
@@ -369,7 +368,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
                 output_path=final_output_dir,
                 nusc_annos_outp=nusc_annos,
-                det_elapsed_musec=det_elapsed_musec,
+                #det_elapsed_musec=det_elapsed_musec,
             )
 
             if do_tracking:

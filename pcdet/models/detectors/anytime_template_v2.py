@@ -86,10 +86,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.add_dict['chosen_tiles_1'] = []
         self.add_dict['chosen_tiles_2'] = []
 
+        self.init_tile_coord = 0
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
             self.init_tile_coord = -1
         elif self.sched_algo == SchedAlgo.MirrorRR:
-            self.init_tile_coord = 0
             m2 = self.tcount//2
             m1 = m2 - 1
             self.mtiles = np.array([m1, m2], dtype=np.int32)
@@ -389,7 +389,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             # Remove detections which are no more needed
             active_num_dets = torch.sum(self.num_dets_per_tile)
-            #NOTE we need to tune the coeff here , 2.0 is giving good results but not always!
             max_num_proj = int(active_num_dets * self.projection_coeff)
             if self.past_detections['pred_boxes'].size(0) > max_num_proj:
                 # Remove oldest dets
