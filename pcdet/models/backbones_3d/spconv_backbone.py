@@ -290,7 +290,7 @@ class VoxelResBackBone8x(nn.Module):
 
             voxel_tile_coords = torch.div(x_conv2_0.indices[:, -1], tile_size_voxels // 2, \
                     rounding_mode='trunc')
-            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)[:num_tiles]
             vcoords.append(voxel_dist.unsqueeze(0))
 
         # since next to ops are not spconv op
@@ -308,7 +308,7 @@ class VoxelResBackBone8x(nn.Module):
             #vcoords.append(x_conv3.indices)
             voxel_tile_coords = torch.div(x_conv3_0.indices[:, -1], tile_size_voxels // 4, \
                     rounding_mode='trunc')
-            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)[:num_tiles]
             vcoords.append(voxel_dist.unsqueeze(0))
 
         x_conv3_0 = x_conv3_0.replace_feature(self.conv3[0][1](x_conv3_0.features))
@@ -325,7 +325,7 @@ class VoxelResBackBone8x(nn.Module):
             #vcoords.append(x_conv4.indices)
             voxel_tile_coords = torch.div(x_conv4_0.indices[:, -1], tile_size_voxels // 8, \
                     rounding_mode='trunc')
-            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)
+            voxel_dist = torch.bincount(voxel_tile_coords, minlength=num_tiles)[:num_tiles]
             vcoords.append(voxel_dist.unsqueeze(0))
 
         x_conv4_0 = x_conv4_0.replace_feature(self.conv4[0][1](x_conv4_0.features))

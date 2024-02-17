@@ -72,9 +72,13 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel02_res3d_centerpoint.yaml"
     #CKPT_FILE="../models/cbgs_voxel02_centerpoint_5swipes.pth"
     
-    # Centerpoint-voxel0075-anytime-v2
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
-    CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+    # Centerpoint-voxel0075-VALO
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
+    #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+
+    # Centerpoint-voxel01-VALO
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml"
+    CKPT_FILE="../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth"
     ###############################3
     
     # Centerpoint-voxel01-anytime
