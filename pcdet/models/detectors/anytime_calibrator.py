@@ -310,7 +310,8 @@ class AnytimeCalibrator():
         batch_dict['chosen_tile_coords'] = ctc
         self.process(batch_dict, record=False, noprint=True)
 
-        num_samples = len(self.dataset)
+        samples = range(0, len(self.dataset), 4)
+        num_samples = len(samples)
         print('Number of samples:', num_samples)
 
         # Let's try X scan!
@@ -327,7 +328,8 @@ class AnytimeCalibrator():
             dh_post_time_data =  [list() for _ in range(self.det_head_post_times_ms.shape[0])]
 
         gc.disable()
-        for sample_idx in range(num_samples):
+        for sample_idx in samples:
+            sample_idx//=4
             print(f'Processing sample {sample_idx}', end='', flush=True)
             time_begin = time.time()
 

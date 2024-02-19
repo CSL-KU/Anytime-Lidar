@@ -503,7 +503,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         collect_data = False
         try:
-            fname = f"calib_data_{self.sched_algo}"
+            fname = f"calib_data_m{self.sched_algo}_c{self.tcount}"
             if self.use_voxelnext:
                 fname += '_vn'
             fname += '.json'

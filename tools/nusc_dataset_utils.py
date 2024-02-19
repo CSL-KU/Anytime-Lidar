@@ -1,5 +1,6 @@
 #!/root/trainvalconda3/envs/pointpillars/bin/python
 import sys
+import os
 import json
 import math
 import copy
@@ -528,8 +529,7 @@ def calc_scene_velos():
         #print(scene['name'], sum(velos), scene['description'])
     scene_tuples = sorted(scene_tuples, key=lambda x: x[1])
     for t in scene_tuples:
-        if t[0] in val:
-            print(t[0], t[1], t[2])
+        print('VAL' if t[0] in val else 'TRAIN' , t[0], t[1], t[2])
 
 def prune_training_data_from_tables():
     global nusc
@@ -553,6 +553,10 @@ def prune_training_data_from_tables():
      'scene-0963', 'scene-0966', 'scene-0967', 'scene-0968', 'scene-0969', 'scene-0971', 'scene-0972', 'scene-1059',
      'scene-1060', 'scene-1061', 'scene-1062', 'scene-1063', 'scene-1064', 'scene-1065', 'scene-1066', 'scene-1067',
      'scene-1068', 'scene-1069', 'scene-1070', 'scene-1071', 'scene-1072', 'scene-1073'])
+
+    calib_scenes = set(['scene-0061', 'scene-0655', 'scene-0757', 'scene-1077', 'scene-1094', 'scene-1100'])
+
+    val_scenes.update(calib_scenes)
 
     keep_indexes = {nm: set() for nm in nusc.table_names}
 
@@ -588,12 +592,16 @@ def prune_training_data_from_tables():
         setattr(nusc, k, [table[i] for i in indexes])
 
 
-def dump_data():
+def dump_data(dumpdir='.'):
     global nusc
 
-    # Dump the modified scene, sample, sample_data, sample_annotations, and instance tables
     indent_num=0
     print('Dumping the tables')
+    if dumpdir != '.':
+        os.makedirs(dumpdir, exist_ok=True)
+        curdir = os.getcwd()
+        os.chdir(dumpdir)
+
     with open('scene.json', 'w') as handle:
         json.dump(nusc.scene, handle, indent=indent_num)
     
@@ -620,6 +628,9 @@ def dump_data():
     with open('instance.json', 'w') as handle:
         json.dump(nusc.instance, handle, indent=indent_num)
 
+    if dumpdir != '.':
+        os.chdir(curdir)
+
 
 def main():
     read_nusc()
@@ -638,7 +649,7 @@ def main():
         calc_scene_velos()
     elif len(sys.argv) == 2 and sys.argv[1] == 'prune_training_data_from_tables':
         prune_training_data_from_tables()
-        dump_data()
+        dump_data("./pruned_tables")
     else:
         print('Usage error, doing nothing.')
 
