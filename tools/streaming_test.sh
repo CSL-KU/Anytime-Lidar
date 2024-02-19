@@ -2,14 +2,14 @@
 . nusc_sh_utils.sh
 
 export DO_EVAL="1"
-export CALIBRATION=0
-export DATASET_PERIOD=50
 
 mkdir -p streaming_eval_res
 rm -f eval_dict_*.json "eval.pkl"
 
 for DATASET_SEL in $(seq 0 4); do
 	export DATASET_RANGE=$(($DATASET_SEL*30))-$(((DATASET_SEL+1)*30))
+	export DATASET_PERIOD=50
+	export CALIBRATION=0
 	. nusc_dataset_prep.sh
 	link_data 50
 
