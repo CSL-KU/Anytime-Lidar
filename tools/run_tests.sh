@@ -77,8 +77,8 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
 
     # Centerpoint-voxel01-VALO
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml"
-    CKPT_FILE="../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml"
+    #CKPT_FILE="../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth"
     ###############################3
     
     # Centerpoint-voxel01-anytime
@@ -99,8 +99,8 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     # VoxelNeXt
     #NDS:     0.5501 End-to-end,202.77,315.00,347.92,354.18,363.76,22.32
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml"
-    #CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml"
+    CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
     
     # PillarNet
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_pillar0075_res2d_centerpoint.yaml"
@@ -135,7 +135,7 @@ elif [ $1 == 'methods' ]; then
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
 	   "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
-           "./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint.yaml" \
+           "./cfgs/nuscenes_models/cbgs_dyn_voxel02_res3d_centerpoint.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml" \
            "./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml")
@@ -146,7 +146,7 @@ elif [ $1 == 'methods' ]; then
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
 	    "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
             "../models/cbgs_voxel01_centerpoint_5swipes.pth" \
-            "../models/cbgs_pp_centerpoint_5swipes.pth" \
+            "../models/cbgs_voxel02_centerpoint_5swipes.pth" \
             "../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
             "../models/voxelnext_nuscenes_kernel1.pth" \
             "../models/voxelnext_nuscenes_kernel1.pth")

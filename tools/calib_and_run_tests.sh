@@ -4,6 +4,29 @@
 ## CALIBRATION
 #link_data 500
 #./run_tests.sh calibm 2
+export CALIBRATION=1
+./nusc_dataset_prep.sh
+link_data 500
+export CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
+export CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+./run_tests.sh calibm 2
+export CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml"
+export CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
+./run_tests.sh calibm 9
+export CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
+export CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth"
+export TASKSET="taskset 0x3f"
+export OMP_NUM_THREADS=2
+export USE_ALV1=1
+./run_tests.sh calibm 10
+unset OMP_NUM_THREADS USE_ALV1 CFG_FILE CKPT_FILE DATASET_RANGE
+
+#export CALIBRATION=0
+#./nusc_dataset_prep.sh
+#link_data 500
+#./run_tests.sh methods 0.350 -0.050 0.100
+#python eval_from_files.py ./exp_data_nsc
+
 
 ## TEST
 #AGX Orin
@@ -24,10 +47,8 @@
 #	python eval_from_files.py ./exp_data_nsc
 #done
 
-#period is always 350
 #./run_tests.sh calibm 9
 #./run_tests.sh calibm 2
-#link_data 350
 #for period_ms in $(seq $start_period_ms -$step_ms $end_period_ms); do
 #	period_s=$(echo "$period_ms / 1000.0" | bc -l)
 #	./run_tests.sh methods $(printf %.3f $period_s) -0.050 \
@@ -36,4 +57,4 @@
 #python eval_from_files.py ./exp_data_nsc
 
 #. streaming_test.sh streaming_eval_ss_cp100
-. streaming_test.sh streaming_eval_ss_cp075
+#. streaming_test.sh streaming_eval_ss_cp075

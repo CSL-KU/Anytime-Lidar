@@ -212,7 +212,7 @@ def plot_func_dm(out_path, exps_dict):
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
     #fig.suptitle("Ratio of missed deadlines over a range of deadlines", fontsize=16)
-    plt.savefig(out_path + "/deadlines_missed.png")
+    plt.savefig(out_path + "/deadlines_missed.pdf")
 
 
 def plot_func_rem_time_on_finish(out_path, exps_dict):
@@ -229,7 +229,7 @@ def plot_func_rem_time_on_finish(out_path, exps_dict):
         ax.set_ylabel('Remaining time to deadline\non finish (msec)', fontsize='x-large')
         ax.set_xlabel('Deadline (msec)', fontsize='x-large')
 #        #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
-        plt.savefig(out_path + f"/{exp_name}_rem_time_to_dl.png")
+        plt.savefig(out_path + f"/{exp_name}_rem_time_to_dl.pdf")
 
 
 
@@ -253,7 +253,7 @@ def plot_func_eted(out_path, exps_dict):
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
     #fig.suptitle("Average end-to-end time over different deadlines", fontsize=16)
-    plt.savefig(out_path + "/end-to-end_deadlines.png")
+    plt.savefig(out_path + "/end-to-end_deadlines.pdf")
 
 
 # box plan can be cdf as well
@@ -314,7 +314,7 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
             ax.set_ylabel('CDF', fontsize='x-large')
             ax.set_xlabel('Execution time (msec)', fontsize='x-large')
             ax.legend(fontsize='medium')
-        plt.savefig(out_path + f"/{comp}_time_cdf.png")
+        plt.savefig(out_path + f"/{comp}_time_cdf.pdf")
 
     #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
 
@@ -358,7 +358,7 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
         #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
         #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
-        plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.png")
+        plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.pdf")
 
 
 def plot_func_area_processed(out_path, exps_dict):
@@ -384,7 +384,7 @@ def plot_func_area_processed(out_path, exps_dict):
         ax.set_ylabel('Processed area (%)', fontsize='x-large')
         ax.set_xlabel('Deadline (msec)', fontsize='x-large')
 #        #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
-        plt.savefig(out_path + f"/{exp_name}_processed_area.png")
+        plt.savefig(out_path + f"/{exp_name}_processed_area.pdf")
 
 
 def plot_func_tile_drop_rate(out_path, exps_dict):
@@ -434,7 +434,7 @@ def plot_func_tile_drop_rate(out_path, exps_dict):
 #        ax.set_ylabel('Dropped tiles after\nBackbone 3D (%)', fontsize='x-large')
 #        ax.set_xlabel('Deadline (msec)', fontsize='x-large')
 #        #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
-        plt.savefig(out_path + f"/{exp_name}_dropped_area.png")
+        plt.savefig(out_path + f"/{exp_name}_dropped_area.pdf")
 
 
 
@@ -468,7 +468,7 @@ def plot_avg_AP(out_path, merged_exps_dict):
         for s in cur_cls_names:
             cur_cls_names_str += s + ' '
         fig.suptitle(cur_cls_names_str + " classes, average precision over different deadlines", fontsize=16)
-        plt.savefig(out_path + f"/AP_deadlines_{filenum}.png")
+        plt.savefig(out_path + f"/AP_deadlines_{filenum}.pdf")
 
 def plot_stage_and_head_usage(out_path, merged_exps_dict):
     fig, axes = plt.subplots(2, 1, figsize=(6, 6), constrained_layout=True)
@@ -501,7 +501,7 @@ def plot_stage_and_head_usage(out_path, merged_exps_dict):
         ax.set_ylim(0.0, ylim)
         ylim += 3.0
 
-    plt.savefig(out_path + "/rpn_and_heads_stats.png")
+    plt.savefig(out_path + "/rpn_and_heads_stats.pdf")
 
 def plot_instance_data(out_path, merged_exps_dict):
     i=0
@@ -523,7 +523,7 @@ def plot_instance_data(out_path, merged_exps_dict):
         ax.set_xlabel('Deadline (msec)', fontsize='x-large')
         ax.grid('True', ls='--')
     #fig.suptitle("Average end-to-end time over different deadlines", fontsize=16)
-    plt.savefig(out_path + "/instance_data.png")
+    plt.savefig(out_path + "/instance_data.pdf")
 
 
 def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
@@ -564,7 +564,7 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     ax.grid('True', ls='--')
     ax.set_ylim(-1.0, 105.)
 
-    plt.savefig(out_path + "/normalized_NDS_deadlines.png")
+    plt.savefig(out_path + "/normalized_NDS_deadlines.pdf")
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
     labels = list(merged_exps_dict.keys())
@@ -600,5 +600,5 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     #ax.grid('True', ls='--')
     ax.set_ylim(-1.0, 119.)
 
-    plt.savefig(out_path + "/normalized_NDS_bar.png")
+    plt.savefig(out_path + "/normalized_NDS_bar.pdf")
 

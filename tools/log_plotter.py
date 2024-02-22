@@ -44,7 +44,7 @@ method_num_to_str = [
         '3VALO-ARR',
         '4VALO-NF-CP75',
         '5CenterPoint100',
-        '6CenterPointPP',
+        '6CenterPoint200',
         '7VALO-NSNF-CP75',
         '8VoxelNext75',
         '9VALO-VN75',
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint75',
             'CenterPoint100',
-#            'CenterPointPP',
+            'CenterPoint200',
             'VALO-CP75',
     ]})
 

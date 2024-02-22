@@ -32,24 +32,27 @@ def main():
         with open(det_path, 'rb') as f:
             det_data = pickle.load(f)
 
-        dataset, det_annos, class_names, eval_metric, \
-                final_output_dir, _, det_elapsed_musec = det_data
-        result_str, result_dict = dataset.evaluation(
-                det_annos, class_names,
-                eval_metric=eval_metric,
-                output_path=final_output_dir,
-                loaded_nusc=loaded_nusc,
-            #    nusc_annos_outp=nusc_annos,
-            #   det_elapsed_musec=det_elapsed_musec,
-        )
-        print(result_str)
+        try:
+            dataset, det_annos, class_names, eval_metric, \
+                    final_output_dir, _, det_elapsed_musec = det_data
+            result_str, result_dict = dataset.evaluation(
+                    det_annos, class_names,
+                    eval_metric=eval_metric,
+                    output_path=final_output_dir,
+                    loaded_nusc=loaded_nusc,
+                #    nusc_annos_outp=nusc_annos,
+                #   det_elapsed_musec=det_elapsed_musec,
+            )
+            print(result_str)
 
-        eval_d['eval_results_dict'].update(result_dict)
-        eval_d['eval_results_dict']['result_str'] = result_str
+            eval_d['eval_results_dict'].update(result_dict)
+            eval_d['eval_results_dict']['result_str'] = result_str
 
-        print('Dumping updated eval dict')
-        with open(ed_path, 'w') as handle:
-            json.dump(eval_d, handle, indent=4)
+            print('Dumping updated eval dict')
+            with open(ed_path, 'w') as handle:
+                json.dump(eval_d, handle, indent=4)
+        except:
+            print('Could not do the eval of ', det_path)
         
         print('Collecting garbage')
         gc.collect()
