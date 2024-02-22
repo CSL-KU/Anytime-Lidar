@@ -49,9 +49,11 @@ def generate_pose_dict():
                 sample_data['ego_pose_token'])
             #print('ego pose translation:', pose['translation'])
             #print('ego pose rotation:', pose['rotation'])
+            scene_name = nusc.get('scene', sample['scene_token'])['name']
             token_to_cs_and_pose[tkn] = {
                     'timestamp' : sample['timestamp'],
                     'scene' : sample['scene_token'],
+                    'scene_name': scene_name,
                     'cs_translation' : cs['translation'],
                     'cs_rotation' : cs['rotation'],
                     'ep_translation' : pose['translation'],

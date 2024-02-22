@@ -9,12 +9,15 @@ import socket
 import torch
 import torch.nn as nn
 
+from nuscenes.utils.splits import all_speed_scenes
+
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils.spconv_utils import find_all_spconv_keys
 from .. import backbones_2d, backbones_3d, dense_heads, roi_heads, load_data_to_gpu
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
+
 
 # NOTES
 # Post processing is split into two functions, pre and post.
@@ -49,7 +52,16 @@ def pre_forward_hook(module, inp_args):
     #module.measure_time_start('LoadToGPU')
     load_data_to_gpu(batch_dict)
     #module.measure_time_end('LoadToGPU')
-    batch_dict['deadline_sec'] = module._eval_dict['deadline_sec']
+
+    if module.deadline_range is not None:
+        #Determine the dynamic deadline for this scene
+        latest_token = batch_dict['metadata'][0]['token']
+        scene_name = module.token_to_scene_name[latest_token]
+        dl_scale = (all_speed_scenes.index(scene_name) + 1) / len(all_speed_scenes)
+        dr = module.deadline_range
+        batch_dict['deadline_sec'] = ((dr[1] - dr[0]) * dl_scale + dr[0]) / 1000.0
+    else:
+        batch_dict['deadline_sec'] = module._eval_dict['deadline_sec']
     #batch_dict.update(extra_batch)  # deadline, method, etc.
     batch_dict['start_time_sec'] = start_time
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
@@ -102,9 +114,9 @@ def post_forward_hook(module, inp_args, outp_args):
         else:
             module.dl_miss_streak = 0
             module.latest_valid_dets = pred_dicts
-        if module.dl_miss_streak == 1000:
-            # This guy is dead, don't run it anymore
-            pass
+        if module.dl_miss_streak == 10: # if miss the deadline for 5 seconds, clear the buffer
+            #clear the buffer
+            module.latest_valid_dets = None
 
     #tm = module.finish_time - module.psched_start_time
     #module._eval_dict['additional']['PostSched'].append(tm)
@@ -142,7 +154,34 @@ class Detector3DTemplate(nn.Module):
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
         else:
-            self._eval_dict['deadline_sec'] = 9999.9  # loong deadline
+            self._eval_dict['deadline_sec'] = 10.0  # loong deadline
+
+        if 'DEADLINE_RANGE_MS' in os.environ:
+            drange = os.getenv('DEADLINE_RANGE_MS').split('-')
+            self.deadline_range = [float(r) for r in drange]
+        else:
+            self.deadline_range = None
+
+        self.token_to_scene = {}
+        self.token_to_scene_name = {}
+        self.token_to_ts = {}
+        try:
+            with open('token_to_pos.json', 'r') as handle:
+                self.token_to_pose = json.load(handle)
+
+            for k, v in self.token_to_pose.items():
+                cst, csr, ept, epr = v['cs_translation'],  v['cs_rotation'], \
+                        v['ep_translation'], v['ep_rotation']
+                # convert time stamps to seconds
+                # 3 4 3 4
+                self.token_to_pose[k] = torch.tensor((*cst, *csr, *ept, *epr), dtype=torch.float)
+                self.token_to_ts[k] = torch.tensor((v['timestamp'],), dtype=torch.long)
+                self.token_to_scene[k] = v['scene']
+                self.token_to_scene_name[k] = v['scene_name']
+        except:
+            print("Couldn't find token_to_pos.json, not loading it.")
+            pass
+
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
 
@@ -737,7 +776,7 @@ class Detector3DTemplate(nn.Module):
         training = self.training
         self.eval()
 
-        self._eval_dict['deadline_sec'] = 9999.9
+        self._eval_dict['deadline_sec'] = 10.0
         pred_dicts, recall_dict = self([i for i in range(batch_size)]) # this calls forward!
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
 

@@ -118,14 +118,14 @@ if [ $1 == 'profile' ]; then
     #export CUDA_LAUNCH_BLOCKING=1
     $CMD --set "MODEL.DEADLINE_SEC" $2
     #export CUDA_LAUNCH_BLOCKING=0
-elif [ $1 == 'methods' ]; then
+elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     export IGNORE_DL_MISS=0
     export DO_EVAL=0
     export E2E_REL_DEADLINE_S=0.0 # not streaming
     export CALIBRATION=0
 
     rm eval_dict_*
-    OUT_DIR=exp_data_nsc
+    OUT_DIR=exp_data_nsc_${1}
     mkdir -p $OUT_DIR
 
     CFG_FILES=( \
@@ -178,19 +178,30 @@ elif [ $1 == 'methods' ]; then
 	CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
 		--ckpt $CKPT_FILE --batch_size=1 --workers 0"
 
-        for s in $(seq $2 $3 $4)
-        do
-            OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
-            if [ -f $OUT_FILE ]; then
-                printf "Skipping $OUT_FILE test.\n"
-            else
-	        $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
-                # rename the output and move the corresponding directory
-		fpath=$OUT_DIR/eval_dict_m"$m"_d"$s".json
-                mv -f eval_dict_*.json $fpath
-		mv -f 'eval.pkl' $(echo $fpath | sed 's/json/pkl/g')
-            fi
-        done
+	if [ $1 == 'methods' ]; then
+		for s in $(seq $2 $3 $4)
+		do
+		    OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+		    if [ -f $OUT_FILE ]; then
+			printf "Skipping $OUT_FILE test.\n"
+		    else
+			$CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
+			# rename the output and move the corresponding directory
+			mv -f eval_dict_*.json $OUT_FILE
+			mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
+		    fi
+		done
+	else
+	    OUT_FILE=$OUT_DIR/eval_dict_m"$m"_dyndl.json
+	    if [ -f $OUT_FILE ]; then
+		printf "Skipping $OUT_FILE test.\n"
+	    else
+		$CMD --set "MODEL.DEADLINE_SEC" -1.0 "MODEL.METHOD" $MTD
+		# rename the output and move the corresponding directory
+		mv -f eval_dict_*.json $OUT_FILE
+		mv -f 'eval.pkl' $(echo $fOUT_FILE | sed 's/json/pkl/g')
+	    fi
+	fi
     done
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2

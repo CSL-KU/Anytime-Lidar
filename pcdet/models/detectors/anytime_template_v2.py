@@ -65,19 +65,19 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         ####Projection###
         self.enable_projection = False
-        self.token_to_scene = {}
-        self.token_to_ts = {}
-        with open('token_to_pos.json', 'r') as handle:
-            self.token_to_pose = json.load(handle)
-
-        for k, v in self.token_to_pose.items():
-            cst, csr, ept, epr = v['cs_translation'],  v['cs_rotation'], \
-                    v['ep_translation'], v['ep_rotation']
-            # convert time stamps to seconds
-            # 3 4 3 4
-            self.token_to_pose[k] = torch.tensor((*cst, *csr, *ept, *epr), dtype=torch.float)
-            self.token_to_ts[k] = torch.tensor((v['timestamp'],), dtype=torch.long)
-            self.token_to_scene[k] = v['scene']
+#        self.token_to_scene = {}
+#        self.token_to_ts = {}
+#        with open('token_to_pos.json', 'r') as handle:
+#            self.token_to_pose = json.load(handle)
+#
+#        for k, v in self.token_to_pose.items():
+#            cst, csr, ept, epr = v['cs_translation'],  v['cs_rotation'], \
+#                    v['ep_translation'], v['ep_rotation']
+#            # convert time stamps to seconds
+#            # 3 4 3 4
+#            self.token_to_pose[k] = torch.tensor((*cst, *csr, *ept, *epr), dtype=torch.float)
+#            self.token_to_ts[k] = torch.tensor((v['timestamp'],), dtype=torch.long)
+#            self.token_to_scene[k] = v['scene']
         ################################################################################
 
         self.add_dict = self._eval_dict['additional']

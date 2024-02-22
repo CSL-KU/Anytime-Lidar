@@ -7,7 +7,7 @@ nusc_revert_tables
 
 export CALIBRATION=${CALIBRATION:-0}
 export DATASET_PERIOD=${DATASET_PERIOD:-500}
-export DATASET_RANGE=${DATASET_RANGE:-"48-53"}
+#export DATASET_RANGE=${DATASET_RANGE:-"48-53"}
 
 period=$DATASET_PERIOD
 TABLES_PATH="nusc_tables_and_dicts/$period"
