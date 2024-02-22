@@ -199,7 +199,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 		$CMD --set "MODEL.DEADLINE_SEC" -1.0 "MODEL.METHOD" $MTD
 		# rename the output and move the corresponding directory
 		mv -f eval_dict_*.json $OUT_FILE
-		mv -f 'eval.pkl' $(echo $fOUT_FILE | sed 's/json/pkl/g')
+		mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
 	    fi
 	fi
     done
