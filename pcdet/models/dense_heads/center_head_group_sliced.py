@@ -392,7 +392,7 @@ class CenterHeadGroupSliced(nn.Module):
         return ret_dict
 
     # give topk_outps to this guy if it is available!
-    def generate_predicted_boxes_eval(self, batch_size, pred_dicts, projections):
+    def generate_predicted_boxes_eval(self, batch_size, pred_dicts, projections, do_nms=True):
         assert batch_size == 1
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
@@ -406,8 +406,9 @@ class CenterHeadGroupSliced(nn.Module):
             # this loop runs only once for kitti but multiple times for nuscenes (single vs multihead)
             cls_id_map = self.class_id_mapping_each_head[idx]
             if 'center' not in pred_dict:
-                if projections is not None:
-                    # Add the projections if they exist, no need for NMS
+                # no dets from this dethead, use projections or empty result instead
+                if do_nms and projections is not None:
+                    # Add the projections if they exist, no need do NMS
                     for k in projections[idx].keys():
                         ret_dict[k].append(projections[idx][k])
                 continue
@@ -432,7 +433,8 @@ class CenterHeadGroupSliced(nn.Module):
             # Assume batch size is 1
             final_dict = final_pred_dicts[0]
             final_dict['pred_labels'] = cls_id_map[final_dict['pred_labels'].long()]
-            if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
+
+            if do_nms and post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
                 if projections is not None:
                     # get the projections that match and cat them for NMS
                     for k in projections[idx].keys():
@@ -458,9 +460,36 @@ class CenterHeadGroupSliced(nn.Module):
             ret_dict['pred_boxes'] = torch.cat(ret_dict['pred_boxes'], dim=0)
             ret_dict['pred_scores'] = torch.cat(ret_dict['pred_scores'], dim=0)
             ret_dict['pred_labels'] = torch.cat(ret_dict['pred_labels'], dim=0) + 1
-
         return [ret_dict]
 
+
+    def nms_after_gen(self, batch_dict):
+        assert batch_dict['batch_size'] == 1
+        post_process_cfg = self.model_cfg.POST_PROCESSING
+
+        ret_dict = {
+            'pred_boxes': [],
+            'pred_scores': [],
+            'pred_labels': [],
+        } # for k in range(batch_size)]
+        for idx, pred_dict in enumerate(batch_dict['projections_nms']):
+            selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                box_scores=pred_dict['pred_scores'], box_preds=pred_dict['pred_boxes'],
+                nms_config=post_process_cfg.NMS_CONFIG,
+                score_thresh=None
+            )
+
+            ret_dict['pred_boxes'].append(pred_dict['pred_boxes'][selected])
+            ret_dict['pred_scores'].append(selected_scores)
+            ret_dict['pred_labels'].append(pred_dict['pred_labels'][selected])
+
+        ret_dict['pred_boxes'] = torch.cat(ret_dict['pred_boxes'], dim=0)
+        ret_dict['pred_scores'] = torch.cat(ret_dict['pred_scores'], dim=0)
+        ret_dict['pred_labels'] = torch.cat(ret_dict['pred_labels'], dim=0) + 1
+
+        batch_dict['final_box_dicts'][0] = ret_dict
+
+        return batch_dict
 
     @staticmethod
     def reorder_rois_for_refining(batch_size, pred_dicts):

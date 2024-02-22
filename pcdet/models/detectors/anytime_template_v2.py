@@ -126,7 +126,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
 
     def initialize(self, batch_dict):
-        batch_dict['projections_nms'] = None # redundant?
+        batch_dict['projections_nms'] = None
         if self.sched_disabled:
             return batch_dict
 
@@ -337,7 +337,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         return batch_dict
 
     # This method adds the latests detections to the queue
-    def add_past_proj_to_queue(self):
+    def add_past_proj_to_queue(self, proj_all=False):
         batch_dict = self.latest_batch_dict
         if batch_dict is None or self.cur_pose is None:
             return batch_dict
@@ -365,7 +365,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # NOTE The cur_pose and cur_ts here actually belongs to previous sample
         self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
-        self.past_ts = torch.cat((self.past_ts, self.cur_ts))
+        self.past_ts = torch.cat((self.past_ts, self.target_ts if proj_all else self.cur_ts))
         # Append the pose idx for the detection that will be added
         num_dets = new_dets_dict['pred_boxes'].size(0)
         past_poi = self.past_detections['pose_idx']
@@ -377,34 +377,93 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
+    # Projection
     def schedule3(self, batch_dict):
-        batch_dict['projections_nms'] = None
-        if self.enable_projection:
-            # Add the detection results of previous sample
-            self.add_past_proj_to_queue()
-            latest_token = batch_dict['metadata'][0]['token']
-            scene_token = self.token_to_scene[latest_token]
-            self.cur_pose = self.token_to_pose[latest_token]
-            self.cur_ts = self.token_to_ts[latest_token]
+        # Add the detection results of previous sample
+        proj_all = ('final_box_dicts' in batch_dict)
+        self.add_past_proj_to_queue(proj_all)
+        latest_token = batch_dict['metadata'][0]['token']
+        scene_token = self.token_to_scene[latest_token]
+        self.cur_pose = self.token_to_pose[latest_token]
+        self.cur_ts = self.token_to_ts[latest_token]
 
-            # Remove detections which are no more needed
-            active_num_dets = torch.sum(self.num_dets_per_tile)
-            max_num_proj = int(active_num_dets * self.projection_coeff)
-            if self.past_detections['pred_boxes'].size(0) > max_num_proj:
-                # Remove oldest dets
-                for k in ['pose_idx', 'pred_boxes', 'pred_labels']:
-                    self.past_detections[k] = self.past_detections[k][-max_num_proj:]
+        # Remove detections which are no more needed
+        active_num_dets = torch.sum(self.num_dets_per_tile)
+        max_num_proj = int(active_num_dets * self.projection_coeff)
+        if self.past_detections['pred_boxes'].size(0) > max_num_proj:
+            # Remove oldest dets
+            for k in ['pose_idx', 'pred_boxes', 'pred_labels']:
+                self.past_detections[k] = self.past_detections[k][-max_num_proj:]
 
-            # Weed out using the pose_idx of first det
-            if self.past_detections['pose_idx'].size(0) > 0:
-                pose_idx_0 = self.past_detections['pose_idx'][0]
-                self.past_poses = self.past_poses[pose_idx_0:]
-                self.past_ts = self.past_ts[pose_idx_0:]
-                self.past_detections['pose_idx'] = self.past_detections['pose_idx'] - pose_idx_0
+        # Weed out using the pose_idx of first det
+        if self.past_detections['pose_idx'].size(0) > 0:
+            pose_idx_0 = self.past_detections['pose_idx'][0]
+            self.past_poses = self.past_poses[pose_idx_0:]
+            self.past_ts = self.past_ts[pose_idx_0:]
+            self.past_detections['pose_idx'] = self.past_detections['pose_idx'] - pose_idx_0
 
+        proj_dict = {}
+        if proj_all:
+            # NMS will happen right after projection
+            # project the available det results as well for streaming eval
+            det_pred_dict = batch_dict['final_box_dicts'][0]
+            num_boxes = det_pred_dict['pred_boxes'].size(0)
+
+            if self.past_detections['pred_boxes'].size(0) == 0:
+                proj_dict['pred_scores'] = det_pred_dict['pred_scores'].cpu()
+                proj_dict['pred_labels'] = det_pred_dict['pred_labels'].cpu() - 1
+                boxes_to_forecast = det_pred_dict['pred_boxes']
+                proj_dict['pose_idx'] = torch.tensor([0] * num_boxes,
+                        dtype=self.past_detections['pose_idx'].dtype, device='cuda')
+                proj_dict['past_poses'] = self.cur_pose.unsqueeze(0).cuda()
+                proj_dict['past_ts'] = self.cur_ts.cuda()
+            else:
+                # MOVE TO CPU
+                proj_pred_scores = self.score_thresh - \
+                        (self.score_thresh / (self.past_detections['pose_idx'] + 2))
+                proj_dict['pred_scores'] = torch.cat((proj_pred_scores,
+                    det_pred_dict['pred_scores'].cpu()), dim=0)
+
+                # MOVE TO CPU
+                proj_pred_labels = (self.past_detections['pred_labels'] - 1)
+                proj_dict['pred_labels'] = torch.cat((proj_pred_labels,
+                    det_pred_dict['pred_labels'].cpu() - 1), dim=0)
+
+                # MOVE TO GPU
+                boxes_to_forecast = torch.cat((self.past_detections['pred_boxes'].cuda(),
+                    det_pred_dict['pred_boxes']), dim=0)
+
+                # MOVE TO GPU
+                det_pose_idx = (self.past_detections['pose_idx'][-1] + 1).repeat(num_boxes)
+                proj_dict['pose_idx'] = torch.cat((self.past_detections['pose_idx'],
+                    det_pose_idx), dim=0).cuda()
+
+                # MOVE TO GPU
+                proj_dict['past_poses'] = torch.cat((self.past_poses,
+                    self.cur_pose.unsqueeze(0)), dim=0).cuda()
+
+                # MOVE TO GPU
+                proj_dict['past_ts'] = torch.cat((self.past_ts, self.cur_ts), dim=0).cuda()
+
+            # Calculate the exact current timestamp, for now, ignore the timing of
+            # projection and nms
+            torch.cuda.synchronize()
+            elapsed_musec = (time.time() - batch_dict['start_time_sec']) * 1000000
+            self.target_ts = self.cur_ts
+            while self.target_ts < self.cur_ts + elapsed_musec:
+                self.target_ts += 50000 # keep adding 50 ms
+
+            proj_dict['pred_boxes']= cuda_projection.project_past_detections(
+                    boxes_to_forecast,
+                    proj_dict['pose_idx'],
+                    proj_dict['past_poses'],
+                    self.cur_pose.cuda(),
+                    proj_dict['past_ts'],
+                    self.target_ts.item()).cpu()
+
+        else:
             # Do projection in the GPU
             if self.past_detections['pred_boxes'].size(0) > 0:
-                proj_dict = {}
                 proj_dict['pred_scores'] = self.score_thresh - \
                         (self.score_thresh / (self.past_detections['pose_idx'] + 2))
                 proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
@@ -419,28 +478,34 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.projection_stream.synchronize() # maybe not needed?
                     proj_dict['pred_boxes'] = proj_dict['pred_boxes'].cpu()
 
-                # clear up detections which fall under the chosen tiles and also the overtimed ones
-                projb = proj_dict['pred_boxes']
-                box_x, box_y = projb[:,0], projb[:,1]
-                range_mask = box_x >= self.pc_range[0]
-                range_mask = torch.logical_and(range_mask, box_x <= self.pc_range[3])
-                range_mask = torch.logical_and(range_mask, box_y >= self.pc_range[1])
-                range_mask = torch.logical_and(range_mask, box_y <= self.pc_range[4])
+        if 'pred_boxes' in proj_dict:
+            # clear up detections which fall under the chosen tiles and also the overtimed ones
+            projb = proj_dict['pred_boxes']
+            box_x, box_y = projb[:,0], projb[:,1]
+            range_mask = box_x >= self.pc_range[0]
+            range_mask = torch.logical_and(range_mask, box_x <= self.pc_range[3])
+            range_mask = torch.logical_and(range_mask, box_y >= self.pc_range[1])
+            range_mask = torch.logical_and(range_mask, box_y <= self.pc_range[4])
 
-                # This op can make nms faster
-                with torch.cuda.stream(self.projection_stream):
-                    batch_dict['projections_nms'] = cuda_projection.split_projections(
-			    proj_dict['pred_boxes'][range_mask],
-			    proj_dict['pred_scores'][range_mask],
-			    proj_dict['pred_labels'][range_mask],
-			    self.cls_id_to_det_head_idx_map,
-			    self.num_det_heads,
-			    True) # moves results to gpu if true
+            # This op can make nms faster
+            with torch.cuda.stream(self.projection_stream):
 
-                for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
-                    self.past_detections[k] = self.past_detections[k][range_mask]
+                target_key = 'projections_nms'
+                batch_dict[target_key] = cuda_projection.split_projections(
+                        proj_dict['pred_boxes'][range_mask],
+                        proj_dict['pred_scores'][range_mask],
+                        proj_dict['pred_labels'][range_mask],
+                        self.cls_id_to_det_head_idx_map,
+                        self.num_det_heads,
+                        True) # moves results to gpu if true
 
-                self.projection_stream.synchronize()
+            # hmm, might be necessary
+            if proj_all:
+                range_mask = range_mask[:-num_boxes]
+            for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
+                self.past_detections[k] = self.past_detections[k][range_mask]
+
+            self.projection_stream.synchronize()
 
         return batch_dict
 

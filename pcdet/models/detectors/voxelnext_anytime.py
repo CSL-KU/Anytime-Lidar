@@ -41,7 +41,8 @@ class VoxelNeXtAnytime(AnytimeTemplateV2):
         self.measure_time_end('VoxelHead-conv')
         self.measure_time_start('Sched2')
         batch_dict = self.schedule2(batch_dict)
-        batch_dict = self.schedule3(batch_dict) # run projections in parallel with dethead ?
+        if self.enable_projection:
+            batch_dict = self.schedule3(batch_dict) # run projections in parallel with dethead ?
         self.measure_time_end('Sched2')
         self.measure_time_start('VoxelHead-post')
         batch_dict = self.dense_head.forward_post(batch_dict)

@@ -51,6 +51,7 @@ def pre_forward_hook(module, inp_args):
     #module.measure_time_end('LoadToGPU')
     batch_dict['deadline_sec'] = module._eval_dict['deadline_sec']
     #batch_dict.update(extra_batch)  # deadline, method, etc.
+    batch_dict['start_time_sec'] = start_time
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
 
     module.measure_time_end('PreProcess')

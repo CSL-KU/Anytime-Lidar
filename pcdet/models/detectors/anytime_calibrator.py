@@ -41,7 +41,7 @@ class AnytimeCalibrator():
         if model is None:
             self.dataset = None
             #NOTE modify the following params depending on the config file
-            self.num_det_heads = 6
+            self.num_det_heads = 8
             self.num_tiles = 18
         else:
             self.dataset = model.dataset
@@ -239,9 +239,10 @@ class AnytimeCalibrator():
                 if record:
                     e2.record()
 
-                batch_dict = self.model.schedule3(batch_dict) # projection
+                if self.model.enable_projection:
+                    batch_dict = self.model.schedule3(batch_dict) # projection
                 batch_dict = self.model.dense_head.forward_post(batch_dict)
-
+                del batch_dict['final_box_dicts'] # to prevent streaming eval projection
                 if record:
                     e3.record()
                     torch.cuda.synchronize()
@@ -257,7 +258,8 @@ class AnytimeCalibrator():
 
                 batch_dict = self.model.map_to_bev(batch_dict)
                 batch_dict = self.model.backbone_2d(batch_dict)
-                batch_dict = self.model.schedule3(batch_dict)
+                if self.model.enable_projection:
+                    batch_dict = self.model.schedule3(batch_dict)
                 batch_dict = self.model.dense_head.forward_eval_conv(batch_dict)
                 batch_dict = self.model.dense_head.forward_eval_topk(batch_dict)
 
@@ -267,9 +269,10 @@ class AnytimeCalibrator():
 
                 batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
                 pred_dicts = self.model.dense_head.generate_predicted_boxes_eval(
-                    batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict['projections_nms']
+                    batch_dict['batch_size'], batch_dict['pred_dicts'],
+                    batch_dict['projections_nms'], do_nms=True
                 )
-                batch_dict['final_box_dicts'] = pred_dicts
+                #batch_dict['final_box_dicts'] = pred_dicts
 
                 if record:
                     e3.record()
