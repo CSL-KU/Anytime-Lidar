@@ -30,11 +30,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
         else:
             self.keep_projection_disabled=False
 
+        self.use_voxelnext = False
         if self.sched_algo == SchedAlgo.RoundRobin_VN:
             self.use_voxelnext = True
             self.sched_algo = SchedAlgo.RoundRobin
-        else:
-            self.use_voxelnext = False # needed?
+        elif self.sched_algo == SchedAlgo.RoundRobin_16:
+            self.sched_algo = SchedAlgo.RoundRobin
 
         self.projection_coeff = float(self.model_cfg.PROJECTION_COEFF)
         print('Projection coefficient is', self.projection_coeff)
