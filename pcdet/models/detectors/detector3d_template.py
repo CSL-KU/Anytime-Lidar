@@ -57,7 +57,7 @@ def pre_forward_hook(module, inp_args):
         #Determine the dynamic deadline for this scene
         latest_token = batch_dict['metadata'][0]['token']
         scene_name = module.token_to_scene_name[latest_token]
-        dl_scale = (all_speed_scenes.index(scene_name) + 1) / len(all_speed_scenes)
+        dl_scale = (all_speed_scenes.index(scene_name)) / len(all_speed_scenes)
         dr = module.deadline_range
         batch_dict['deadline_sec'] = ((dr[1] - dr[0]) * dl_scale + dr[0]) / 1000.0
     else:

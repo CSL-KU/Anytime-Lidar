@@ -55,7 +55,7 @@ class AnytimeCalibrator():
             # a part of 3D backbone
             self.bb3d_num_l_groups += 1 # detection head convolutions
 
-        self.use_baseline_bb3d_predictor = True
+        self.use_baseline_bb3d_predictor = False
         if self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
             self.time_reg_intercepts = np.ones((1,), dtype=float)
