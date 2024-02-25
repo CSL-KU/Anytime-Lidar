@@ -53,7 +53,7 @@ def pre_forward_hook(module, inp_args):
     load_data_to_gpu(batch_dict)
     #module.measure_time_end('LoadToGPU')
 
-    if module.deadline_range is not None:
+    if module.deadline_range is not None and not module.calibrating:
         #Determine the dynamic deadline for this scene
         latest_token = batch_dict['metadata'][0]['token']
         scene_name = module.token_to_scene_name[latest_token]
@@ -101,7 +101,8 @@ def post_forward_hook(module, inp_args, outp_args):
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
             module.dl_miss_streak += 1
-            print('Deadline missed,', tdiff * 1000.0, 'ms late. Total missed:',
+            print('Deadline', round(batch_dict['deadline_sec'] * 1000.0, 1), ' missed,',
+                    tdiff * 1000.0, 'ms late. Total missed:',
                     module._eval_dict['deadlines_missed'])
 
             # Assume the program will abort the process when it misses the deadline
@@ -114,7 +115,7 @@ def post_forward_hook(module, inp_args, outp_args):
         else:
             module.dl_miss_streak = 0
             module.latest_valid_dets = pred_dicts
-        if module.dl_miss_streak == 10: # if miss the deadline for 5 seconds, clear the buffer
+        if module.dl_miss_streak == 10: # if miss the deadline for 10 samples, clear the buffer
             #clear the buffer
             module.latest_valid_dets = None
 
@@ -154,6 +155,7 @@ class Detector3DTemplate(nn.Module):
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
         else:
+            self._default_deadline_sec = 10.0
             self._eval_dict['deadline_sec'] = 10.0  # loong deadline
 
         if 'DEADLINE_RANGE_MS' in os.environ:
@@ -776,9 +778,11 @@ class Detector3DTemplate(nn.Module):
         training = self.training
         self.eval()
 
+        self.calibrating=True
         self._eval_dict['deadline_sec'] = 10.0
         pred_dicts, recall_dict = self([i for i in range(batch_size)]) # this calls forward!
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
+        self.calibrating=False
 
         #Print full tensor sizes
         #print('\ndata_dict after forward:')

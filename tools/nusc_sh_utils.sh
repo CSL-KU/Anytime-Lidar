@@ -6,7 +6,7 @@ nusc_link_tables()
 {
 	TPATH=$(realpath $1)
 	pushd ../data/nuscenes/v1.0-$DATASET/v1.0-$DATASET
-	for fname in 'sample' 'sample_data' 'instance' 'sample_annotation' 'scene'
+	for fname in 'sample' 'sample_data' 'instance' 'sample_annotation' 'scene' 'ego_pose'
 	do
 		if [[ ! -L "$fname.json" ]]; then
 			mv $fname.json $fname.json.backup # backup the original tables
@@ -19,7 +19,7 @@ nusc_link_tables()
 nusc_revert_tables()
 {
 	pushd ../data/nuscenes/v1.0-$DATASET/v1.0-$DATASET
-	for fname in 'sample' 'sample_data' 'instance' 'sample_annotation' 'scene'
+	for fname in 'sample' 'sample_data' 'instance' 'sample_annotation' 'scene' 'ego_pose'
 	do
 		if [[ -L "$fname.json" ]]; then
 			rm $fname.json
