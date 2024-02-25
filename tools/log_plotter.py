@@ -20,7 +20,7 @@ method_colors= [
     'tab:pink',  #'xkcd:coral', 
     'xkcd:coral', 
     'tab:pink', 
-#    'tab:orange', 
+    'tab:orange',
 #    'tab:red',
 #    'tab:green', 
 #    'tab:purple', 
@@ -41,7 +41,8 @@ method_num_to_str = [
         '0CenterPoint75',
         '1AnytimeLidar-CP75',
         '2VALO-CP75',
-        '3VALO-ARR',
+        #'3VALO-ARR',
+        '3VALO-CP100',
         '4VALO-NF-CP75',
         '5CenterPoint100',
         '6CenterPoint200',
@@ -51,7 +52,7 @@ method_num_to_str = [
 ]
 
 method_remap = {
-        0:0, 2:2, 10:1, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9
+        0:0, 2:2, 10:1, 3:10, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 11:3
 }
 
 if __name__ == '__main__':
@@ -90,7 +91,6 @@ if __name__ == '__main__':
 
     plot_sets=[]
 
-
 #    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
 #        'VALO-CP75-150ms',
 ##        'VALO-CP75-250ms',
@@ -122,8 +122,6 @@ if __name__ == '__main__':
             'VoxelNext75',
             'VALO-VN75',
     ]})
-
-
 
 #    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
 #            'CenterPoint-75',
