@@ -55,11 +55,16 @@ class AnytimeCalibrator():
             # a part of 3D backbone
             self.bb3d_num_l_groups += 1 # detection head convolutions
 
-        self.time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
-        self.time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
+        self.use_baseline_bb3d_predictor = True
+        if self.use_baseline_bb3d_predictor:
+            self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
+            self.time_reg_intercepts = np.ones((1,), dtype=float)
+        else:
+            self.time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
+            self.time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
 
-        self.voxel_coeffs_over_layers = np.array([[1.] * self.num_tiles \
-                for _ in range(self.bb3d_num_l_groups)])
+            self.voxel_coeffs_over_layers = np.array([[1.] * self.num_tiles \
+                    for _ in range(self.bb3d_num_l_groups)])
 
         # backbone2d and detection head heatmap convolutions
         # first elem unused
@@ -77,20 +82,34 @@ class AnytimeCalibrator():
 
     # overhead on jetson-agx: 1 ms
     def pred_req_times_ms(self, vcount_area, tiles_queue, num_tiles): # [num_nonempty_tiles, num_max_tiles]
-        vcounts = vcount_area * self.voxel_coeffs_over_layers
-        num_voxels = np.empty((tiles_queue.shape[0], vcounts.shape[0]), dtype=vcounts.dtype)
-        for i in range(len(tiles_queue)):
-            num_voxels[i] = np.sum(vcounts[:, tiles_queue[:i+1]], axis=1)
-        if self.time_reg_degree == 1:
-            bb3d_time_preds = num_voxels * self.time_reg_coeffs.flatten() + \
-                    self.time_reg_intercepts
-            bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
-        elif self.time_reg_degree == 2:
+        if self.use_baseline_bb3d_predictor:
+            assert self.time_reg_degree == 2
+
+            vcounts = vcount_area[0]
+            num_voxels = np.empty((tiles_queue.shape[0]),
+                    dtype=vcounts.dtype)
+            for i in range(len(tiles_queue)):
+                num_voxels[i] = np.sum(vcounts[tiles_queue[:i+1]])
+
             num_voxels = np.expand_dims(num_voxels, -1)
             num_voxels = np.concatenate((num_voxels, np.square(num_voxels)), axis=-1)
-            bb3d_time_preds = np.sum(num_voxels * self.time_reg_coeffs, axis=-1) + \
-                    self.time_reg_intercepts
-            bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
+            bb3d_time_preds = np.sum(num_voxels * self.time_reg_coeffs.flatten(),
+                    axis=-1) +  self.time_reg_intercepts
+        else:
+            vcounts = vcount_area * self.voxel_coeffs_over_layers
+            num_voxels = np.empty((tiles_queue.shape[0], vcounts.shape[0]), dtype=vcounts.dtype)
+            for i in range(len(tiles_queue)):
+                num_voxels[i] = np.sum(vcounts[:, tiles_queue[:i+1]], axis=1)
+            if self.time_reg_degree == 1:
+                bb3d_time_preds = num_voxels * self.time_reg_coeffs.flatten() + \
+                        self.time_reg_intercepts
+                bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
+            elif self.time_reg_degree == 2:
+                num_voxels = np.expand_dims(num_voxels, -1)
+                num_voxels = np.concatenate((num_voxels, np.square(num_voxels)), axis=-1)
+                bb3d_time_preds = np.sum(num_voxels * self.time_reg_coeffs, axis=-1) + \
+                        self.time_reg_intercepts
+                bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
 
         if self.model.use_voxelnext:
             return bb3d_time_preds + self.bb3d_expected_max_error, self.det_head_post_wcet_ms
@@ -120,49 +139,75 @@ class AnytimeCalibrator():
 
         all_times=np.array(all_times, dtype=float)
         all_voxels=np.array(all_voxels, dtype=float)
+        # As a baseline predictor, do linear regression using
+        # the number of voxels
+        if self.use_baseline_bb3d_predictor:
 
-        # 2 bec second order: v, v_2
-        self.time_reg_coeffs = np.empty((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
-        self.time_reg_intercepts = np.empty((self.bb3d_num_l_groups,), dtype=float)
-        for i in range(self.bb3d_num_l_groups): # should be 4, num bb3d conv blocks
-            voxels = all_voxels[:, i:i+1]
-            times = all_times[:, i:i+1]
+            # plot voxel to time graph
+            bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
+            bb3d_voxels = all_voxels[:, :1]
+            sort_indexes = np.argsort(bb3d_times)
+            bb3d_times_ = bb3d_times[sort_indexes][0::10]
+            bb3d_voxels_ = bb3d_voxels[sort_indexes][0::10]
+            plt.scatter(bb3d_voxels_, bb3d_times_)
+            plt.xlim([0, 70000])
+            plt.ylim([0, 75])
+            plt.xlabel('Number of voxels', fontsize='x-large')
+            plt.ylabel('3DBB Execution time (ms)', fontsize='x-large')
+            plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime_jorin.pdf')
+            print('Num voxel to exec time plot saved.')
+
 
             if self.time_reg_degree == 2:
-                voxels = np.concatenate((voxels, np.square(voxels)), axis=-1)
-            reg = LinearRegression().fit(voxels, times)
+                bb3d_voxels = np.concatenate((bb3d_voxels,
+                    np.square(bb3d_voxels)), axis=-1)
+            reg = LinearRegression().fit(bb3d_voxels, bb3d_times)
 
-            self.time_reg_coeffs[i] = reg.coef_
-            self.time_reg_intercepts[i] = reg.intercept_
+            self.time_reg_coeffs = reg.coef_
+            self.time_reg_intercepts = reg.intercept_
+        else:
+            # 2 bec second order: v, v_2
+            #self.time_reg_coeffs = np.empty((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
+            #self.time_reg_intercepts = np.empty((self.bb3d_num_l_groups,), dtype=float)
+            for i in range(self.bb3d_num_l_groups): # should be 4, num bb3d conv blocks
+                voxels = all_voxels[:, i:i+1]
+                times = all_times[:, i:i+1]
 
-        # the input is voxels: [NUM_CHOSEN_TILES, self.bb3d_num_l_groups],
-        # the output is times: [NUM_CHOSEN_TILEs, self.bb3d_num_l_groups]
-        all_voxels = np.expand_dims(all_voxels, -1)
-        all_voxels = np.concatenate((all_voxels, np.square(all_voxels)), axis=-1)
-        all_preds = np.sum(all_voxels * self.time_reg_coeffs, axis=-1) + self.time_reg_intercepts
-        diffs = all_preds - all_times
-        self.bb3d_expected_max_error = 0.
-        for i in range(self.bb3d_num_l_groups):
-            self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
-        print('BB3D expected max error:', self.bb3d_expected_max_error)
+                if self.time_reg_degree == 2:
+                    voxels = np.concatenate((voxels, np.square(voxels)), axis=-1)
+                reg = LinearRegression().fit(voxels, times)
 
-        # Predicting how voxel counts will change over layers is hard
-        # Use history to approximate
-        ctc_samples = self.calib_data_dict['chosen_tile_coords']
-        voxels_dataset = [[] for _ in range(self.num_tiles)]
-        for ctc_s, bb3d_v_s in zip(ctc_samples, bb3d_voxels_samples):
-            for ctc, bb3d_v in zip(ctc_s, bb3d_v_s):
-                if len(ctc) == 1:
-                    # Normalize and append
-                    bb3d_v = np.array(bb3d_v, dtype=float)
-                    voxels_dataset[ctc[0]].append(bb3d_v / bb3d_v[0])
-                else:
-                    break # skip to next sample
+                self.time_reg_coeffs[i] = reg.coef_
+                self.time_reg_intercepts[i] = reg.intercept_
 
-        self.voxel_coeffs_over_layers = [sum(vd) / len(vd) for vd in voxels_dataset]
-        self.voxel_coeffs_over_layers = np.array(self.voxel_coeffs_over_layers).transpose()
-        print('coefficient that guess the changes in number of voxels in bb3d:')
-        print(self.voxel_coeffs_over_layers.T)
+            # the input is voxels: [NUM_CHOSEN_TILES, self.bb3d_num_l_groups],
+            # the output is times: [NUM_CHOSEN_TILEs, self.bb3d_num_l_groups]
+            all_voxels = np.expand_dims(all_voxels, -1)
+            all_voxels = np.concatenate((all_voxels, np.square(all_voxels)), axis=-1)
+            all_preds = np.sum(all_voxels * self.time_reg_coeffs, axis=-1) + self.time_reg_intercepts
+            diffs = all_preds - all_times
+            self.bb3d_expected_max_error = 0.
+            for i in range(self.bb3d_num_l_groups):
+                self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
+            print('BB3D expected max error:', self.bb3d_expected_max_error)
+
+            # Predicting how voxel counts will change over layers is hard
+            # Use history to approximate
+            ctc_samples = self.calib_data_dict['chosen_tile_coords']
+            voxels_dataset = [[] for _ in range(self.num_tiles)]
+            for ctc_s, bb3d_v_s in zip(ctc_samples, bb3d_voxels_samples):
+                for ctc, bb3d_v in zip(ctc_s, bb3d_v_s):
+                    if len(ctc) == 1:
+                        # Normalize and append
+                        bb3d_v = np.array(bb3d_v, dtype=float)
+                        voxels_dataset[ctc[0]].append(bb3d_v / bb3d_v[0])
+                    else:
+                        break # skip to next sample
+
+            self.voxel_coeffs_over_layers = [sum(vd) / len(vd) for vd in voxels_dataset]
+            self.voxel_coeffs_over_layers = np.array(self.voxel_coeffs_over_layers).transpose()
+            print('coefficient that guess the changes in number of voxels in bb3d:')
+            print(self.voxel_coeffs_over_layers.T)
 
         if self.model.use_voxelnext:
             dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']

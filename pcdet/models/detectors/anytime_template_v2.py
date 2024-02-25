@@ -282,7 +282,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         elif self.sched_algo == SchedAlgo.ProjectionOnly:
             batch_dict['chosen_tile_coords'] = netc
 
-        batch_dict['record_int_vcoords'] = True
+        batch_dict['record_int_vcoords'] = \
+                not self.calibrator.use_baseline_bb3d_predictor
         batch_dict['tile_size_voxels'] = self.tile_size_voxels
         batch_dict['num_tiles'] = self.tcount
 
@@ -293,19 +294,20 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.sched_disabled:
             return batch_dict
 
-        vcoords = batch_dict['bb3d_intermediary_vcoords']
-        if self.use_voxelnext:
-            out = batch_dict['encoded_spconv_tensor']
-            voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels // 8, \
-                    rounding_mode='trunc')
-            voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.tcount)
-            # just for the sake of timing
-            vcoords.append(voxel_dist.unsqueeze(0))
+        if not self.calibrator.use_baseline_bb3d_predictor:
+            vcoords = batch_dict['bb3d_intermediary_vcoords']
+            if self.use_voxelnext:
+                out = batch_dict['encoded_spconv_tensor']
+                voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels // 8, \
+                        rounding_mode='trunc')
+                voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.tcount)
+                # just for the sake of timing
+                vcoords.append(voxel_dist.unsqueeze(0))
 
-        vcoords.insert(0, batch_dict['vcount_area'])
-        voxel_dists = torch.cat(vcoords, dim=0).cpu().numpy() # 4 x 18
+            vcoords.insert(0, batch_dict['vcount_area'])
+            voxel_dists = torch.cat(vcoords, dim=0).cpu().numpy() # 4 x 18
 
-        self.calibrator.commit_bb3d_updates(batch_dict['chosen_tile_coords'], voxel_dists)
+            self.calibrator.commit_bb3d_updates(batch_dict['chosen_tile_coords'], voxel_dists)
         if not self.use_voxelnext:
             torch.cuda.synchronize()
             post_bb3d_times = batch_dict['post_bb3d_times']
