@@ -214,6 +214,46 @@ def plot_func_dm(out_path, exps_dict):
     #fig.suptitle("Ratio of missed deadlines over a range of deadlines", fontsize=16)
     plt.savefig(out_path + "/deadlines_missed.pdf")
 
+    fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
+    labels = list(exps_dict.keys())
+    #x_values = np.arange(len(labels))
+    x_values = [k for k in exps_dict.keys()]
+    y_values = [ round(evals[0]['deadlines_missed'] / \
+            len(evals[0]['deadline_diffs']) * 100.) \
+            for exp_name, evals in exps_dict.items()]
+
+    rects = ax.bar(x_values, y_values, color=[e[0]['color'] for e in exps_dict.values()])
+#    ax.tick_params(
+#        axis='x',          # changes apply to the x-axis
+#        which='both',      # both major and minor ticks are affected
+#        bottom=False,      # ticks along the bottom edge are off
+#        top=False,         # ticks along the top edge are off
+#        labelbottom=False) # labels along the bottom edge are off
+    autolabel(rects, ax)
+    for r, l in zip(rects, labels):
+        r.set_label(l)
+    #ax.legend(fontsize='medium', ncol=3)
+    ax.set_ylabel('Deadline miss ratio (%)', fontsize='x-large')
+    #ax.set_xlabel(')', fontsize='x-large')
+    #ax.grid('True', ls='--')
+    ax.set_yticks(np.arange(0, 100.1, 20))
+    ax.set_ylim(-1.0, 110.)
+
+    plt.savefig(out_path + "/dl_miss_ratio_bar.pdf")
+
+
+def autolabel(rects, ax):
+    """Attach a text label above each bar in *rects*, displaying its height."""
+    for rect in rects:
+        height = rect.get_height()
+        ax.annotate('{}'.format(height),
+                    xy=(rect.get_x() + rect.get_width() / 2, height),
+                    xytext=(0, 3),  # 3 points vertical offset
+                    textcoords="offset points",
+                    ha='center', va='bottom')
+
+
+
 
 def plot_func_rem_time_on_finish(out_path, exps_dict):
     # compare execution times end to end
@@ -535,18 +575,6 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     for exp_name, evals in merged_exps_dict.items():
         evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
  
-#def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
-#    max_NDS = [0., 0., 0.]
-#    for i, (exp_name, evals) in enumerate(exps_dict.items()):
-#        print(len(evals))
-#        NDS_arr = [e['mAP']['NDS'] for e in evals]
-#        max_NDS[i] = max(NDS_arr)
-#    print(max_NDS)
-#
-#    for i, (exp_name, evals) in enumerate(merged_exps_dict.items()):
-#        print(np.array(evals['mAP']['NDS']))
-#        evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS[i] * 100.
-       
     #Add normalized accuracy
     i = 0
     fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
@@ -568,37 +596,28 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
     labels = list(merged_exps_dict.keys())
-    x_values = np.arange(len(labels))
+    #x_values = np.arange(len(labels))
+    x_values = labels
     y_values = [round(sum(evals['mAP']['normalized_NDS'])/ \
             len(evals['mAP']['normalized_NDS']),1) \
             for evals in merged_exps_dict.values()]
 
     rects = ax.bar(x_values, y_values, color=[v['color'][0] for v in merged_exps_dict.values()])
-    ax.tick_params(
-        axis='x',          # changes apply to the x-axis
-        which='both',      # both major and minor ticks are affected
-        bottom=False,      # ticks along the bottom edge are off
-        top=False,         # ticks along the top edge are off
-        labelbottom=False) # labels along the bottom edge are off
-
-    def autolabel(rects):
-        """Attach a text label above each bar in *rects*, displaying its height."""
-        for rect in rects:
-            height = rect.get_height()
-            ax.annotate('{}'.format(height),
-                        xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3),  # 3 points vertical offset
-                        textcoords="offset points",
-                        ha='center', va='bottom')
-
-    autolabel(rects)
+    #ax.tick_params(
+    #    axis='x',          # changes apply to the x-axis
+    #    which='both',      # both major and minor ticks are affected
+    #    bottom=False,      # ticks along the bottom edge are off
+    #    top=False,         # ticks along the top edge are off
+    #    labelbottom=False) # labels along the bottom edge are off
+    autolabel(rects, ax)
     for r, l in zip(rects, labels):
         r.set_label(l)
-    ax.legend(fontsize='medium', ncol=3)
-    ax.set_ylabel('Average accuracy (%)', fontsize='x-large')
+    #ax.legend(fontsize='medium', ncol=3)
+    ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
     #ax.set_xlabel(')', fontsize='x-large')
     #ax.grid('True', ls='--')
-    ax.set_ylim(-1.0, 119.)
+    ax.set_yticks(np.arange(0, 100.1, 20))
+    ax.set_ylim(-1.0, 110.)
 
     plt.savefig(out_path + "/normalized_NDS_bar.pdf")
 
