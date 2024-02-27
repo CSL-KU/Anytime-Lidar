@@ -10,7 +10,7 @@ class SchedAlgo:
     RoundRobin_NoSchedNoProj = 7
     # 8 is VoxelNeXt
     RoundRobin_VN = 9  # VoxelNeXt
-    RoundRobin_16 = 10  # Same as RoundRobin, 16 tiles instead of 18
+    RoundRobin_16 = 11  # Same as RoundRobin, 16 tiles instead of 18
     # Keep the next ones only for code compability
     MirrorRR = 98
 

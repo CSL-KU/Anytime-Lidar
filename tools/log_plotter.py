@@ -154,7 +154,7 @@ if __name__ == '__main__':
             elif dataset == 'NuScenesDataset':
                 mAP, NDS = e["mAP"]['mAP'], e["mAP"]['NDS']
                 print('\tdeadline:', e['deadline_sec'], "\tmissed:", e['deadlines_missed'],
-                      f"\tmAP, NDS:\t{mAP:.2f},\t{NDS:.2f}")
+                      f"\tmAP, NDS:\t{mAP:.4f},\t{NDS:.4f}")
     merged_exps_dict = {}
     for k, v in exps_dict.items():
         merged_exps_dict[k] = merge_eval_dicts(v)

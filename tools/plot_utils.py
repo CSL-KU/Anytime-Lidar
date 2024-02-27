@@ -305,8 +305,8 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
 
     bl_eval_dict = exps_dict[e1][-1]
     alv2_eval_dict_1 = exps_dict[e2][-1]
-    alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
-    eval_data = [bl_eval_dict, alv2_eval_dict_1, alv2_eval_dict_2]
+    #alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
+    eval_data = [bl_eval_dict, alv2_eval_dict_1] #, alv2_eval_dict_2]
 
 #    # Create CenterHead-PostAll
 #    for data in eval_data:
@@ -320,10 +320,11 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     #axes = axes.ravel()
 
     #labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
-    labels = [ \
-        'CenterPoint75\nNo Deadline', \
-        'VALO-CP75\nNo Deadline', \
-        'VALO-CP75\n100 ms Deadline']
+    #labels = [ \
+    #    'CenterPoint75\nNo Deadline', \
+    #    'VALO-CP75\nNo Deadline', \
+    #    'VALO-CP75\n100 ms Deadline']
+    labels = [ 'CenterPoint75', 'VALO-CP75']
 
     for comp in components:
         fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
@@ -368,10 +369,21 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         if 'bb3d_preds' not in evals[0] or not evals[0]['bb3d_preds']:
             continue
 
-        evals = evals[:4] # use periods 100 150 200 250
+        #evals = evals[:4] # use periods 100 150 200 250
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
+        labels = []
+        for e in evals:
+            if e['deadline_msec'] == -1000:
+                labels.append('History-based')
+            elif e['deadline_msec'] == -3000:
+                labels.append('Linear')
+            else:
+                continue
+                labels.append(f"VALO {str(e['deadline_msec'])}"
+                        " ms deadline")
+
+        #labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
         bb3d_pred_err = [np.array(e['exec_times']['Backbone3D']) - np.array(e['bb3d_preds']) \
                 for e in evals]
         if 'VoxelHead-conv' in evals[0]['exec_times']:
@@ -571,7 +583,9 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
     for exp_name, evals in exps_dict.items():
         NDS_arr = [e['mAP']['NDS'] for e in evals]
         max_NDS = max(max(NDS_arr), max_NDS)
-
+    
+    max_NDS = 0.6205667786157568
+    print('USING HARDCODED MAX NDS!')
     for exp_name, evals in merged_exps_dict.items():
         evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
  

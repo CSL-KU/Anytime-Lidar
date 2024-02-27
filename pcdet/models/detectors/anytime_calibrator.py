@@ -252,7 +252,7 @@ class AnytimeCalibrator():
                 e1, e2, e3 = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
                 batch_dict['record_time'] = True
                 batch_dict['record_int_vcounts'] = True
-                batch_dict['record_int_vcoords'] = True
+                batch_dict['record_int_vcoords'] = not self.use_baseline_bb3d_predictor
                 batch_dict['tile_size_voxels'] = self.tile_size_voxels
                 batch_dict['num_tiles'] = self.num_tiles
 
@@ -265,6 +265,7 @@ class AnytimeCalibrator():
             batch_dict = self.model.backbone_3d(batch_dict)
 
             if self.model.use_voxelnext:
+                assert not self.use_baseline_bb3d_predictor
                 if record:
                     bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
                     bb3d_voxels = batch_dict['bb3d_num_voxels']
