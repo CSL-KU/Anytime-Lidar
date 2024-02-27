@@ -20,22 +20,19 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
-        self.sched_algo = self.model_cfg.METHOD
+        self.sched_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoSchedNoProj)
 
-        self.sched_disabled = (self.sched_algo == SchedAlgo.RoundRobin_NoSchedNoProj)
-        if self.sched_algo == SchedAlgo.RoundRobin_NoProj or \
-                self.sched_algo == SchedAlgo.RoundRobin_NoSchedNoProj:
-            self.keep_projection_disabled=True
-            self.sched_algo = SchedAlgo.RoundRobin
-        else:
-            self.keep_projection_disabled=False
+        self.keep_projection_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoProj or \
+                self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoSchedNoProj)
 
-        self.use_voxelnext = False
-        if self.sched_algo == SchedAlgo.RoundRobin_VN:
-            self.use_voxelnext = True
-            self.sched_algo = SchedAlgo.RoundRobin
-        elif self.sched_algo == SchedAlgo.RoundRobin_16:
-            self.sched_algo = SchedAlgo.RoundRobin
+        self.use_voxelnext = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN or \
+                self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN_BLTP)
+
+        self.use_baseline_bb3d_predictor = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_BLTP or \
+                self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN_BLTP)
+
+        self.sched_algo = SchedAlgo.ProjectionOnly if self.model_cfg.METHOD == \
+                SchedAlgo.ProjectionOnly else SchedAlgo.RoundRobin
 
         self.projection_coeff = float(self.model_cfg.PROJECTION_COEFF)
         print('Projection coefficient is', self.projection_coeff)
@@ -283,7 +280,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = netc
 
         batch_dict['record_int_vcoords'] = \
-                not self.calibrator.use_baseline_bb3d_predictor
+                not self.use_baseline_bb3d_predictor
         batch_dict['tile_size_voxels'] = self.tile_size_voxels
         batch_dict['num_tiles'] = self.tcount
 
@@ -294,7 +291,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.sched_disabled:
             return batch_dict
 
-        if not self.calibrator.use_baseline_bb3d_predictor:
+        if not self.use_baseline_bb3d_predictor:
             vcoords = batch_dict['bb3d_intermediary_vcoords']
             if self.use_voxelnext:
                 out = batch_dict['encoded_spconv_tensor']
@@ -571,7 +568,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         collect_data = False
         try:
-            fname = f"calib_data_m{self.sched_algo}_c{self.tcount}"
+            fname = f"calib_data_m{self.model_cfg.METHOD}_c{self.tcount}"
             if self.use_voxelnext:
                 fname += '_vn'
             fname += '.json'

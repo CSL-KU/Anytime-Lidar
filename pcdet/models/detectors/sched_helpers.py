@@ -2,16 +2,19 @@ import numba
 import numpy as np
 
 class SchedAlgo:
+    # Unless a number is used, 18 tiles are the default
     ProjectionOnly = 0
     RoundRobin = 2
-    AdaptiveRR = 3
     RoundRobin_NoProj = 4
-    # 5 and 6 are other baselines 01 and pillar
+    # 5 and 6 are other baselines 01 and 02
     RoundRobin_NoSchedNoProj = 7
-    # 8 is VoxelNeXt
+    # 8 is VoxelNeXt baseline
     RoundRobin_VN = 9  # VoxelNeXt
     RoundRobin_16 = 11  # Same as RoundRobin, 16 tiles instead of 18
+    RoundRobin_BLTP = 12  # Same as RoundRobin, time prediction of 3d bb is based on quadratic order equation
+    RoundRobin_VN_BLTP = 13
     # Keep the next ones only for code compability
+    AdaptiveRR = 97
     MirrorRR = 98
 
 @numba.jit(nopython=True)

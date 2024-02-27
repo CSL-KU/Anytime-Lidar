@@ -55,7 +55,7 @@ class AnytimeCalibrator():
             # a part of 3D backbone
             self.bb3d_num_l_groups += 1 # detection head convolutions
 
-        self.use_baseline_bb3d_predictor = False
+        self.use_baseline_bb3d_predictor = self.model.use_baseline_bb3d_predictor
         if self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
             self.time_reg_intercepts = np.ones((1,), dtype=float)
@@ -70,7 +70,7 @@ class AnytimeCalibrator():
         # first elem unused
         if self.model.use_voxelnext:
             self.det_head_post_wcet_ms = .0
-            self.bb3d_expected_max_error = 0.
+            #self.bb3d_expected_max_error = 0.
         else:
             self.bb2d_times_ms = np.zeros((self.num_tiles+1,), dtype=float)
             self.det_head_post_times_ms = np.zeros((2**self.num_det_heads,), dtype=float)
@@ -112,8 +112,8 @@ class AnytimeCalibrator():
                 bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
 
         if self.model.use_voxelnext:
-            return bb3d_time_preds + self.bb3d_expected_max_error, self.det_head_post_wcet_ms
-            #return bb3d_time_preds, self.det_head_post_wcet_ms
+            #return bb3d_time_preds + self.bb3d_expected_max_error, self.det_head_post_wcet_ms
+            return bb3d_time_preds, self.det_head_post_wcet_ms
         else:
             return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
                     self.det_head_post_times_ms[-1]
@@ -157,7 +157,6 @@ class AnytimeCalibrator():
             plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime_jorin.pdf')
             print('Num voxel to exec time plot saved.')
 
-
             if self.time_reg_degree == 2:
                 bb3d_voxels = np.concatenate((bb3d_voxels,
                     np.square(bb3d_voxels)), axis=-1)
@@ -186,10 +185,10 @@ class AnytimeCalibrator():
             all_voxels = np.concatenate((all_voxels, np.square(all_voxels)), axis=-1)
             all_preds = np.sum(all_voxels * self.time_reg_coeffs, axis=-1) + self.time_reg_intercepts
             diffs = all_preds - all_times
-            self.bb3d_expected_max_error = 0.
-            for i in range(self.bb3d_num_l_groups):
-                self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
-            print('BB3D expected max error:', self.bb3d_expected_max_error)
+            #self.bb3d_expected_max_error = 0.
+            #for i in range(self.bb3d_num_l_groups):
+            #    self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
+            #print('BB3D expected max error:', self.bb3d_expected_max_error)
 
             # Predicting how voxel counts will change over layers is hard
             # Use history to approximate
@@ -265,7 +264,7 @@ class AnytimeCalibrator():
             batch_dict = self.model.backbone_3d(batch_dict)
 
             if self.model.use_voxelnext:
-                assert not self.use_baseline_bb3d_predictor
+                #assert not self.use_baseline_bb3d_predictor
                 if record:
                     bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
                     bb3d_voxels = batch_dict['bb3d_num_voxels']
@@ -274,11 +273,15 @@ class AnytimeCalibrator():
                     out = batch_dict['encoded_spconv_tensor']
                     bb3d_voxels.append(out.indices.size(0)) # append num voxels
                     #############
-                    voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels // 8, \
-                            rounding_mode='trunc')
-                    voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.num_tiles)
-                    # just for the sake of timing
-                    batch_dict['bb3d_intermediary_vcoords'].append(voxel_dist.unsqueeze(0))
+                    if not self.use_baseline_bb3d_predictor:
+                        voxel_tile_coords = torch.div(out.indices[:, -1], \
+                                self.tile_size_voxels // 8, \
+                                rounding_mode='trunc')
+                        voxel_dist = torch.bincount(voxel_tile_coords, \
+                                minlength=self.num_tiles)
+                        # just for the sake of timing
+                        batch_dict['bb3d_intermediary_vcoords'].append( \
+                                voxel_dist.unsqueeze(0))
                     #############
                 batch_dict = self.model.dense_head.forward_conv(batch_dict)
                 #batch_dict = self.model.schedule2(batch_dict)  # skip
