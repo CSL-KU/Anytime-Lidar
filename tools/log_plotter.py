@@ -21,9 +21,9 @@ method_colors= [
     'xkcd:coral', 
     'tab:pink', 
     'tab:orange',
-#    'tab:red',
-#    'tab:green', 
-#    'tab:purple', 
+    'tab:red',
+    'tab:green', 
+    'tab:purple', 
 ]
 
 ##HACK
@@ -42,17 +42,21 @@ method_num_to_str = [
         '1AnytimeLidar-CP75',
         '2VALO-CP75',
         #'3VALO-ARR',
-        '3VALO-CP100',
+        '0',
         '4VALO-NF-CP75',
         '5CenterPoint100',
         '6CenterPoint200',
         '7VALO-NSNF-CP75',
         '8VoxelNext75',
         '9VALO-VN75',
+        '0',
+        '1VALO-CP100',
+        '2VALO-CP75-BLTP',
+        '3VALO-VN75-BLTP',
 ]
 
 method_remap = {
-        0:0, 2:2, 10:1, 3:10, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 11:3
+        0:0, 2:2, 10:1, 3:10, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 11:3, 12:12, 13:13
 }
 
 if __name__ == '__main__':
@@ -121,6 +125,7 @@ if __name__ == '__main__':
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'VoxelNext75',
             'VALO-VN75',
+            'VALO-VN75-BLTP',
     ]})
 
 #    plot_sets.append({ nm:exps_dict[nm] for nm in [ \

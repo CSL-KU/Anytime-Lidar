@@ -146,12 +146,14 @@ class AnytimeCalibrator():
             # plot voxel to time graph
             bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
             bb3d_voxels = all_voxels[:, :1]
-            sort_indexes = np.argsort(bb3d_times)
-            bb3d_times_ = bb3d_times[sort_indexes][0::10]
-            bb3d_voxels_ = bb3d_voxels[sort_indexes][0::10]
+            bb3d_times_ = bb3d_times.flatten()
+            bb3d_voxels_ = bb3d_voxels.flatten()
+            sort_indexes = np.argsort(bb3d_times_)
+            bb3d_times_ = bb3d_times_[sort_indexes][0::10]
+            bb3d_voxels_ = bb3d_voxels_[sort_indexes][0::10]
             plt.scatter(bb3d_voxels_, bb3d_times_)
             plt.xlim([0, 70000])
-            plt.ylim([0, 75])
+            plt.ylim([0, 300])
             plt.xlabel('Number of voxels', fontsize='x-large')
             plt.ylabel('3DBB Execution time (ms)', fontsize='x-large')
             plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime_jorin.pdf')

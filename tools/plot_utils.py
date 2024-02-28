@@ -359,25 +359,21 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
 
     #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
 
-
-
-
-
 def plot_func_bb3d_time_diff(out_path, exps_dict):
     # compare execution times end to end
+    fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
         if 'bb3d_preds' not in evals[0] or not evals[0]['bb3d_preds']:
             continue
-
         #evals = evals[:4] # use periods 100 150 200 250
 
-        fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
         labels = []
         for e in evals:
-            if e['deadline_msec'] == -1000:
+            m = e['method']
+            if m == 2 or m == 9:
                 labels.append('History-based')
-            elif e['deadline_msec'] == -3000:
-                labels.append('Linear')
+            elif m == 12 or m == 13:
+                labels.append('Quadratic')
             else:
                 continue
                 labels.append(f"VALO {str(e['deadline_msec'])}"
@@ -403,14 +399,14 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
             cdf = np.cumsum(hist * np.diff(bin_edges))
             ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
 
-        ax.set_ylabel('CDF', fontsize='large')
-        ax.set_xlabel('Actual - Predicted execution time (msec)', fontsize='large')
-        ax.legend()
-        ax.grid('True', ls='--')
-        #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
-        #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
-        #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
-        plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.pdf")
+    ax.set_ylabel('CDF', fontsize='large')
+    ax.set_xlabel('Actual - Predicted execution time (msec)', fontsize='large')
+    ax.legend()
+    ax.grid('True', ls='--')
+    #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
+    #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
+    #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
+    plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.pdf")
 
 
 def plot_func_area_processed(out_path, exps_dict):
