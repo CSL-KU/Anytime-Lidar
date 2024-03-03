@@ -16,7 +16,9 @@ class VoxelNeXt(Detector3DTemplate):
         self.update_time_dict( {
                 'VFE': [],
                 'Backbone3D':[],
-                'VoxelHead': [],})
+                'VoxelHead-conv': [],
+                'VoxelHead-post': [],
+                })
 
     def forward(self, batch_dict):
         self.measure_time_start('VFE')
@@ -27,9 +29,12 @@ class VoxelNeXt(Detector3DTemplate):
         batch_dict = self.backbone_3d(batch_dict)
         self.measure_time_end('Backbone3D')
 
-        self.measure_time_start('VoxelHead')
-        batch_dict = self.dense_head(batch_dict)
-        self.measure_time_end('VoxelHead')
+        self.measure_time_start('VoxelHead-conv')
+        batch_dict = self.dense_head.forward_conv(batch_dict)
+        self.measure_time_end('VoxelHead-conv')
+        self.measure_time_start('VoxelHead-post')
+        batch_dict = self.dense_head.forward_post(batch_dict)
+        self.measure_time_end('VoxelHead-post')
 
         if self.training:
             loss, tb_dict, disp_dict = self.get_training_loss()

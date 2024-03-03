@@ -43,7 +43,7 @@ class SeparateHead(nn.Module):
 
     def forward_hm(self, x):
         hm_out = self.__getattr__('hm')(x).features
-        return {'hm': hm_out if self.training else hm_out.sigmoid()}
+        return {'hm': hm_out}
 
     def forward_attr(self, x):
         ret_dict = {}
@@ -124,6 +124,19 @@ class VoxelNeXtHead(nn.Module):
         self.predict_boxes_when_training = predict_boxes_when_training
         self.forward_ret_dict = {}
         self.build_losses()
+
+        self.det_dict_copy = {
+            "pred_boxes": torch.zeros([0, 9], dtype=torch.float, device='cuda'),
+            "pred_scores": torch.zeros([0], dtype=torch.float, device='cuda'),
+            "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
+        }
+
+    def get_empty_det_dict(self):
+        det_dict = {}
+        for k,v in self.det_dict_copy.items():
+            det_dict[k] = v.clone().detach()
+        return det_dict
+
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossSparse())
@@ -436,7 +449,7 @@ class VoxelNeXtHead(nn.Module):
 
         return batch_hm, batch_center, batch_center_z, batch_dim, batch_rot_cos, batch_rot_sin, batch_vel, None, voxel_indices_
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts, voxel_indices, spatial_shape, projections):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, voxel_indices, spatial_shape, projections, optimized):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -447,11 +460,21 @@ class VoxelNeXtHead(nn.Module):
             'pred_ious': [],
         } for k in range(batch_size)]
         for idx, pred_dict in enumerate(pred_dicts):
+
+            if 'center' not in pred_dict:
+                # no dets from this dethead, use projections or empty result instead
+                if projections is not None:
+                    # Add the projections if they exist, no need do NMS
+                    assert batch_size == 1
+                    for k in projections[idx].keys():
+                        ret_dict[0][k].append(projections[idx][k])
+                continue
+
             if self.double_flip:
                 batch_hm, batch_center, batch_center_z, batch_dim, batch_rot_cos, batch_rot_sin, batch_vel, batch_iou, voxel_indices_ = \
                 self.merge_double_flip(pred_dict, batch_size, voxel_indices.clone(), spatial_shape)
             else:
-                batch_hm = pred_dict['hm'].sigmoid()
+                batch_hm = pred_dict['hm'] if optimized else pred_dict['hm'].sigmoid()
                 batch_center = pred_dict['center']
                 batch_center_z = pred_dict['center_z']
                 batch_dim = pred_dict['dim'].exp()
@@ -459,10 +482,14 @@ class VoxelNeXtHead(nn.Module):
                 batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
                 batch_iou = (pred_dict['iou'] + 1) * 0.5 if self.iou_branch else None
                 batch_vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
-                voxel_indices_ = voxel_indices
+                if optimized:
+                    voxel_indices_ = voxel_indices[idx]
+                else:
+                    voxel_indices_ = voxel_indices
 
             final_pred_dicts = centernet_utils.decode_bbox_from_voxels_nuscenes(
-                batch_size=batch_size, indices=voxel_indices_,
+                batch_size=batch_size,
+                indices=voxel_indices_,
                 obj=batch_hm, 
                 rot_cos=batch_rot_cos,
                 rot_sin=batch_rot_sin,
@@ -499,16 +526,22 @@ class VoxelNeXtHead(nn.Module):
                 ret_dict[k]['pred_ious'].append(final_dict['pred_ious'])
 
         for k in range(batch_size):
-            pred_boxes = torch.cat(ret_dict[k]['pred_boxes'], dim=0)
-            pred_scores = torch.cat(ret_dict[k]['pred_scores'], dim=0)
-            pred_labels = torch.cat(ret_dict[k]['pred_labels'], dim=0)
-            if self.iou_branch:
-                pred_ious = torch.cat(ret_dict[k]['pred_ious'], dim=0)
-                pred_boxes, pred_scores, pred_labels = self.rotate_class_specific_nms_iou(pred_boxes, pred_scores, pred_ious, pred_labels, self.rectifier, self.nms_configs)
+            if not ret_dict[k]['pred_boxes']:
+                ret_dict[k] = self.get_empty_det_dict()
+            else:
+                pred_boxes = torch.cat(ret_dict[k]['pred_boxes'], dim=0)
+                pred_scores = torch.cat(ret_dict[k]['pred_scores'], dim=0)
+                pred_labels = torch.cat(ret_dict[k]['pred_labels'], dim=0)
+                if self.iou_branch:
+                    pred_ious = torch.cat(ret_dict[k]['pred_ious'], dim=0)
+                    pred_boxes, pred_scores, pred_labels = \
+                            self.rotate_class_specific_nms_iou(pred_boxes, \
+                            pred_scores, pred_ious, pred_labels, \
+                            self.rectifier, self.nms_configs)
 
-            ret_dict[k]['pred_boxes'] = pred_boxes
-            ret_dict[k]['pred_scores'] = pred_scores
-            ret_dict[k]['pred_labels'] = pred_labels + 1
+                ret_dict[k]['pred_boxes'] = pred_boxes
+                ret_dict[k]['pred_scores'] = pred_scores
+                ret_dict[k]['pred_labels'] = pred_labels + 1
 
         return ret_dict
 
@@ -557,47 +590,36 @@ class VoxelNeXtHead(nn.Module):
         
         pred_dicts = []
         if optimized:
+            #NOTE optimization assumes all kernel sizes are 1 for attr convs
             pred_dicts = [head.forward_hm(x) for head in self.heads_list]
 
+            # All batch_hm has same size in the first dim, but differ in second
             post_process_cfg = self.model_cfg.POST_PROCESSING
-            topk_outputs=[]
-            print('****')
+            masks, new_voxel_indices = [], []
+
             for pd in pred_dicts:
-                batch_hm = pd['hm']
-                scores, inds, class_ids = centernet_utils._topk_1d(None,
-                        data_dict['batch_size'], batch_index, batch_hm,
-                        K=min(batch_hm.size(0), post_process_cfg.MAX_OBJ_PER_SAMPLE),
-                        nuscenes=True)
-                # Filter scores
-                #print(scores.size(), scores)
-                mask = (scores.flatten() > post_process_cfg.SCORE_THRESH)
-                scores, inds, class_ids = scores[:,mask], inds[:,mask], class_ids[:,mask]
-                topk_outputs.append((scores, inds, class_ids))
-                #print(inds.size(), inds) # assume it is h_idx * W + w_idx
-                H, W = x.spatial_shape # assume batch size of 1
-                #h_coords = inds // W
-                #w_coords = inds % W
-                #hw_coords = torch.cat((h_coords, w_coords))
-                torch.cuda.synchronize()
-                t1 = time.time()
-                x_inds = x.indices.int().clone().detach()
-                x_inds = x_inds[:,1] * W + x_inds[:,2]
+                pd['hm'] = pd['hm'].sigmoid()
+                # apply the score threshold to batch_hm
+                mask = torch.any(pd['hm'] > post_process_cfg.SCORE_THRESH, dim=-1)
+                masks.append(mask)
 
-                topk_inds = inds.flatten().int()
-                inds_filter = cuda_point_tile_mask.point_tile_mask(x_inds, topk_inds - W - 1)
-                for i in range(1,3):
-                    inds_tmp = topk_inds + W*(i-1)
-                    for j in range(3):
-                        f = cuda_point_tile_mask.point_tile_mask(x_inds, inds_tmp + (j-1))
-                        inds_filter = torch.logical_or(inds_filter, f)
-                x_copy = copy.deepcopy(x) # would this work?
-                x_copy_indices = x_inds[inds_filter]
-                torch.cuda.synchronize()
-                t2 = time.time()
-                print((t2-t1)*1000, 'ms') # takes 4 ms, too much...
-            # TODO Combine inds, reduce input, forward attr convs
+            s1, s2 = x.features.size(1), voxel_indices.size(1)
+            merged = torch.cat((x.features, voxel_indices.float()), dim=1)
 
-            data_dict['topk_outputs'] = topk_outputs
+            masked_hm_l = [pd['hm'][mask] for pd, mask \
+                    in zip(pred_dicts, masks)]
+
+            for pd, head, masked_hm, mask in zip(pred_dicts, self.heads_list, \
+                    masked_hm_l, masks):
+                pd['hm'] = masked_hm
+                if masked_hm.size(0) > 0:
+                    merged_masked = merged[mask]
+                    x_reduced = spconv.SparseConvTensor(merged_masked[:, :s1],
+                            merged_masked[:, s1:s1+s2].int(), spatial_shape, batch_size=1)
+                    pd.update(head.forward_attr(x_reduced))
+                    new_voxel_indices.append(x_reduced.indices)
+                else:
+                    new_voxel_indices.append(None)
 
         else:
             for head in self.heads_list:
@@ -610,7 +632,8 @@ class VoxelNeXtHead(nn.Module):
             self.forward_ret_dict['target_dicts'] = target_dict
 
         self.forward_ret_dict['pred_dicts'] = pred_dicts
-        self.forward_ret_dict['voxel_indices'] = voxel_indices
+        self.forward_ret_dict['voxel_indices'] = new_voxel_indices if optimized \
+                else voxel_indices
 
         return data_dict
 
@@ -626,7 +649,8 @@ class VoxelNeXtHead(nn.Module):
             pred_dicts = self.generate_predicted_boxes(
                 data_dict['batch_size'], 
                 pred_dicts, voxel_indices, spatial_shape,
-                projections=data_dict.get('projections_nms', None)
+                projections=data_dict.get('projections_nms', None),
+                optimized=isinstance(voxel_indices, list)
             )
 
             if self.predict_boxes_when_training:
@@ -640,5 +664,5 @@ class VoxelNeXtHead(nn.Module):
 
         return data_dict
 
-    def forward(self, data_dict):
-        return self.forward_post(self.forward_conv(data_dict))
+    def forward(self, data_dict, optimized=False):
+        return self.forward_post(self.forward_conv(data_dict, optimized))

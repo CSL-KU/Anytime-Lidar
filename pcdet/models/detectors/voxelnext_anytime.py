@@ -37,7 +37,7 @@ class VoxelNeXtAnytime(AnytimeTemplateV2):
         batch_dict = self.backbone_3d(batch_dict)
         self.measure_time_end('Backbone3D')
         self.measure_time_start('VoxelHead-conv')
-        batch_dict = self.dense_head.forward_conv(batch_dict)
+        batch_dict = self.dense_head.forward_conv(batch_dict, optimized=True)
         self.measure_time_end('VoxelHead-conv')
         self.measure_time_start('Sched2')
         batch_dict = self.schedule2(batch_dict)
