@@ -41,7 +41,7 @@ method_num_to_str = [
         '9VALO-CP100',
 ]
 
-method_remap = {i:i for i in range(method_num_to_str)}
+method_remap = {i:i for i in range(len(method_num_to_str))}
 
 if __name__ == '__main__':
     inp_dir = sys.argv[1]
@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint75',
-            'AnytimeLidar-CP75',
+    #        'AnytimeLidar-CP75',
             'VALO-CP75',
     ]})
 
@@ -92,8 +92,8 @@ if __name__ == '__main__':
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint75',
-            'VALO-NSNF-CP75',
-            'VALO-NF-CP75',
+   #         'VALO-NSNF-CP75',
+   #         'VALO-NF-CP75',
             'VALO-BLTP-CP75',
             'VALO-CP75',
     ]})

@@ -370,9 +370,9 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         labels = []
         for e in evals:
             m = e['method']
-            if m == 2 or m == 9:
+            if m == 4 or m == 6:
                 labels.append('History-based')
-            elif m == 12 or m == 13:
+            elif m == 5 or m == 7:
                 labels.append('Quadratic')
             else:
                 continue
@@ -382,8 +382,8 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         #labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
         bb3d_pred_err = [np.array(e['exec_times']['Backbone3D']) - np.array(e['bb3d_preds']) \
                 for e in evals]
-        if 'VoxelHead-conv' in evals[0]['exec_times']:
-            bb3d_pred_err2 = [np.array(e['exec_times']['VoxelHead-conv']) for e in evals]
+        if 'VoxelHead-conv-hm' in evals[0]['exec_times']:
+            bb3d_pred_err2 = [np.array(e['exec_times']['VoxelHead-conv-hm']) for e in evals]
             bb3d_pred_err = [e1 + e2 for e1, e2 in zip(bb3d_pred_err, bb3d_pred_err2)]
         #bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
 
