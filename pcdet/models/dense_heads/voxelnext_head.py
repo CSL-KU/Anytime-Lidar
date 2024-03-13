@@ -11,7 +11,6 @@ import copy
 from easydict import EasyDict
 import time
 
-
 class SeparateHead(nn.Module):
     def __init__(self, input_channels, sep_head_dict, kernel_size, init_bias=-2.19, use_bias=False):
         super().__init__()
@@ -578,8 +577,79 @@ class VoxelNeXtHead(nn.Module):
 
         return spatial_shape, batch_index, voxel_indices, spatial_indices, num_voxels
 
+    # Optimized!
+    def forward_conv_hm(self, data_dict):
+        x = data_dict['encoded_spconv_tensor']
 
-    def forward_conv(self, data_dict, optimized=False):
+        spatial_shape, batch_index, voxel_indices, spatial_indices,\
+                num_voxels = self._get_voxel_infos(x)
+        data_dict['voxel_infos'] = (spatial_shape, batch_index, voxel_indices, \
+                spatial_indices, num_voxels)
+        self.forward_ret_dict['batch_index'] = batch_index
+
+        pred_dicts = []
+        #NOTE optimization assumes all kernel sizes are 1 for attr convs
+        pred_dicts = [head.forward_hm(x) for head in self.heads_list]
+
+        # All batch_hm has same size in the first dim, but differ in second
+        post_process_cfg = self.model_cfg.POST_PROCESSING
+        masks= []
+
+        for pd in pred_dicts:
+            pd['hm'] = pd['hm'].sigmoid()
+            # apply the score threshold to batch_hm
+            mask = torch.any(pd['hm'] > post_process_cfg.SCORE_THRESH, dim=-1)
+            masks.append(mask)
+
+        s1, s2 = x.features.size(1), voxel_indices.size(1)
+        merged = torch.cat((x.features, voxel_indices.float()), dim=1)
+
+        masked_hm_l = [pd['hm'][mask] for pd, mask \
+                in zip(pred_dicts, masks)]
+
+        reduced_x_list = []
+        for pd, masked_hm, mask in zip(pred_dicts, masked_hm_l, masks):
+            pd['hm'] = masked_hm
+            if masked_hm.size(0) > 0:
+                merged_masked = merged[mask]
+                x_reduced = spconv.SparseConvTensor(merged_masked[:, :s1],
+                        merged_masked[:, s1:s1+s2].int(), spatial_shape, batch_size=1)
+                reduced_x_list.append(x_reduced)
+            else:
+                reduced_x_list.append(None)
+
+        data_dict['reduced_x_list'] = reduced_x_list
+        data_dict['pred_dicts_hm'] = pred_dicts
+
+        return data_dict
+
+    # Optimized!
+    def forward_conv_rest(self, data_dict):
+        reduced_x_list = data_dict['reduced_x_list']
+        pred_dicts = data_dict['pred_dicts_hm']
+        new_voxel_indices = []
+        for pd, head, x_reduced in zip(pred_dicts, self.heads_list, reduced_x_list):
+            if x_reduced is not None:
+                pd.update(head.forward_attr(x_reduced))
+                new_voxel_indices.append(x_reduced.indices)
+            else:
+                new_voxel_indices.append(None)
+
+        if self.training:
+            spatial_shape, batch_index, voxel_indices, spatial_indices, num_voxels = \
+                     data_dict['voxel_infos']
+            target_dict = self.assign_targets(
+                data_dict['gt_boxes'], num_voxels, spatial_indices, spatial_shape
+            )
+            self.forward_ret_dict['target_dicts'] = target_dict
+
+        self.forward_ret_dict['pred_dicts'] = pred_dicts
+        self.forward_ret_dict['voxel_indices'] = new_voxel_indices
+
+        return data_dict
+
+    # Unoptimized
+    def forward_conv(self, data_dict):
         x = data_dict['encoded_spconv_tensor']
 
         spatial_shape, batch_index, voxel_indices, spatial_indices,\
@@ -589,41 +659,8 @@ class VoxelNeXtHead(nn.Module):
         self.forward_ret_dict['batch_index'] = batch_index
         
         pred_dicts = []
-        if optimized:
-            #NOTE optimization assumes all kernel sizes are 1 for attr convs
-            pred_dicts = [head.forward_hm(x) for head in self.heads_list]
-
-            # All batch_hm has same size in the first dim, but differ in second
-            post_process_cfg = self.model_cfg.POST_PROCESSING
-            masks, new_voxel_indices = [], []
-
-            for pd in pred_dicts:
-                pd['hm'] = pd['hm'].sigmoid()
-                # apply the score threshold to batch_hm
-                mask = torch.any(pd['hm'] > post_process_cfg.SCORE_THRESH, dim=-1)
-                masks.append(mask)
-
-            s1, s2 = x.features.size(1), voxel_indices.size(1)
-            merged = torch.cat((x.features, voxel_indices.float()), dim=1)
-
-            masked_hm_l = [pd['hm'][mask] for pd, mask \
-                    in zip(pred_dicts, masks)]
-
-            for pd, head, masked_hm, mask in zip(pred_dicts, self.heads_list, \
-                    masked_hm_l, masks):
-                pd['hm'] = masked_hm
-                if masked_hm.size(0) > 0:
-                    merged_masked = merged[mask]
-                    x_reduced = spconv.SparseConvTensor(merged_masked[:, :s1],
-                            merged_masked[:, s1:s1+s2].int(), spatial_shape, batch_size=1)
-                    pd.update(head.forward_attr(x_reduced))
-                    new_voxel_indices.append(x_reduced.indices)
-                else:
-                    new_voxel_indices.append(None)
-
-        else:
-            for head in self.heads_list:
-                pred_dicts.append(head(x))
+        for head in self.heads_list:
+            pred_dicts.append(head(x))
 
         if self.training:
             target_dict = self.assign_targets(
@@ -632,8 +669,7 @@ class VoxelNeXtHead(nn.Module):
             self.forward_ret_dict['target_dicts'] = target_dict
 
         self.forward_ret_dict['pred_dicts'] = pred_dicts
-        self.forward_ret_dict['voxel_indices'] = new_voxel_indices if optimized \
-                else voxel_indices
+        self.forward_ret_dict['voxel_indices'] = voxel_indices
 
         return data_dict
 
@@ -664,5 +700,5 @@ class VoxelNeXtHead(nn.Module):
 
         return data_dict
 
-    def forward(self, data_dict, optimized=False):
-        return self.forward_post(self.forward_conv(data_dict, optimized))
+    def forward(self, data_dict):
+        return self.forward_post(self.forward_conv(data_dict))

@@ -14,18 +14,14 @@ TABLES_PATH="nusc_tables_and_dicts/$period"
 rm -rf $TABLES_PATH
 mkdir -p "$TABLES_PATH/tables"
 
-if [ $DATASET_PERIOD == 500 ]; then
-	cp ../data/nuscenes/v1.0-$DATASET/v1.0-$DATASET/* $TABLES_PATH/tables
-else
-	python nusc_dataset_utils.py populate_annos_v2 50
-	mv -f sample.json sample_data.json instance.json ego_pose.json \
+python nusc_dataset_utils.py populate_annos_v2 50
+mv -f sample.json sample_data.json instance.json ego_pose.json \
+	sample_annotation.json scene.json "$TABLES_PATH/tables"
+nusc_link_tables "$TABLES_PATH/tables"
+if [ $period != 50 ]; then
+	python nusc_dataset_utils.py prune_annos $period
+	mv -f sample.json sample_data.json instance.json  ego_pose.json \
 		sample_annotation.json scene.json "$TABLES_PATH/tables"
-	nusc_link_tables "$TABLES_PATH/tables"
-	if [ $period != 50 ]; then
-		python nusc_dataset_utils.py prune_annos $period
-		mv -f sample.json sample_data.json instance.json  ego_pose.json \
-			sample_annotation.json scene.json "$TABLES_PATH/tables"
-	fi
 fi
 
 python nusc_dataset_utils.py generate_dicts

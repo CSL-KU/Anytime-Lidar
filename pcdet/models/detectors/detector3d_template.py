@@ -32,6 +32,17 @@ def pre_forward_hook(module, inp_args):
     data_dicts = [module.dataset.getitem_pre(i) for i in dataset_indexes]
     #data_dict = module.dataset.getitem_pre(dataset_index)
 
+    latest_token = data_dicts[0]['metadata']['token']
+    if module.deadline_range is not None and not module.is_calibrating():
+        #Determine the dynamic deadline for this scene
+        scene_name = module.token_to_scene_name[latest_token]
+        dl_scale = (all_speed_scenes.index(scene_name)) / (len(all_speed_scenes) - 1)
+        dr = module.deadline_range
+        deadline_sec = ((dr[1] - dr[0]) * dl_scale + dr[0]) / 1000.0
+    else:
+        deadline_sec = module._eval_dict['deadline_sec']
+
+
     # NOTE The following prevents orin from spending unnecessary 50 ms
     # for tensor initialization, seems like a BUG
     dummy_tensor = torch.zeros(1024*1024, device='cuda')
@@ -41,7 +52,11 @@ def pre_forward_hook(module, inp_args):
     torch.cuda.nvtx.range_push('End-to-end')
     module.measure_time_start('End-to-end')
     module.measure_time_start('PreProcess')
-
+    deadline_sec_override, reset = module.initialize(latest_token)
+    if reset:
+        module.latest_batch_dict = None
+        module.latest_valid_dets = None
+        module.dl_miss_streak = 0
     #module.measure_time_start('GetitemPost')
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
     #data_dict = module.dataset.getitem_post(data_dict)
@@ -52,20 +67,14 @@ def pre_forward_hook(module, inp_args):
     #module.measure_time_start('LoadToGPU')
     load_data_to_gpu(batch_dict)
     #module.measure_time_end('LoadToGPU')
-
-    if module.deadline_range is not None and not module.calibrating:
-        #Determine the dynamic deadline for this scene
-        latest_token = batch_dict['metadata'][0]['token']
-        scene_name = module.token_to_scene_name[latest_token]
-        dl_scale = (all_speed_scenes.index(scene_name)) / len(all_speed_scenes)
-        dr = module.deadline_range
-        batch_dict['deadline_sec'] = ((dr[1] - dr[0]) * dl_scale + dr[0]) / 1000.0
-    else:
-        batch_dict['deadline_sec'] = module._eval_dict['deadline_sec']
     #batch_dict.update(extra_batch)  # deadline, method, etc.
+
+    # if deadline is set in the init to override, use that, otherwise, use the regular one
+    batch_dict['deadline_sec'] = deadline_sec_override if deadline_sec_override != 0. else deadline_sec
     batch_dict['start_time_sec'] = start_time
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
 
+    torch.cuda.synchronize()
     module.measure_time_end('PreProcess')
     return batch_dict
 
@@ -88,6 +97,12 @@ def post_forward_hook(module, inp_args, outp_args):
     module.measure_time_end('End-to-end')
     torch.cuda.nvtx.range_pop()
 
+    if 'bb3d_layer_time_events' in batch_dict and \
+            'bb3d_layer_times' in module.add_dict:
+        events = batch_dict['bb3d_layer_time_events']
+        times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
+        module.add_dict['bb3d_layer_times'].append(times)
+
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
     tdiff = round(module.finish_time - batch_dict['abs_deadline_sec'], 3)
@@ -96,7 +111,7 @@ def post_forward_hook(module, inp_args, outp_args):
     dl_missed = (tdiff > 0)
 
    # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
-    ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
+    ignore_dl_miss = module.is_calibrating() or (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
     if not ignore_dl_miss and not module.do_streaming_eval:
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
@@ -115,9 +130,12 @@ def post_forward_hook(module, inp_args, outp_args):
         else:
             module.dl_miss_streak = 0
             module.latest_valid_dets = pred_dicts
-        if module.dl_miss_streak == 10: # if miss the deadline for 10 samples, clear the buffer
+        # total 2 seconds
+        if module.dl_miss_streak == round(2000 / module.data_period_ms):
             #clear the buffer
             module.latest_valid_dets = None
+    else:
+        module.latest_valid_dets = pred_dicts
 
     #tm = module.finish_time - module.psched_start_time
     #module._eval_dict['additional']['PostSched'].append(tm)
@@ -151,6 +169,8 @@ class Detector3DTemplate(nn.Module):
        
         self._eval_dict = {}
         self._eval_dict['additional'] = {}
+        self.add_dict = self._eval_dict['additional']
+
         if self.model_cfg.get('DEADLINE_SEC', None) is not None:
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
             self._eval_dict['deadline_sec'] = self._default_deadline_sec
@@ -187,7 +207,6 @@ class Detector3DTemplate(nn.Module):
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
 
-
         self.do_streaming_eval = self.model_cfg.get('STREAMING_EVAL', False)
         if self.do_streaming_eval:
             print('Doing streaming evaluation!')
@@ -206,6 +225,19 @@ class Detector3DTemplate(nn.Module):
         self.latest_valid_dets = None
         self.dl_miss_streak = 0
         #self.psched_start_time = 0
+
+        self.calibrating = 0
+        self.prev_scene_token = ''
+        self.data_period_ms = int(os.getenv('DATASET_PERIOD', 500))
+
+    def initialize(self, latest_token : str) -> (float, bool):
+        scene_token = self.token_to_scene[latest_token]
+        if scene_token != self.prev_scene_token:
+            deadline_sec_override, reset = 0., True # don't do override for now
+        else:
+            deadline_sec_override, reset = 0., False
+        self.prev_scene_token = scene_token
+        return deadline_sec_override, reset 
 
     def train(self, mode=True):
         super().train(mode)
@@ -694,6 +726,7 @@ class Detector3DTemplate(nn.Module):
             ]
             new_events[0].record()
             self._cuda_event_dict[event_name_str].append(new_events)
+            torch.cuda.nvtx.range_push(event_name_str)
             return new_events
         else:
             self._time_dict[event_name_str].append(time.time())
@@ -701,6 +734,7 @@ class Detector3DTemplate(nn.Module):
     def measure_time_end(self, event_name_str, cuda_event=True):
         if cuda_event:
             self._cuda_event_dict[event_name_str][-1][1].record()
+            torch.cuda.nvtx.range_pop()
             return None
         else:
             time_elapsed = round((time.time() - self._time_dict[event_name_str][-1]) * 1000, 3)
@@ -767,6 +801,14 @@ class Detector3DTemplate(nn.Module):
     #    data_dict = self.dataset.collate_batch([self.dataset[dataset_index]])
     #    load_data_to_gpu(data_dict)
     #    return data_dict
+    def calibration_on(self):
+        self.calibrating+=1
+    
+    def calibration_off(self):
+        self.calibrating-=1
+
+    def is_calibrating(self):
+        return self.calibrating > 0
 
     def calibrate(self, batch_size=1):
         #data_dict = self.load_data_with_ds_index(0)
@@ -775,14 +817,13 @@ class Detector3DTemplate(nn.Module):
 
         # just do a regular forward first
         #data_dict["abs_deadline_sec"] = time.time () + 10.0
+        self.calibration_on()
         training = self.training
         self.eval()
 
-        self.calibrating=True
         self._eval_dict['deadline_sec'] = 10.0
         pred_dicts, recall_dict = self([i for i in range(batch_size)]) # this calls forward!
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
-        self.calibrating=False
 
         #Print full tensor sizes
         #print('\ndata_dict after forward:')
@@ -806,4 +847,5 @@ class Detector3DTemplate(nn.Module):
         print('Num params trainable:', sum(p.numel() for p in self.parameters() if p.requires_grad))
         if training:
             self.train()
-        return pred_dicts
+        self.calibration_off()
+        return None

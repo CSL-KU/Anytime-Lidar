@@ -26,12 +26,13 @@ def tile_coords_to_id(tile_coords):
 
 def get_stats(np_arr):
     min_, max_, mean_ = np.min(np_arr), np.max(np_arr), np.mean(np_arr)
+    perc1_ = np.percentile(np_arr, 1, method='lower')
     perc5_ = np.percentile(np_arr, 5, method='lower')
     perc95_ = np.percentile(np_arr, 95, method='lower')
     perc99_ = np.percentile(np_arr, 99, method='lower')
-    print("Min\t5Perc\tMean\t95Perc\t99Perc\tMax")
-    print(f'{min_:.2f}\t{perc5_:.2f}\t{mean_:.2f}\t{perc95_:.2f}\t{perc99_:.2f}\t{max_:.2f}')
-    return (min_, mean_, perc5_, perc95_, perc99_, max_)
+    print("Min\t1Perc\t5Perc\tMean\t95Perc\t99Perc\tMax")
+    print(f'{min_:.2f}\t{perc1_:.2f}\t{perc5_:.2f}\t{mean_:.2f}\t{perc95_:.2f}\t{perc99_:.2f}\t{max_:.2f}')
+    return (min_, mean_, perc1_, perc5_, perc95_, perc99_, max_)
 
 
 class AnytimeCalibrator():
@@ -56,6 +57,7 @@ class AnytimeCalibrator():
             self.bb3d_num_l_groups += 1 # detection head convolutions
 
         self.use_baseline_bb3d_predictor = self.model.use_baseline_bb3d_predictor
+        self.move_indscalc_to_init = self.model.move_indscalc_to_init
         if self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
             self.time_reg_intercepts = np.ones((1,), dtype=float)
@@ -63,64 +65,102 @@ class AnytimeCalibrator():
             self.time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
             self.time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
 
+            self.scale_num_voxels = False # False appears to be better!
             self.voxel_coeffs_over_layers = np.array([[1.] * self.num_tiles \
                     for _ in range(self.bb3d_num_l_groups)])
 
         # backbone2d and detection head heatmap convolutions
         # first elem unused
-        if self.model.use_voxelnext:
-            self.det_head_post_wcet_ms = .0
-            #self.bb3d_expected_max_error = 0.
-        else:
+        self.det_head_post_wcet_ms = .0
+        if not self.model.use_voxelnext:
             self.bb2d_times_ms = np.zeros((self.num_tiles+1,), dtype=float)
-            self.det_head_post_times_ms = np.zeros((2**self.num_det_heads,), dtype=float)
+
+        self.expected_bb3d_err = 0.
+        self.num_voxels_normalizer = 100000.
+        self.chosen_tiles_calib = 18
+
 
     # voxel dists should be [self.bb3d_num_l_groups, num_tiles]
     def commit_bb3d_updates(self, ctc, voxel_dists):
         voxel_dists = voxel_dists[:, ctc]
-        self.voxel_coeffs_over_layers[:, ctc] = voxel_dists / voxel_dists[0]
+        if self.scale_num_voxels:
+            self.voxel_coeffs_over_layers[:, ctc] = voxel_dists / voxel_dists[0]
+        else:
+            self.voxel_coeffs_over_layers[:, ctc] = voxel_dists
 
     # overhead on jetson-agx: 1 ms
     def pred_req_times_ms(self, vcount_area, tiles_queue, num_tiles): # [num_nonempty_tiles, num_max_tiles]
         if self.use_baseline_bb3d_predictor:
             assert self.time_reg_degree == 2
 
-            vcounts = vcount_area[0]
-            num_voxels = np.empty((tiles_queue.shape[0]),
-                    dtype=vcounts.dtype)
+            vcounts = vcount_area.flatten()
+            num_voxels = np.empty((tiles_queue.shape[0]),dtype=float)
             for i in range(len(tiles_queue)):
                 num_voxels[i] = np.sum(vcounts[tiles_queue[:i+1]])
 
-            num_voxels = np.expand_dims(num_voxels, -1)
-            num_voxels = np.concatenate((num_voxels, np.square(num_voxels)), axis=-1)
-            bb3d_time_preds = np.sum(num_voxels * self.time_reg_coeffs.flatten(),
+            num_voxels_n_ = np.expand_dims(num_voxels, -1) / self.num_voxels_normalizer
+            num_voxels_n_ = np.concatenate((num_voxels_n_, np.square(num_voxels_n_)), axis=-1)
+            bb3d_time_preds = np.sum(num_voxels_n_ * self.time_reg_coeffs.flatten(), \
                     axis=-1) +  self.time_reg_intercepts
         else:
-            vcounts = vcount_area * self.voxel_coeffs_over_layers
-            num_voxels = np.empty((tiles_queue.shape[0], vcounts.shape[0]), dtype=vcounts.dtype)
+            if self.scale_num_voxels:
+                vcounts = vcount_area * self.voxel_coeffs_over_layers 
+            else:
+                vcounts = self.voxel_coeffs_over_layers
+                vcounts[0] = vcount_area.flatten()
+            num_voxels = np.empty((tiles_queue.shape[0], vcounts.shape[0]), dtype=float)
             for i in range(len(tiles_queue)):
                 num_voxels[i] = np.sum(vcounts[:, tiles_queue[:i+1]], axis=1)
             if self.time_reg_degree == 1:
-                bb3d_time_preds = num_voxels * self.time_reg_coeffs.flatten() + \
+                bb3d_time_preds = num_voxels / self.num_voxels_normalizer * \
+                        self.time_reg_coeffs.flatten() + \
                         self.time_reg_intercepts
-                bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
             elif self.time_reg_degree == 2:
-                num_voxels = np.expand_dims(num_voxels, -1)
-                num_voxels = np.concatenate((num_voxels, np.square(num_voxels)), axis=-1)
-                bb3d_time_preds = np.sum(num_voxels * self.time_reg_coeffs, axis=-1) + \
+                num_voxels_n_ = np.expand_dims(num_voxels, -1) / self.num_voxels_normalizer
+                num_voxels_n_ = np.concatenate((num_voxels_n_, np.square(num_voxels_n_)), axis=-1)
+                bb3d_time_preds = np.sum(num_voxels_n_ * self.time_reg_coeffs, axis=-1) + \
                         self.time_reg_intercepts
-                bb3d_time_preds = np.sum(bb3d_time_preds, axis=-1)
 
         if self.model.use_voxelnext:
-            #return bb3d_time_preds + self.bb3d_expected_max_error, self.det_head_post_wcet_ms
-            return bb3d_time_preds, self.det_head_post_wcet_ms
+            return bb3d_time_preds + self.expected_bb3d_err, self.det_head_post_wcet_ms, \
+                    num_voxels
         else:
-            return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
-                    self.det_head_post_times_ms[-1]
+            return bb3d_time_preds + self.expected_bb3d_err, self.bb2d_times_ms[num_tiles] + \
+                    self.det_head_post_wcet_ms, num_voxels
 
     def pred_final_req_time_ms(self, dethead_indexes):
-        hid = tile_coords_to_id(dethead_indexes)
-        return self.det_head_post_times_ms[hid]
+        return self.det_head_post_wcet_ms
+
+    def fit_voxel_time_data(self, voxel_data, times_data):
+        coeffs, intercepts = [], []
+        for i in range(self.bb3d_num_l_groups): # should be 4, num bb3d conv blocks
+            voxels = voxel_data[:, i:i+1] / self.num_voxels_normalizer
+            times = times_data[:, i:i+1]
+
+            if self.time_reg_degree == 2:
+                voxels = np.concatenate((voxels, np.square(voxels)), axis=-1)
+            reg = LinearRegression().fit(voxels, times)
+
+            coeffs.append(reg.coef_.flatten())
+            intercepts.append(reg.intercept_[0])
+        return np.array(coeffs), np.array(intercepts)
+
+    def get_calib_data_arranged(self):
+        if self.calib_data_dict['version'] == 1:
+            bb3d_voxels_samples = self.calib_data_dict['bb3d_voxels']
+            exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
+
+            all_times, all_voxels = [], []
+            for bb3d_voxels_s, exec_times_ms_s in zip(bb3d_voxels_samples, exec_times_ms_samples):
+                all_voxels.extend(bb3d_voxels_s)
+                all_times.extend(exec_times_ms_s)
+        elif self.calib_data_dict['version'] == 2:
+            all_voxels = self.calib_data_dict['bb3d_voxels']
+            all_times = self.calib_data_dict['bb3d_time_ms']
+
+        all_times=np.array(all_times, dtype=float)
+        all_voxels=np.array(all_voxels, dtype=float)
+        return all_voxels, all_times
 
     def read_calib_data(self, fname='calib_data.json'):
         f = open(fname)
@@ -128,17 +168,9 @@ class AnytimeCalibrator():
         f.close()
 
         # Fit the linear model for bb3
-        #vcounts_samples = self.calib_data_dict['voxel_counts']
         bb3d_voxels_samples = self.calib_data_dict['bb3d_voxels']
         exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
-
-        all_times, all_voxels = [], []
-        for bb3d_voxels_s, exec_times_ms_s in zip(bb3d_voxels_samples, exec_times_ms_samples):
-            all_voxels.extend(bb3d_voxels_s)
-            all_times.extend(exec_times_ms_s)
-
-        all_times=np.array(all_times, dtype=float)
-        all_voxels=np.array(all_voxels, dtype=float)
+        all_voxels, all_times = self.get_calib_data_arranged()
         # As a baseline predictor, do linear regression using
         # the number of voxels
         if self.use_baseline_bb3d_predictor:
@@ -146,337 +178,104 @@ class AnytimeCalibrator():
             # plot voxel to time graph
             bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
             bb3d_voxels = all_voxels[:, :1]
-            bb3d_times_ = bb3d_times.flatten()
-            bb3d_voxels_ = bb3d_voxels.flatten()
-            sort_indexes = np.argsort(bb3d_times_)
-            bb3d_times_ = bb3d_times_[sort_indexes][0::10]
-            bb3d_voxels_ = bb3d_voxels_[sort_indexes][0::10]
-            plt.scatter(bb3d_voxels_, bb3d_times_)
+            plt.scatter(bb3d_voxels, bb3d_times, label='data')
             plt.xlim([0, 70000])
             plt.ylim([0, 300])
             plt.xlabel('Number of voxels', fontsize='x-large')
             plt.ylabel('3DBB Execution time (ms)', fontsize='x-large')
-            plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime_jorin.pdf')
-            print('Num voxel to exec time plot saved.')
 
+            bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
             if self.time_reg_degree == 2:
-                bb3d_voxels = np.concatenate((bb3d_voxels,
-                    np.square(bb3d_voxels)), axis=-1)
-            reg = LinearRegression().fit(bb3d_voxels, bb3d_times)
+                bb3d_voxels_n = np.concatenate((bb3d_voxels_n,
+                    np.square(bb3d_voxels_n)), axis=-1)
+            reg = LinearRegression().fit(bb3d_voxels_n, bb3d_times)
 
             self.time_reg_coeffs = reg.coef_
             self.time_reg_intercepts = reg.intercept_
+
+            pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
+                    axis=-1) +  self.time_reg_intercepts
+            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
+            plt.legend()
+            plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime.pdf')
         else:
-            # 2 bec second order: v, v_2
-            #self.time_reg_coeffs = np.empty((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
-            #self.time_reg_intercepts = np.empty((self.bb3d_num_l_groups,), dtype=float)
-            for i in range(self.bb3d_num_l_groups): # should be 4, num bb3d conv blocks
-                voxels = all_voxels[:, i:i+1]
-                times = all_times[:, i:i+1]
-
-                if self.time_reg_degree == 2:
-                    voxels = np.concatenate((voxels, np.square(voxels)), axis=-1)
-                reg = LinearRegression().fit(voxels, times)
-
-                self.time_reg_coeffs[i] = reg.coef_
-                self.time_reg_intercepts[i] = reg.intercept_
+            self.time_reg_coeffs, self.time_reg_intercepts = self.fit_voxel_time_data(all_voxels, all_times)
 
             # the input is voxels: [NUM_CHOSEN_TILES, self.bb3d_num_l_groups],
             # the output is times: [NUM_CHOSEN_TILEs, self.bb3d_num_l_groups]
-            all_voxels = np.expand_dims(all_voxels, -1)
-            all_voxels = np.concatenate((all_voxels, np.square(all_voxels)), axis=-1)
-            all_preds = np.sum(all_voxels * self.time_reg_coeffs, axis=-1) + self.time_reg_intercepts
-            diffs = all_preds - all_times
-            #self.bb3d_expected_max_error = 0.
-            #for i in range(self.bb3d_num_l_groups):
-            #    self.bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
-            #print('BB3D expected max error:', self.bb3d_expected_max_error)
+            all_voxels_n = np.expand_dims(all_voxels, -1) / self.num_voxels_normalizer
+            all_voxels_n = np.concatenate((all_voxels_n, np.square(all_voxels_n)), axis=-1)
+            all_preds = np.sum(all_voxels_n * self.time_reg_coeffs, axis=-1)
+            all_preds += self.time_reg_intercepts
+            diffs = all_times - all_preds
+            bb3d_expected_max_error = 0.
+            for i in range(self.bb3d_num_l_groups):
+                bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
+            print('BB3D expected perc99 error:', bb3d_expected_max_error)
 
-            # Predicting how voxel counts will change over layers is hard
-            # Use history to approximate
-            ctc_samples = self.calib_data_dict['chosen_tile_coords']
-            voxels_dataset = [[] for _ in range(self.num_tiles)]
-            for ctc_s, bb3d_v_s in zip(ctc_samples, bb3d_voxels_samples):
-                for ctc, bb3d_v in zip(ctc_s, bb3d_v_s):
-                    if len(ctc) == 1:
-                        # Normalize and append
-                        bb3d_v = np.array(bb3d_v, dtype=float)
-                        voxels_dataset[ctc[0]].append(bb3d_v / bb3d_v[0])
-                    else:
-                        break # skip to next sample
+        dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
+        self.det_head_post_wcet_ms = np.percentile(dh_post_time_data, \
+                99, method='lower')
+        print('det_head_post_wcet_ms', self.det_head_post_wcet_ms)
 
-            self.voxel_coeffs_over_layers = [sum(vd) / len(vd) for vd in voxels_dataset]
-            self.voxel_coeffs_over_layers = np.array(self.voxel_coeffs_over_layers).transpose()
-            print('coefficient that guess the changes in number of voxels in bb3d:')
-            print(self.voxel_coeffs_over_layers.T)
-
-        if self.model.use_voxelnext:
-            dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
-            self.det_head_post_wcet_ms = np.percentile(dh_post_time_data, \
-                    99, method='lower')
-            print('det_head_post_wcet_ms', self.det_head_post_wcet_ms)
-        else:
+        if not self.model.use_voxelnext:
             bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
             self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
                     for arr in bb2d_time_data])
             print('bb2d_times_ms')
             print(self.bb2d_times_ms)
-            dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
-            self.det_head_post_times_ms = np.array([np.percentile(arr if arr else [0], \
-                    99, method='lower') for arr in dh_post_time_data])
 
-            print('det_head_post_times_ms')
-            print(self.det_head_post_times_ms)
+    def get_chosen_tile_num(self):
+        return self.chosen_tiles_calib
 
-            tbl = np.array(self.bb2d_times_ms[1:]) + self.det_head_post_times_ms[-1]
-            tbl = np.round(tbl, 1)
-
-#            for i in range(tbl.shape[0]//3):
-#                for j in [0, 6, 12]:
-#                    print(f'\\textbf{{{i+j+1}}} & {tbl[i+j]} & ', end='')
-#                print('\\\\')
-
-    def get_points(self, index):
-        batch_dict = self.dataset.collate_batch([self.dataset[index]])
-        batch_dict['points'] = torch.from_numpy(batch_dict['points']).cuda()
-        assert 'batch_size' in batch_dict
-        return batch_dict
-
-    def process(self, batch_dict, record=True, noprint=False):
-        # I need to use cuda events to measure the time of each section
-        bb3d_times_ms, bb3d_voxels, bb2d_time_ms, det_head_post_time_ms, hid = [], [], 0., 0., 0
-        with torch.no_grad():
-            voxel_tile_coords = batch_dict['voxel_tile_coords']
-            chosen_tile_coords = batch_dict['chosen_tile_coords']
-            torch.cuda.synchronize()
-            if record:
-                e1, e2, e3 = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
-                batch_dict['record_time'] = True
-                batch_dict['record_int_vcounts'] = True
-                batch_dict['record_int_vcoords'] = not self.use_baseline_bb3d_predictor
-                batch_dict['tile_size_voxels'] = self.tile_size_voxels
-                batch_dict['num_tiles'] = self.num_tiles
-
-            tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
-                        torch.from_numpy(chosen_tile_coords).cuda())
-            for k in ('voxel_features', 'voxel_coords'):
-                batch_dict[k] = batch_dict[k][tile_filter].contiguous()
-
-            # it will sync itself when recording
-            batch_dict = self.model.backbone_3d(batch_dict)
-
-            if self.model.use_voxelnext:
-                #assert not self.use_baseline_bb3d_predictor
-                if record:
-                    bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
-                    bb3d_voxels = batch_dict['bb3d_num_voxels']
-                    e1.record()
-
-                    out = batch_dict['encoded_spconv_tensor']
-                    bb3d_voxels.append(out.indices.size(0)) # append num voxels
-                    #############
-                    if not self.use_baseline_bb3d_predictor:
-                        voxel_tile_coords = torch.div(out.indices[:, -1], \
-                                self.tile_size_voxels // 8, \
-                                rounding_mode='trunc')
-                        voxel_dist = torch.bincount(voxel_tile_coords, \
-                                minlength=self.num_tiles)
-                        # just for the sake of timing
-                        batch_dict['bb3d_intermediary_vcoords'].append( \
-                                voxel_dist.unsqueeze(0))
-                    #############
-                batch_dict = self.model.dense_head.forward_conv(batch_dict)
-                #batch_dict = self.model.schedule2(batch_dict)  # skip
-                if record:
-                    e2.record()
-
-                if self.model.enable_projection:
-                    batch_dict = self.model.schedule3(batch_dict) # projection
-                batch_dict = self.model.dense_head.forward_post(batch_dict)
-                del batch_dict['final_box_dicts'] # to prevent streaming eval projection
-                if record:
-                    e3.record()
-                    torch.cuda.synchronize()
-                    bb3d_times_ms.append(e1.elapsed_time(e2)) # append time
-                    det_head_post_time_ms = e2.elapsed_time(e3) # append time
-                hid = None
-
-            else:
-                if record:
-                    bb3d_times_ms = batch_dict['bb3d_layer_times_ms']
-                    bb3d_voxels = batch_dict['bb3d_num_voxels']
-                    e1.record()
-
-                batch_dict = self.model.map_to_bev(batch_dict)
-                batch_dict = self.model.backbone_2d(batch_dict)
-                if self.model.enable_projection:
-                    batch_dict = self.model.schedule3(batch_dict)
-                batch_dict = self.model.dense_head.forward_eval_conv(batch_dict)
-                batch_dict = self.model.dense_head.forward_eval_topk(batch_dict)
-
-                ## synchronized here
-                if record:
-                    e2.record()
-
-                batch_dict = self.model.dense_head.forward_eval_post(batch_dict)
-                pred_dicts = self.model.dense_head.generate_predicted_boxes_eval(
-                    batch_dict['batch_size'], batch_dict['pred_dicts'],
-                    batch_dict['projections_nms'], do_nms=True
-                )
-                #batch_dict['final_box_dicts'] = pred_dicts
-
-                if record:
-                    e3.record()
-
-                torch.cuda.synchronize()
-
-                if record:
-                    # timing doesn't change much
-                    #bb3d_time_ms = cuda_events[0].elapsed_time(cuda_events[1]) # return
-                    bb2d_time_ms = e1.elapsed_time(e2)
-
-                    # all possibilities are touched from what I see in the calib data
-                    det_head_post_time_ms = e2.elapsed_time(e3)
-                    hid = tile_coords_to_id(batch_dict['dethead_indexes'])
-
-        if record and not noprint:
-            print(f'Elapsed times: {bb3d_times_ms}, {bb2d_time_ms}'
-                    ', {det_head_post_time_ms}')
-
-        return bb3d_times_ms, bb3d_voxels, bb2d_time_ms, det_head_post_time_ms, hid
-
-    def collect_data(self, sched_algo, fname="calib_data.json"):
+    def collect_data_v2(self, sched_algo, fname="calib_data.json"):
         print('Calibration starting...')
         print('NUM_POINT_FEATURES:', self.model.vfe.num_point_features)
         print('POINT_CLOUD_RANGE:', self.model.vfe.point_cloud_range)
         print('VOXEL_SIZE:', self.model.vfe.voxel_size)
         print('GRID SIZE:', self.model.vfe.grid_size)
 
-        self.tile_size_voxels = torch.tensor(\
-                self.model.vfe.grid_size[1] / self.num_tiles).cuda().int()
-
-        # This inital processing is code to warmup the cache
-        batch_dict = self.get_points(1)
-        batch_dict = self.model.initialize(batch_dict)
-        batch_dict = self.model.vfe(batch_dict)
-        batch_dict['voxel_tile_coords'], ctc, _ = \
-                self.model.get_nonempty_tiles(batch_dict['voxel_coords'])
-        batch_dict['chosen_tile_coords'] = ctc
-        self.process(batch_dict, record=False, noprint=True)
-
-        samples = range(0, len(self.dataset), 4)
-        num_samples = len(samples)
+        num_samples = len(self.dataset)
         print('Number of samples:', num_samples)
 
-        # Let's try X scan!
-        scene_tokens = [None for _ in range(num_samples)]
-        voxel_counts_series = [list() for _ in range(num_samples)]
-        chosen_tc_series =  [list() for _ in range(num_samples)]
-        bb3d_time_series = [list() for _ in range(num_samples)]
-        bb3d_voxel_series = [list() for _ in range(num_samples)]
-
-        if self.model.use_voxelnext:
-            dh_post_time_data = []
-        else:
+        if not self.model.use_voxelnext:
             bb2d_time_data =  [list() for _ in range(self.bb2d_times_ms.shape[0])]
-            dh_post_time_data =  [list() for _ in range(self.det_head_post_times_ms.shape[0])]
+        dh_post_time_data = []
 
         gc.disable()
-        for sample_idx in samples:
-            sample_idx//=4
-            print(f'Processing sample {sample_idx}', end='', flush=True)
+        sample_idx, tile_num = 0, 1
+        while sample_idx < num_samples:
             time_begin = time.time()
+            print(f'Processing sample {sample_idx}-{sample_idx+10}', end='', flush=True)
 
-            batch_dict = self.get_points(sample_idx)
-            batch_dict = self.model.initialize(batch_dict)
-            scene_tokens[sample_idx] = self.model.token_to_scene[\
-                    batch_dict['metadata'][0]['token']]
-            batch_dict = self.model.schedule0(batch_dict)
-            batch_dict = self.model.vfe(batch_dict)
-
-            voxel_coords = batch_dict['voxel_coords']
-            voxel_features = batch_dict['voxel_features']
-
-            voxel_tile_coords, nonempty_tile_coords, voxel_counts = \
-                    self.model.get_nonempty_tiles(voxel_coords)
-            batch_dict['voxel_tile_coords'] = voxel_tile_coords
-
-            if sched_algo == SchedAlgo.RoundRobin:
-                all_tiles = np.concatenate((nonempty_tile_coords, nonempty_tile_coords))
-                all_voxel_counts= np.concatenate((voxel_counts, voxel_counts))
-                ntc_sz = nonempty_tile_coords.shape[0]
-                tiles_range = ntc_sz
-
-            # Process rest of the possibilities expect the final one
-            for tiles in range(1, tiles_range):
-                for start_idx in range(tiles_range):
-                    if sched_algo == SchedAlgo.RoundRobin:
-                        chosen_tile_coords = all_tiles[start_idx:(start_idx+tiles)]
-                        chosen_tc_series[sample_idx].append(chosen_tile_coords)
-                        chosen_voxel_counts = all_voxel_counts[start_idx:(start_idx+tiles)]
-                        nt = get_num_tiles(chosen_tile_coords)
-
-                    batch_dict['voxel_coords'] = voxel_coords
-                    batch_dict['voxel_features'] = voxel_features
-                    batch_dict['chosen_tile_coords'] = chosen_tile_coords
-                    bb3d_time, bb3d_voxels, bb2d_time, dh_post_time, hid = self.process(batch_dict,
-                            record=True, noprint=True)
-                    bb3d_time_series[sample_idx].append(bb3d_time)
-                    bb3d_voxel_series[sample_idx].append(bb3d_voxels)
-
-                    if self.model.use_voxelnext:
-                        dh_post_time_data.append(dh_post_time)
-                    else:
+            # Enforce a number of tile
+            for i in range(10):
+                if sample_idx < num_samples:
+                    self.chosen_tiles_calib = self.num_tiles if i == 0 else tile_num
+                    self.model([sample_idx])
+                    lbd = self.model.latest_batch_dict
+                    if not self.model.use_voxelnext:
+                        e1, e2 = lbd['bb2d_time_events']
+                        bb2d_time = e1.elapsed_time(e2)
+                        nt = get_num_tiles(lbd['chosen_tile_coords'])
                         bb2d_time_data[nt].append(bb2d_time)
-                        dh_post_time_data[hid].append(dh_post_time)
+                    e1, e2 = lbd['detheadpost_time_events']
+                    dh_post_time_data.append(e1.elapsed_time(e2))
+                    sample_idx += 1
+                    gc.collect()
+            tile_num = (tile_num % self.num_tiles) + 1
 
-                    vcounts = np.zeros((self.num_tiles,), dtype=chosen_voxel_counts.dtype)
-                    vcounts[chosen_tile_coords] = chosen_voxel_counts
-                    voxel_counts_series[sample_idx].append(vcounts)
-
-            # Finally, process the entire point cloud without filtering
-            chosen_tc_series[sample_idx].append(nonempty_tile_coords)
-
-            batch_dict['voxel_coords'] = voxel_coords
-            batch_dict['voxel_features'] = voxel_features
-            batch_dict['chosen_tile_coords'] = nonempty_tile_coords
-            bb3d_time, bb3d_voxels, bb2d_time, dh_post_time, hid = self.process(batch_dict,
-                    record=True, noprint=True)
-            bb3d_time_series[sample_idx].append(bb3d_time)
-            bb3d_voxel_series[sample_idx].append(bb3d_voxels)
-            if sched_algo == SchedAlgo.RoundRobin:
-                nt = get_num_tiles(nonempty_tile_coords)
-
-                if self.model.use_voxelnext:
-                    dh_post_time_data.append(dh_post_time)
-                else:
-                    bb2d_time_data[nt].append(bb2d_time)
-                    dh_post_time_data[hid].append(dh_post_time)
-
-                vcounts = np.zeros((self.num_tiles,), dtype=voxel_counts.dtype)
-                vcounts[nonempty_tile_coords] = voxel_counts
-                voxel_counts_series[sample_idx].append(vcounts)
-
-            gc.collect()
             time_end = time.time()
             #print(torch.cuda.memory_allocated() // 1024**2, "MB is being used by tensors.")
             print(f' took {round(time_end-time_begin, 2)} seconds.')
         gc.enable()
 
-        for i, vc_l in enumerate(voxel_counts_series):
-            for j, vc in enumerate(vc_l):
-                voxel_counts_series[i][j] = vc.tolist()
-                chosen_tc_series[i][j] = chosen_tc_series[i][j].tolist()
-
         self.calib_data_dict = {
-                "voxel_counts": voxel_counts_series,
-                "bb3d_time_ms": bb3d_time_series,
-                "bb3d_voxels": bb3d_voxel_series,
-                "scene_tokens": scene_tokens,
-                "chosen_tile_coords": chosen_tc_series,
+                "version": 2,
+                "bb3d_time_ms": self.model.add_dict['bb3d_layer_times'][1:],
+                "bb3d_voxels": self.model.add_dict['bb3d_voxel_nums'][1:],
+                "chosen_tile_coords": self.model.add_dict['chosen_tiles_1'][1:],
                 "det_head_post_time_ms": dh_post_time_data,
-                "num_tiles": self.num_tiles,
-                "num_det_heads" : self.num_det_heads,
         }
 
         if not self.model.use_voxelnext:
@@ -485,55 +284,6 @@ class AnytimeCalibrator():
         with open(fname, "w") as outfile:
             json.dump(self.calib_data_dict, outfile, indent=4)
 
-
-    def plot_data(self):
-        vcounts_samples = self.calib_data_dict['voxel_counts']
-        exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
-        bb3d_voxels_samples = self.calib_data_dict['bb3d_voxels']
-
-#        n = len(vcounts_samples)
-#        ets_max = np.empty((n,1), dtype=int)
-#        vcounts_all = np.empty((n, len(vcounts_samples[0][0])), dtype=float)
-#        min_et = 9999.9
-#        for i in range(n):
-#            vcounts_all[i] = vcounts_samples[i][-1]
-#            ets_max[i,0] = exec_times_ms_samples[i][-1]
-#            min_et = min(min(exec_times_ms_samples[i]), min_et)
-#        vcounts_all = np.array(vcounts_all)
-        #reg = LinearRegression().fit(vcounts_all, ets_max)
-        #ets_predicted = reg.predict(vcounts_all)
-        #diff = ets_max - ets_predicted
-        #get_stats(diff)
-
-#        reg = self.exec_time_model
-#
-#        colors='rgbcmyk'
-#        for sample_idx in range(len(vcounts_samples)):
-#            vcounts = np.array(vcounts_samples[sample_idx])
-#            num_voxels = vcounts.sum(1, keepdims=True)
-#
-#            pred_exec_times = reg.predict(vcounts)
-#            pred_exec_times = np.squeeze(np.sum(pred_exec_times, axis=1))
-#            #ets_predicted = reg.predict(vcounts[-1, None])
-#            #A = (ets_predicted - min_et) / num_voxels[-1]
-#            #pred_exec_times = A * num_voxels + min_et
-#            #pred_exec_times = np.squeeze(pred_exec_times)
-#            gt_exec_times = np.sum(np.array(exec_times_ms_samples[sample_idx]), axis=1)
-#            gt_exec_times = np.squeeze(gt_exec_times)
-#            diff = pred_exec_times - gt_exec_times
-#            get_stats(diff)
-#            plt.scatter(num_voxels, gt_exec_times, label="Actual")
-#            plt.scatter(num_voxels, pred_exec_times, label="Predicted")
-#            plt.xlim([0, 100000])
-#            plt.ylim([0, 200])
-#            plt.xlabel('Number of voxels')
-#            plt.ylabel('Execution time (ms)')
-#            plt.legend()
-#            plt.savefig(f'/root/Anytime-Lidar/tools/plots/data{sample_idx}.png')
-#            plt.clf()
-
-if __name__ == "__main__":
-    calibrator = AnytimeCalibrator(None)
-    calibrator.read_calib_data('/root/Anytime-Lidar/tools/calib_data_1.json')
-    calibrator.plot_data()
+        # Read and parse calib data after dumping
+        self.read_calib_data(fname)
 

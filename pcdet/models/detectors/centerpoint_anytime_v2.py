@@ -39,7 +39,7 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
                     'CenterHead-Post': [],
                     'CenterHead-GenBox': [],
                     'CenterHead': []})
-        self.calibrated = False
+        self.cudnn_calibrated = False
 
     def forward(self, batch_dict):
         # We are going to do projection earlier so the
@@ -51,8 +51,6 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
 
     def forward_eval(self, batch_dict):
         self.measure_time_start('VFE')
-        batch_dict = self.initialize(batch_dict)
-        batch_dict = self.schedule0(batch_dict)
         batch_dict = self.vfe(batch_dict, model=self)
         self.measure_time_end('VFE')
         self.measure_time_start('Sched1')
@@ -63,14 +61,19 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             batch_dict = self.backbone_3d(batch_dict)
             self.measure_time_end('Backbone3D')
 
+        if self.is_calibrating():
+            e1 = torch.cuda.Event(enable_timing=True)
+            e1.record()
+
         self.measure_time_start('Sched2')
         batch_dict = self.schedule2(batch_dict)
         self.measure_time_end('Sched2')
+
         self.measure_time_start('MapToBEV')
         batch_dict = self.map_to_bev(batch_dict)
         self.measure_time_end('MapToBEV')
 
-        if not self.calibrated and torch.backends.cudnn.benchmark:
+        if not self.cudnn_calibrated and torch.backends.cudnn.benchmark:
             self.calibrate_for_cudnn_benchmarking(batch_dict)
 
         self.measure_time_start('Backbone2D')
@@ -87,12 +90,18 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         self.measure_time_start('CenterHead-Topk')
         batch_dict = self.dense_head.forward_eval_topk(batch_dict)
         self.measure_time_end('CenterHead-Topk')
+
+        if self.is_calibrating():
+            e2 = torch.cuda.Event(enable_timing=True)
+            e2.record()
+            batch_dict['bb2d_time_events'] = [e1, e2]
+
         self.measure_time_start('CenterHead-Post')
         batch_dict = self.dense_head.forward_eval_post(batch_dict)
         self.measure_time_end('CenterHead-Post')
         self.measure_time_start('CenterHead-GenBox')
         pred_dicts = self.dense_head.generate_predicted_boxes_eval(
-            batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict['projections_nms'],
+            batch_dict['batch_size'], batch_dict['pred_dicts'], batch_dict.get('projections_nms', None),
             do_nms=(not streaming_eval)
         )
         batch_dict['final_box_dicts'] = pred_dicts
@@ -101,6 +110,11 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             batch_dict = self.dense_head.nms_after_gen(batch_dict)
         self.measure_time_end('CenterHead-GenBox')
         self.measure_time_end('CenterHead')
+
+        if self.is_calibrating():
+            e3 = torch.cuda.Event(enable_timing=True)
+            e3.record()
+            batch_dict['detheadpost_time_events'] = [e2, e3]
 
         return batch_dict
 
@@ -130,4 +144,4 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             dummy_dict = self.backbone_2d(dummy_dict)
             self.dense_head.forward_eval_conv(dummy_dict)
         print('done.')
-        self.calibrated = True
+        self.cudnn_calibrated = True

@@ -2,18 +2,18 @@ import numba
 import numpy as np
 
 class SchedAlgo:
-    # Unless a number is used, 18 tiles are the default
-    ProjectionOnly = 0
-    RoundRobin = 2
-    RoundRobin_NoProj = 4
-    # 5 and 6 are other baselines 01 and 02
-    RoundRobin_NoSchedNoProj = 7
-    # 8 is VoxelNeXt baseline
-    RoundRobin_VN = 9  # VoxelNeXt
+    # methods 0 1 2 are the CP baselines with different voxel sizes
+    # method 3 is VN baseline
+    RoundRobin = 4 # Unless a number is used, 18 tiles are the default
+    RoundRobin_BLTP = 5  # Same as RoundRobin, time prediction of 3D BB is based on quadratic order equation
+    RoundRobin_VN = 6  # VoxelNeXt
+    RoundRobin_VN_BLTP = 7
+    RoundRobin_NoProj = 8
+    RoundRobin_NoSchedNoProj = 9
+    # 10 is AnytimeLidarV1
     RoundRobin_16 = 11  # Same as RoundRobin, 16 tiles instead of 18
-    RoundRobin_BLTP = 12  # Same as RoundRobin, time prediction of 3d bb is based on quadratic order equation
-    RoundRobin_VN_BLTP = 13
     # Keep the next ones only for code compability
+    ProjectionOnly = 96
     AdaptiveRR = 97
     MirrorRR = 98
 
