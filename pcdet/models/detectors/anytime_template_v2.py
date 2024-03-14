@@ -154,13 +154,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def initialize(self, latest_token : str) -> (float, bool):
         deadline_sec_override, reset = super().initialize(latest_token)
+        if reset and self.enable_projection:
+            self.projection_reset()
+
         if self.sched_disabled:
             return deadline_sec_override, reset
-
-        if reset:
+        elif reset:
             self.sched_reset()
-            if self.enable_projection:
-                self.projection_reset()
 
         if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
                 'bb3d_intermediary_vinds' in self.latest_batch_dict:
@@ -337,9 +337,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
         elif self.sched_algo == SchedAlgo.ProjectionOnly:
             batch_dict['chosen_tile_coords'] = netc
 
-        batch_dict['record_int_vcoords'] = not self.use_baseline_bb3d_predictor and \
+        batch_dict['record_int_vcoords'] = not self.sched_disabled and \
+                not self.use_baseline_bb3d_predictor and \
                 not self.move_indscalc_to_init
-        batch_dict['record_int_indices'] = not self.use_baseline_bb3d_predictor and \
+        batch_dict['record_int_indices'] = not self.sched_disabled and \
+                not self.use_baseline_bb3d_predictor and \
                 self.move_indscalc_to_init
         batch_dict['record_time'] = True
         batch_dict['tile_size_voxels'] = self.tile_size_voxels
@@ -713,7 +715,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             plt.savefig(f'{root_path}/bb3d_time_pred_err_m{self.model_cfg.METHOD}_{timedata}.pdf')
             plt.clf()
 
-        if not self.use_baseline_bb3d_predictor:
+        if not self.use_baseline_bb3d_predictor and not self.sched_disabled:
             # plot 3d backbone time pred error layerwise
             layer_times_actual = np.array(self.add_dict['bb3d_layer_times'])
             layer_times_pred = np.array(self.add_dict['bb3d_preds_layerwise'])
