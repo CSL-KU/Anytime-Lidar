@@ -366,14 +366,16 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
         if 'bb3d_preds' not in evals[0] or not evals[0]['bb3d_preds']:
             continue
         #evals = evals[:4] # use periods 100 150 200 250
+        evals = [evals[1]] + [evals[3]]
 
         labels = []
         for e in evals:
             m = e['method']
+            dl = e["deadline_msec"]
             if m == 4 or m == 6:
-                labels.append('History-based')
+                labels.append(f'{exp_name} (dl={dl} ms)')
             elif m == 5 or m == 7:
-                labels.append('Quadratic')
+                labels.append(f'{exp_name} (dl={dl} ms)')
             else:
                 continue
                 labels.append(f"VALO {str(e['deadline_msec'])}"
@@ -400,7 +402,7 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
             ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
 
     ax.set_ylabel('CDF', fontsize='large')
-    ax.set_xlabel('Actual - Predicted execution time (msec)', fontsize='large')
+    ax.set_xlabel('(Actual - Predicted) 3D Backbone time (msec)', fontsize='large')
     ax.legend()
     ax.grid('True', ls='--')
     #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
@@ -580,8 +582,8 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
         NDS_arr = [e['mAP']['NDS'] for e in evals]
         max_NDS = max(max(NDS_arr), max_NDS)
     
-    max_NDS = 0.6205667786157568
-    print('USING HARDCODED MAX NDS!')
+    #max_NDS = 0.67
+    #print('USING HARDCODED MAX NDS!')
     for exp_name, evals in merged_exps_dict.items():
         evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
  
