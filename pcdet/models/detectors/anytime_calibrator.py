@@ -4,6 +4,7 @@ import json
 import numpy as np
 import numba
 import gc
+import os
 import matplotlib.pyplot as plt
 from easydict import EasyDict as edict
 from torch.utils.data import TensorDataset, DataLoader
@@ -101,7 +102,7 @@ class AnytimeCalibrator():
             num_voxels_n_ = np.expand_dims(num_voxels, -1) / self.num_voxels_normalizer
             num_voxels_n_ = np.concatenate((num_voxels_n_, np.square(num_voxels_n_)), axis=-1)
             bb3d_time_preds = np.sum(num_voxels_n_ * self.time_reg_coeffs.flatten(), \
-                    axis=-1) +  self.time_reg_intercepts
+                    axis=-1) +  self.time_reg_intercepts + self.expected_bb3d_err
         else:
             if self.scale_num_voxels:
                 vcounts = vcount_area * self.voxel_coeffs_over_layers 
@@ -120,12 +121,13 @@ class AnytimeCalibrator():
                 num_voxels_n_ = np.concatenate((num_voxels_n_, np.square(num_voxels_n_)), axis=-1)
                 bb3d_time_preds = np.sum(num_voxels_n_ * self.time_reg_coeffs, axis=-1) + \
                         self.time_reg_intercepts
+                # need to divide this cuz adding it to each layer individually
+                bb3d_time_preds[:, 0] += self.expected_bb3d_err
 
         if self.model.use_voxelnext:
-            return bb3d_time_preds + self.expected_bb3d_err, self.det_head_post_wcet_ms, \
-                    num_voxels
+            return bb3d_time_preds, self.det_head_post_wcet_ms, num_voxels
         else:
-            return bb3d_time_preds + self.expected_bb3d_err, self.bb2d_times_ms[num_tiles] + \
+            return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
                     self.det_head_post_wcet_ms, num_voxels
 
     def pred_final_req_time_ms(self, dethead_indexes):
@@ -168,8 +170,6 @@ class AnytimeCalibrator():
         f.close()
 
         # Fit the linear model for bb3
-        bb3d_voxels_samples = self.calib_data_dict['bb3d_voxels']
-        exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
         all_voxels, all_times = self.get_calib_data_arranged()
         # As a baseline predictor, do linear regression using
         # the number of voxels
@@ -208,10 +208,10 @@ class AnytimeCalibrator():
             all_preds = np.sum(all_voxels_n * self.time_reg_coeffs, axis=-1)
             all_preds += self.time_reg_intercepts
             diffs = all_times - all_preds
-            bb3d_expected_max_error = 0.
+            print('Excepted time prediction error for each 3D backbone layer\n' \
+                    ' assuming the number of voxels are predicted perfectly:')
             for i in range(self.bb3d_num_l_groups):
-                bb3d_expected_max_error += get_stats(diffs[:,i])[-2]
-            print('BB3D expected perc99 error:', bb3d_expected_max_error)
+                get_stats(diffs[:,i])
 
         dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
         self.det_head_post_wcet_ms = np.percentile(dh_post_time_data, \
@@ -224,6 +224,19 @@ class AnytimeCalibrator():
                     for arr in bb2d_time_data])
             print('bb2d_times_ms')
             print(self.bb2d_times_ms)
+
+        if 'exec_times' in self.calib_data_dict:
+            # calculate the 3dbb err cdf
+            time_dict = self.calib_data_dict['exec_times']
+            bb3d_pred_err = np.array(time_dict['Backbone3D']) - \
+                    np.array(self.calib_data_dict['bb3d_preds'])
+            if 'VoxelHead-conv-hm' in time_dict:
+                bb3d_pred_err += np.array(time_dict['VoxelHead-conv-hm'])
+
+            print('Overall 3D Backbone time prediction error stats:')
+            min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_pred_err)
+            self.expected_bb3d_err = int(os.getenv('PRED_ERR_MS', 0))
+            print('Expected bb3d error ms:', self.expected_bb3d_err)
 
     def get_chosen_tile_num(self):
         return self.chosen_tiles_calib
