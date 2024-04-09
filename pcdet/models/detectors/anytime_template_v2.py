@@ -57,6 +57,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.use_baseline_bb3d_predictor:
             print('***** Using baseline time predictor! *****')
 
+        self.enable_tile_drop = (self.model_cfg.METHOD != SchedAlgo.RoundRobin_NoTileDrop) and \
+            not self.use_voxelnext
+
         self.sched_algo = SchedAlgo.ProjectionOnly if self.model_cfg.METHOD == \
                 SchedAlgo.ProjectionOnly else SchedAlgo.RoundRobin
 
@@ -382,7 +385,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
 
         # Tile dropping
-        if not self.use_voxelnext:
+        if self.enable_tile_drop:
             torch.cuda.synchronize()
             post_bb3d_times = batch_dict['post_bb3d_times']
             rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
@@ -683,6 +686,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 json.dump(calib_dict, handle, indent=4)
 
         self.add_dict['tcount'] = self.tcount
+        self.add_dict['bb3d_pred_shift_ms'] = self.calibrator.expected_bb3d_err
         print(f"\nDeadlines missed: {self._eval_dict['deadlines_missed']}\n")
 
         self.plot_post_eval_data()
@@ -761,11 +765,19 @@ class AnytimeTemplateV2(Detector3DTemplate):
             print('Num voxel to exec time plot saved.')
 
             # plot 3d backbone fitted equations
-            coeffs_calib, intercepts_calib = self.calibrator.time_reg_coeffs, self.calibrator.time_reg_intercepts
-            coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, layer_times_actual)
+            coeffs_calib, intercepts_calib = self.calibrator.time_reg_coeffs, \
+                    self.calibrator.time_reg_intercepts
+            coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
+                    layer_times_actual)
             calib_voxels, calib_times = self.calibrator.get_calib_data_arranged()
+            fig, axes = plt.subplots(len(coeffs_calib)//2, 2, \
+                    figsize=(6, (len(coeffs_calib)-1)*2), 
+                    sharex=True,
+                    constrained_layout=True)
+            axes = np.concatenate((axes[0], axes[1]))
             for i in range(len(coeffs_calib)):
-                vlayer = vactual[:, i]
+                #vlayer = vactual[:, i]
+                vlayer = calib_voxels[:, i]
                 xlims = [min(vlayer), max(vlayer)]
                 x = np.arange(xlims[0], xlims[1], (xlims[1]-xlims[0])//100)
 
@@ -779,19 +791,28 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 layer_times_ = calib_times[:, i]
                 layer_voxels_ = calib_voxels[:, i]
                 sort_indexes = np.argsort(layer_times_)
-                layer_times_ = layer_times_[sort_indexes][0::10]
-                layer_voxels_ = layer_voxels_[sort_indexes][0::10]
-                plt.scatter(layer_voxels_, layer_times_, label="calib")
-                plt.scatter(vlayer,layer_times_actual[:, i] , label="new")
-                plt.plot(x, bb3d_time_calib, label="calib")
-                plt.plot(x, bb3d_time_new, label="new")
+                layer_times_ = layer_times_[sort_indexes] #[0::5]
+                layer_voxels_ = layer_voxels_[sort_indexes] #[0::5]
+                #ax.scatter(layer_voxels_, layer_times_, label="calib")
+                #ax.scatter(vlayer,layer_times_actual[:, i] , label="new")
+                #ax.plot(x, bb3d_time_calib, label="calib")
+                #ax.plot(x, bb3d_time_new, label="new")
 
-                plt.grid(True)
-                plt.legend()
-                plt.xlabel('Num voxels')
-                plt.ylabel('Exec time(ms)')
-                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data{i}_{timedata}.pdf')
-                plt.clf()
+                #ax.grid('True', ls='--')
+                ax = axes[i]
+                ax.scatter(layer_voxels_, layer_times_, label=f"Data")
+                ax.plot(x, bb3d_time_calib, label="Model", color='orange')
+                ax.set_ylim([0, max(layer_times_)*1.1])
+                ax.set_title(f"Block {i+1}", fontsize='medium', loc='left')
+                ax.legend(fontsize='medium')
+                #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
+            fig.supxlabel('Number of input voxels', fontsize='x-large')
+            fig.supylabel('Block execution time (msec)', fontsize='x-large')
+            #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
+            #plt.subplots_adjust(wspace=0, hspace=0)
+
+            plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data_all_{timedata}.pdf')
+            #ax.set_xlim([0, 70000])
 
     def projection_for_test(self, batch_dict):
         pred_dicts = batch_dict['final_box_dicts']

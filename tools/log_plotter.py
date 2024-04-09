@@ -12,17 +12,17 @@ linestyles = ['--', ':'] * 10
 method_colors= [
     'tab:purple', 
     'tab:red', 
-    'tab:green', 
     'tab:olive', 
     'tab:orange', 
+    'tab:green',
     'tab:brown',
     'tab:blue', 
     'tab:pink',  #'xkcd:coral', 
     'xkcd:coral', 
-    'tab:pink', 
+    'tab:pink',
     'tab:orange',
     'tab:red',
-    'tab:green', 
+    'tab:blue',
     'tab:purple', 
 ]
 
@@ -39,6 +39,7 @@ method_num_to_str = [
         '9VALO-NSNF-CP75',
         '9AnytimeLidar-CP75',
         '9VALO-CP100',
+        '9VALO-NRD-CP75', # no tile drop
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -79,7 +80,7 @@ if __name__ == '__main__':
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint75',
-    #        'AnytimeLidar-CP75',
+            'AnytimeLidar-CP75',
             'VALO-CP75',
     ]})
 
@@ -92,9 +93,9 @@ if __name__ == '__main__':
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
             'CenterPoint75',
-   #         'VALO-NSNF-CP75',
-   #         'VALO-NF-CP75',
-            'VALO-BLTP-CP75',
+            'VALO-NSNF-CP75',
+            'VALO-NF-CP75',
+            #'VALO-NRD-CP75',
             'VALO-CP75',
     ]})
 
@@ -103,6 +104,13 @@ if __name__ == '__main__':
             'VALO-BLTP-VN75',
             'VALO-VN75',
     ]})
+
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+            'CenterPoint75',
+            'VALO-CP75',
+            #'VALO-NRD-CP75',
+    ]})
+
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]

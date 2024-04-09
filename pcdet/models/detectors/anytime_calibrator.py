@@ -173,32 +173,34 @@ class AnytimeCalibrator():
         all_voxels, all_times = self.get_calib_data_arranged()
         # As a baseline predictor, do linear regression using
         # the number of voxels
-        if self.use_baseline_bb3d_predictor:
 
-            # plot voxel to time graph
-            bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
-            bb3d_voxels = all_voxels[:, :1]
-            plt.scatter(bb3d_voxels, bb3d_times, label='data')
-            plt.xlim([0, 70000])
-            plt.ylim([0, 300])
-            plt.xlabel('Number of voxels', fontsize='x-large')
-            plt.ylabel('3DBB Execution time (ms)', fontsize='x-large')
+        # plot voxel to time graph
+        bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
+        bb3d_voxels = all_voxels[:, :1]
+        fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
+        #ax.grid(True)
+        ax.scatter(bb3d_voxels, bb3d_times) #, label='data')
+        ax.set_xlim([0, 70000])
+        ax.set_ylim([0, 150])
+        ax.set_xlabel('Number of input voxels', fontsize='x-large')
+        ax.set_ylabel('3D backbone\nexecution time (msec)', fontsize='x-large')
 
-            bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
-            if self.time_reg_degree == 2:
-                bb3d_voxels_n = np.concatenate((bb3d_voxels_n,
-                    np.square(bb3d_voxels_n)), axis=-1)
-            reg = LinearRegression().fit(bb3d_voxels_n, bb3d_times)
-
-            self.time_reg_coeffs = reg.coef_
-            self.time_reg_intercepts = reg.intercept_
-
-            pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
-                    axis=-1) +  self.time_reg_intercepts
-            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
-            plt.legend()
-            plt.savefig(f'/root/shared_data/exp_plots/voxels_to_bb3dtime.pdf')
-        else:
+#            bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
+#            if self.time_reg_degree == 2:
+#                bb3d_voxels_n = np.concatenate((bb3d_voxels_n,
+#                    np.square(bb3d_voxels_n)), axis=-1)
+#            reg = LinearRegression().fit(bb3d_voxels_n, bb3d_times)
+#
+#            self.time_reg_coeffs = reg.coef_
+#            self.time_reg_intercepts = reg.intercept_
+#
+#            pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
+#                    axis=-1) +  self.time_reg_intercepts
+#            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
+#            plt.legend()
+        plt.savefig(f'/root/shared_data/latest_exp_plots/voxels_to_bb3dtime.pdf')
+        plt.clf()
+        if not self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs, self.time_reg_intercepts = self.fit_voxel_time_data(all_voxels, all_times)
 
             # the input is voxels: [NUM_CHOSEN_TILES, self.bb3d_num_l_groups],

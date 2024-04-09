@@ -205,8 +205,9 @@ def plot_func_dm(out_path, exps_dict):
             c=evals[0]['color'], linestyle=evals[0]['lnstyle'])
         i+=1
         #ax.scatter(x, y, color=l2d[0].get_c())
+    ax.set_xticks(x)
     ax.invert_xaxis()
-    ax.set_ylim(-1.0, 105.)
+    ax.set_ylim(-5.0, 110.)
     ax.legend(fontsize='medium')
     ax.set_ylabel('Deadline miss ratio (%)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
@@ -237,7 +238,7 @@ def plot_func_dm(out_path, exps_dict):
     #ax.set_xlabel(')', fontsize='x-large')
     #ax.grid('True', ls='--')
     ax.set_yticks(np.arange(0, 100.1, 20))
-    ax.set_ylim(-1.0, 110.)
+    ax.set_ylim(-5.0, 110.)
 
     plt.savefig(out_path + "/dl_miss_ratio_bar.pdf")
 
@@ -305,8 +306,8 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
 
     bl_eval_dict = exps_dict[e1][-1]
     alv2_eval_dict_1 = exps_dict[e2][-1]
-    #alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
-    eval_data = [bl_eval_dict, alv2_eval_dict_1] #, alv2_eval_dict_2]
+    alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
+    eval_data = [bl_eval_dict, alv2_eval_dict_1, alv2_eval_dict_2]
 
 #    # Create CenterHead-PostAll
 #    for data in eval_data:
@@ -320,11 +321,11 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     #axes = axes.ravel()
 
     #labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
-    #labels = [ \
-    #    'CenterPoint75\nNo Deadline', \
-    #    'VALO-CP75\nNo Deadline', \
-    #    'VALO-CP75\n100 ms Deadline']
-    labels = [ 'CenterPoint75', 'VALO-CP75']
+    labels = [ \
+        'CenterPoint75\nNo Deadline', \
+        'VALO-CP75\nNo Deadline', \
+        'VALO-CP75\n90 ms Deadline']
+    #labels = [ 'CenterPoint75', 'VALO-CP75']
 
     for comp in components:
         fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
@@ -355,7 +356,7 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
             ax.set_ylabel('CDF', fontsize='x-large')
             ax.set_xlabel('Execution time (msec)', fontsize='x-large')
             ax.legend(fontsize='medium')
-        plt.savefig(out_path + f"/{comp}_time_cdf.pdf")
+        plt.savefig(out_path + f"/{comp}_time_{plot_type}.pdf")
 
     #fig.suptitle("BB3D time pred. err.", fontsize='x-large')
 
@@ -373,9 +374,9 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
             m = e['method']
             dl = e["deadline_msec"]
             if m == 4 or m == 6:
-                labels.append(f'{exp_name} (dl={dl} ms)')
+                labels.append(f'History (dl={dl} ms)')
             elif m == 5 or m == 7:
-                labels.append(f'{exp_name} (dl={dl} ms)')
+                labels.append(f'Quadratic (dl={dl} ms)')
             else:
                 continue
                 labels.append(f"VALO {str(e['deadline_msec'])}"
@@ -401,10 +402,11 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
             cdf = np.cumsum(hist * np.diff(bin_edges))
             ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
 
-    ax.set_ylabel('CDF', fontsize='large')
-    ax.set_xlabel('(Actual - Predicted) 3D Backbone time (msec)', fontsize='large')
+    ax.set_ylabel('CDF', fontsize='x-large')
+    ax.set_xlabel('(Actual - Predicted) 3D Backbone time (msec)', fontsize='x-large')
     ax.legend()
     ax.grid('True', ls='--')
+    ax.set_ylim(-0.05, 1.10)
     #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
     #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
@@ -597,12 +599,13 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
                 marker='.', markersize=10, markeredgewidth=0.7,
                 c=evals['color'][0], linestyle=evals['lnstyle'][0])
         i+=1
+    ax.set_xticks(x)
     ax.invert_xaxis()
     ax.legend(fontsize='medium')
     ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
     ax.set_xlabel('Deadline (msec)', fontsize='x-large')
     ax.grid('True', ls='--')
-    ax.set_ylim(-1.0, 105.)
+    ax.set_ylim(-5.0, 110.)
 
     plt.savefig(out_path + "/normalized_NDS_deadlines.pdf")
 

@@ -12,6 +12,7 @@ class SchedAlgo:
     RoundRobin_NoSchedNoProj = 9
     # 10 is AnytimeLidarV1
     RoundRobin_16 = 11  # Same as RoundRobin, 16 tiles instead of 18
+    RoundRobin_NoTileDrop = 12  # Same as RoundRobin, doesn't drop tiles
     # Keep the next ones only for code compability
     ProjectionOnly = 96
     AdaptiveRR = 97
