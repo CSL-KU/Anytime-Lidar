@@ -104,6 +104,12 @@ class VoxelNeXtHead(nn.Module):
         total_classes = sum([len(x) for x in self.class_names_each_head])
         assert total_classes == len(self.class_names), f'class_names_each_head={self.class_names_each_head}'
 
+        self.cls_id_to_det_head_idx_map = torch.zeros((total_classes,), dtype=torch.int)
+        self.num_det_heads = len(self.class_id_mapping_each_head)
+        for i, cls_ids in enumerate(self.class_id_mapping_each_head):
+            for cls_id in cls_ids:
+                self.cls_id_to_det_head_idx_map[cls_id] = i
+
         kernel_size_head = self.model_cfg.get('KERNEL_SIZE_HEAD', 3)
 
         self.heads_list = nn.ModuleList()
@@ -129,6 +135,8 @@ class VoxelNeXtHead(nn.Module):
             "pred_scores": torch.zeros([0], dtype=torch.float, device='cuda'),
             "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
         }
+
+
 
     def get_empty_det_dict(self):
         det_dict = {}

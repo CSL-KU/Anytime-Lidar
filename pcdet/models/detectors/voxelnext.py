@@ -31,6 +31,7 @@ class VoxelNeXt(Detector3DTemplate):
 
         self.measure_time_start('VoxelHead-conv')
         batch_dict = self.dense_head.forward_conv(batch_dict)
+        batch_dict = self.do_projection(batch_dict) # run in parallel with bb2d and dethead
         self.measure_time_end('VoxelHead-conv')
         self.measure_time_start('VoxelHead-post')
         batch_dict = self.dense_head.forward_post(batch_dict)

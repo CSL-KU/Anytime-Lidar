@@ -88,7 +88,6 @@ class CenterPoint(Detector3DTemplate):
         batch_dict = self.map_to_bev(batch_dict)
         self.measure_time_end('MapToBEV')
 
-
         if self.do_frag_test:
             sf = batch_dict['spatial_features']
             #print('spatial features', sf.size())
@@ -103,6 +102,7 @@ class CenterPoint(Detector3DTemplate):
 
         self.measure_time_start('Backbone2D')
         batch_dict = self.backbone_2d(batch_dict)
+        batch_dict = self.do_projection(batch_dict) # run in parallel with bb2d and dethead
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
         self.measure_time_start('CenterHead-Pre')

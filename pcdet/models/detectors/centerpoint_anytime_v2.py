@@ -80,8 +80,8 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
         batch_dict = self.backbone_2d(batch_dict)
 
         streaming_eval = self.model_cfg.STREAMING_EVAL
-        if not streaming_eval and self.enable_projection:
-            batch_dict = self.schedule3(batch_dict) # run in parallel with bb2d and dethead
+        if not streaming_eval:
+            batch_dict = self.do_projection(batch_dict) # run in parallel with bb2d and dethead
         self.measure_time_end('Backbone2D')
         self.measure_time_start('CenterHead')
         self.measure_time_start('CenterHead-Pre')
@@ -105,8 +105,8 @@ class CenterPointAnytimeV2(AnytimeTemplateV2):
             do_nms=(not streaming_eval)
         )
         batch_dict['final_box_dicts'] = pred_dicts
-        if streaming_eval and self.enable_projection:
-            batch_dict = self.schedule3(batch_dict) # Project ALL
+        if streaming_eval:
+            batch_dict = self.do_projection(batch_dict) # Project ALL
             batch_dict = self.dense_head.nms_after_gen(batch_dict)
         self.measure_time_end('CenterHead-GenBox')
         self.measure_time_end('CenterHead')

@@ -82,6 +82,12 @@ class CenterHead(nn.Module):
         total_classes = sum([len(x) for x in self.class_names_each_head])
         assert total_classes == len(self.class_names), f'class_names_each_head={self.class_names_each_head}'
 
+        self.cls_id_to_det_head_idx_map = torch.zeros((total_classes,), dtype=torch.int)
+        self.num_det_heads = len(self.class_id_mapping_each_head)
+        for i, cls_ids in enumerate(self.class_id_mapping_each_head):
+            for cls_id in cls_ids:
+                self.cls_id_to_det_head_idx_map[cls_id] = i
+
         self.shared_conv = nn.Sequential(
             nn.Conv2d(
                 input_channels, self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
@@ -267,7 +273,7 @@ class CenterHead(nn.Module):
         tb_dict['rpn_loss'] = loss.item()
         return loss, tb_dict
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs, projections=None):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -302,6 +308,11 @@ class CenterHead(nn.Module):
             for k, final_dict in enumerate(final_pred_dicts):
                 final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
                 if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
+                    if projections is not None:
+                        # get the projections that match and cat them for NMS
+                        for j in projections[idx].keys():
+                            final_dict[j] = torch.cat((final_dict[j], projections[idx][j]), dim=0)
+
                     selected, selected_scores = model_nms_utils.class_agnostic_nms(
                         box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
                         nms_config=post_process_cfg.NMS_CONFIG,
@@ -390,9 +401,9 @@ class CenterHead(nn.Module):
     def forward_genbox(self, data_dict):
         if not self.training or self.predict_boxes_when_training:
             pred_dicts = data_dict['pred_dicts']
-            pred_dicts = self.generate_predicted_boxes(
-                data_dict['batch_size'], pred_dicts, data_dict['topk_outputs']
-            )
+            pred_dicts = self.generate_predicted_boxes( \
+                    data_dict['batch_size'], pred_dicts, data_dict['topk_outputs'], \
+                    data_dict.get('projections_nms', None))
 
             if self.predict_boxes_when_training:
                 rois, roi_scores, roi_labels = self.reorder_rois_for_refining(data_dict['batch_size'], pred_dicts)

@@ -82,6 +82,12 @@ class CenterHeadGroupSliced(nn.Module):
                 f'class_names_each_head={self.class_names_each_head}'
         use_bias = self.model_cfg.get('USE_BIAS_BEFORE_NORM', False)
 
+        self.cls_id_to_det_head_idx_map = torch.zeros((total_classes,), dtype=torch.int)
+        self.num_det_heads = len(self.class_id_mapping_each_head)
+        for i, cls_ids in enumerate(self.class_id_mapping_each_head):
+            for cls_id in cls_ids:
+                self.cls_id_to_det_head_idx_map[cls_id] = i
+
         self.shared_conv = nn.Sequential(
             nn.Conv2d(
                 input_channels, self.model_cfg.SHARED_CONV_CHANNEL, 3,
@@ -463,6 +469,7 @@ class CenterHeadGroupSliced(nn.Module):
         return [ret_dict]
 
 
+    # only for streaming eval
     def nms_after_gen(self, batch_dict):
         assert batch_dict['batch_size'] == 1
         post_process_cfg = self.model_cfg.POST_PROCESSING
@@ -625,7 +632,7 @@ class CenterHeadGroupSliced(nn.Module):
         data_dict = self.forward_eval_post(data_dict)
 
         pred_dicts = self.generate_predicted_boxes_eval(
-            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
+            data_dict['batch_size'], data_dict['pred_dicts'], data_dict.get('projections_nms', None)
         )
 
         data_dict['final_box_dicts'] = pred_dicts
