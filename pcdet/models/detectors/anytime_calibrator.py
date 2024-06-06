@@ -78,7 +78,7 @@ class AnytimeCalibrator():
 
         self.expected_bb3d_err = 0.
         self.num_voxels_normalizer = 100000.
-        self.chosen_tiles_calib = 18
+        self.chosen_tiles_calib = self.num_tiles
 
 
     # voxel dists should be [self.bb3d_num_l_groups, num_tiles]
@@ -264,7 +264,7 @@ class AnytimeCalibrator():
             print(f'Processing sample {sample_idx}-{sample_idx+10}', end='', flush=True)
 
             # Enforce a number of tile
-            for i in range(10):
+            for i in range(5): # supports up to 45 tiles assuming number of samples is 240
                 if sample_idx < num_samples:
                     self.chosen_tiles_calib = self.num_tiles if i == 0 else tile_num
                     self.model([sample_idx])
