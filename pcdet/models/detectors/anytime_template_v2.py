@@ -52,7 +52,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN_BLTP)
 
         self.use_baseline_bb3d_predictor = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_BLTP or \
-                self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN_BLTP)
+                self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN_BLTP or \
+                self.model_cfg.METHOD == SchedAlgo.RoundRobin_DSVT)
+
         if self.use_baseline_bb3d_predictor:
             print('***** Using baseline time predictor! *****')
 

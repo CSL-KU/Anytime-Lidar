@@ -142,5 +142,13 @@ if __name__ == '__main__':
                     'src/projection_cuda.cu',
                 ],
             ),
+            make_cuda_ext(
+                name='ingroup_inds_cuda',
+                module='pcdet.ops.ingroup_inds',
+                sources=[
+                    'src/ingroup_inds.cpp',
+                    'src/ingroup_inds_kernel.cu',
+                ]
+            ),
         ],
     )

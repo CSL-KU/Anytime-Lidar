@@ -60,6 +60,7 @@ class DynamicPillarVFE(VFETemplate):
         self.num_filters = self.model_cfg.NUM_FILTERS
         assert len(self.num_filters) > 0
         num_filters = [num_point_features] + list(self.num_filters)
+        self.num_point_features = num_point_features
 
         pfn_layers = []
         for i in range(len(num_filters) - 1):
