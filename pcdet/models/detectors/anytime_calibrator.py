@@ -171,8 +171,6 @@ class AnytimeCalibrator():
 
         # Fit the linear model for bb3
         all_voxels, all_times = self.get_calib_data_arranged()
-        # As a baseline predictor, do linear regression using
-        # the number of voxels
 
         # plot voxel to time graph
         bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
@@ -180,24 +178,29 @@ class AnytimeCalibrator():
         fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
         #ax.grid(True)
         ax.scatter(bb3d_voxels, bb3d_times) #, label='data')
-        ax.set_xlim([0, 70000])
-        ax.set_ylim([0, 150])
+        #ax.set_xlim([0, 70000])
+        #ax.set_ylim([0, 150])
+        #ax.set_xlim([0, 20000])
+        #ax.set_ylim([0, 220])
         ax.set_xlabel('Number of input voxels', fontsize='x-large')
         ax.set_ylabel('3D backbone\nexecution time (msec)', fontsize='x-large')
 
-#            bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
-#            if self.time_reg_degree == 2:
-#                bb3d_voxels_n = np.concatenate((bb3d_voxels_n,
-#                    np.square(bb3d_voxels_n)), axis=-1)
-#            reg = LinearRegression().fit(bb3d_voxels_n, bb3d_times)
-#
-#            self.time_reg_coeffs = reg.coef_
-#            self.time_reg_intercepts = reg.intercept_
-#
-#            pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
-#                    axis=-1) +  self.time_reg_intercepts
-#            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
-#            plt.legend()
+        # As a baseline predictor, do linear regression using
+        # the number of voxels
+        if self.use_baseline_bb3d_predictor:
+            bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
+            if self.time_reg_degree == 2:
+                bb3d_voxels_n = np.concatenate((bb3d_voxels_n,
+                    np.square(bb3d_voxels_n)), axis=-1)
+            reg = LinearRegression().fit(bb3d_voxels_n, bb3d_times)
+
+            self.time_reg_coeffs = reg.coef_
+            self.time_reg_intercepts = reg.intercept_
+
+            pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
+                    axis=-1) +  self.time_reg_intercepts
+            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
+            plt.legend()
         plt.savefig(f'/root/shared_data/latest_exp_plots/voxels_to_bb3dtime.pdf')
         plt.clf()
         if not self.use_baseline_bb3d_predictor:
@@ -261,7 +264,7 @@ class AnytimeCalibrator():
         sample_idx, tile_num = 0, 1
         while sample_idx < num_samples:
             time_begin = time.time()
-            print(f'Processing sample {sample_idx}-{sample_idx+10}', end='', flush=True)
+            print(f'Processing sample {sample_idx}-{sample_idx+5}', end='', flush=True)
 
             # Enforce a number of tile
             for i in range(5): # supports up to 45 tiles assuming number of samples is 240
