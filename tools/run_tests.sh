@@ -73,8 +73,8 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CKPT_FILE="../models/cbgs_voxel02_centerpoint_5swipes.pth"
     
     # Centerpoint-voxel0075-VALO
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
-    CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
+    #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
 
     # Centerpoint-voxel01-VALO
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml"
@@ -105,6 +105,10 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     # PillarNet
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_pillar0075_res2d_centerpoint.yaml"
     #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
+
+    #DSVT mymodel
+    CFG_FILE="./cfgs/nuscenes_models/dsvt_anytime.yaml"
+    CKPT_FILE="../models/DSVT_nusc_8epochs.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -141,7 +145,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" )
+	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
+	"./cfgs/nuscenes_models/dsvt_anytime.yaml" )
 
     CKPT_FILES=( \
 	"../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
@@ -156,7 +161,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
 	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
 	"../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" )
+	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"  \
+	"../models/DSVT_nusc_8epochs.pth" )
 
     for m in ${!CFG_FILES[@]}
     do
@@ -209,6 +215,8 @@ elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
+elif [ $1 == 'singlemt' ]; then
+    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.TILE_COUNT" $4
 elif [ $1 == 'singlems' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True
 elif [ $1 == 'singlemsp' ]; then
