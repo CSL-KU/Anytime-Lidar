@@ -550,11 +550,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
             coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
                     layer_times_actual)
             calib_voxels, calib_times = self.calibrator.get_calib_data_arranged()
-            fig, axes = plt.subplots(len(coeffs_calib)//2, 2, \
+            fig, axes = plt.subplots(len(coeffs_calib)//2+1, 2, \
                     figsize=(6, (len(coeffs_calib)-1)*2), 
                     sharex=True,
                     constrained_layout=True)
-            axes = np.concatenate((axes[0], axes[1]))
+            axes = np.ravel(axes)
             for i in range(len(coeffs_calib)):
                 #vlayer = vactual[:, i]
                 vlayer = calib_voxels[:, i]
