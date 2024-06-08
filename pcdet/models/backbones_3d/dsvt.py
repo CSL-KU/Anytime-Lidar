@@ -106,6 +106,9 @@ class DSVT(nn.Module):
                 - voxel_coords (Tensor[int]):
                 - ...
         '''
+        cudnnbm = torch.backends.cudnn.benchmark
+        torch.backends.cudnn.benchmark = False
+
         record_time = batch_dict.get('record_time', False)
         if record_time:
             events=[torch.cuda.Event(enable_timing=True)]
@@ -164,6 +167,7 @@ class DSVT(nn.Module):
             events[-1].record()
             batch_dict['bb3d_layer_time_events'] = events
 
+        torch.backends.cudnn.benchmark = cudnnbm
         return batch_dict
 
     def _reset_parameters(self):
