@@ -9,6 +9,7 @@ from .center_head_imprecise import CenterHeadMultiImprecise
 from .center_head_group_sliced import CenterHeadGroupSliced
 #from .center_head_group_sbnet import CenterHeadGroupSbnet
 from .voxelnext_head import VoxelNeXtHead
+from .transfusion_head import TransFusionHead
 
 __all__ = {
     'AnchorHeadTemplate': AnchorHeadTemplate,
@@ -22,4 +23,5 @@ __all__ = {
     'CenterHeadGroupSliced': CenterHeadGroupSliced,
 #    'CenterHeadGroupSbnet': CenterHeadGroupSbnet,
     'VoxelNeXtHead': VoxelNeXtHead,
+    'TransFusionHead': TransFusionHead,
 }

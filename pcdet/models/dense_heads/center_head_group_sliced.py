@@ -49,6 +49,8 @@ class AdaptiveGroupConv(nn.Module):
 
         return outp
 
+
+
 class CenterHeadGroupSliced(nn.Module):
     def __init__(self, model_cfg, input_channels, num_class, class_names, grid_size, point_cloud_range, voxel_size,
                  predict_boxes_when_training=True):
@@ -516,62 +518,6 @@ class CenterHeadGroupSliced(nn.Module):
             roi_labels[bs_idx, :num_boxes] = pred_dicts[bs_idx]['pred_labels']
         return rois, roi_scores, roi_labels
 
-    def scatter_sliced_tensors(self, chosen_tile_coords, sliced_tensors):
-        #Based on chosen_tile_coords, we need to scatter the output
-        ctc = chosen_tile_coords
-        if self.sched_algo == SchedAlgo.MirrorRR:
-            ctc = np.sort(chosen_tile_coords)
-        scattered_tensors = []
-        ctc_s, ctc_e = ctc[0], ctc[-1]
-        if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
-                (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
-                (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
-            # contiguous
-            num_tiles = ctc_e - ctc_s + 1
-        else:
-            # Two chunks, find the point of switching
-            i = 0
-            if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-                while ctc[i] < ctc[i+1]:
-                    i += 1
-            elif self.sched_algo == SchedAlgo.MirrorRR:
-                while ctc[i]+1 == ctc[i+1]:
-                    i += 1
-            chunk_r = (ctc_s, ctc[i])
-            chunk_l = (ctc[i+1], ctc_e)
-            num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
-
-        if len(ctc) == self.tcount:
-            return sliced_tensors # no need to scatter
-
-        for tensor in sliced_tensors:
-            if (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
-                    (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
-                    (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
-                # contiguous
-                tile_sz = tensor.size(-1) // num_tiles
-                full_sz = tile_sz * self.tcount
-                tensor_sz = list(tensor.size())
-                tensor_sz[-1] = full_sz
-                scat_tensor = torch.zeros(tensor_sz, device='cuda', dtype=tensor.dtype)
-                scat_tensor[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)] = tensor
-            else:
-                # Two chunks, find the point of switching
-                tile_sz = tensor.size(-1) // num_tiles
-                full_sz = tile_sz * self.tcount
-                tensor_sz = list(tensor.size())
-                tensor_sz[-1] = full_sz
-                scat_tensor = torch.zeros(tensor_sz, device='cuda', dtype=tensor.dtype)
-                c_sz_l = (chunk_l[1] - chunk_l[0] + 1) * tile_sz
-                c_sz_r = (chunk_r[1] - chunk_r[0] + 1) * tile_sz
-                #Example: 7 8 2 3 4  -> . . 2 3 4 . . 7 8
-                scat_tensor[..., (chunk_r[0]*tile_sz):((chunk_r[1]+1)*tile_sz)] = \
-                        tensor[..., :c_sz_r]
-                scat_tensor[..., (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)] = \
-                        tensor[..., -c_sz_l:]
-            scattered_tensors.append(scat_tensor)
-        return scattered_tensors
-
     def forward(self, data_dict):
         if self.training:
             return self.forward_train(data_dict)
@@ -583,7 +529,8 @@ class CenterHeadGroupSliced(nn.Module):
         shr_conv_outp = self.shared_conv(spatial_features_2d)
 
         heatmaps = self.heatmap_convs(shr_conv_outp)
-        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        heatmaps = scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps,
+                self.sched_algo, self.tcount)
 
         pred_dicts = [{'hm' : hm} for hm in heatmaps]
         # default padding is 1
@@ -597,7 +544,8 @@ class CenterHeadGroupSliced(nn.Module):
                     x = torch.nn.functional.pad(x, (p,p,p,p))
                 x = m(x)
 
-            x = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x)
+            x = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x,
+                self.sched_algo, self.tcount)
             for name, attr in zip(self.attr_conv_names, x):
                 pd[name] = attr
 
@@ -649,7 +597,8 @@ class CenterHeadGroupSliced(nn.Module):
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
-        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps)
+        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps,
+                self.sched_algo, self.tcount)
         data_dict['pred_dicts'] = [{'hm' : hm} for hm in heatmaps]
 
         return data_dict
@@ -686,8 +635,8 @@ class CenterHeadGroupSliced(nn.Module):
 
 
         p = pad_size = self.slice_size//2
-        shr_conv_outp = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
-                [data_dict['shr_conv_outp']])
+        shr_conv_outp = scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
+                [data_dict['shr_conv_outp']], self.sched_algo, self.tcount)
         shr_conv_outp = shr_conv_outp[0]
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
         padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
@@ -755,3 +704,60 @@ class CenterHeadGroupSliced(nn.Module):
 
         self.calibrated[idx]=True
         print('done.')
+
+
+def scatter_sliced_tensors(chosen_tile_coords, sliced_tensors, sched_algo, tcount):
+    #Based on chosen_tile_coords, we need to scatter the output
+    ctc = chosen_tile_coords
+    if sched_algo == SchedAlgo.MirrorRR:
+        ctc = np.sort(chosen_tile_coords)
+    scattered_tensors = []
+    ctc_s, ctc_e = ctc[0], ctc[-1]
+    if (sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+            (sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
+            (sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
+        # contiguous
+        num_tiles = ctc_e - ctc_s + 1
+    else:
+        # Two chunks, find the point of switching
+        i = 0
+        if sched_algo == SchedAlgo.RoundRobin or sched_algo == SchedAlgo.AdaptiveRR:
+            while ctc[i] < ctc[i+1]:
+                i += 1
+        elif sched_algo == SchedAlgo.MirrorRR:
+            while ctc[i]+1 == ctc[i+1]:
+                i += 1
+        chunk_r = (ctc_s, ctc[i])
+        chunk_l = (ctc[i+1], ctc_e)
+        num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
+
+    if len(ctc) == tcount:
+        return sliced_tensors # no need to scatter
+
+    for tensor in sliced_tensors:
+        if (sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
+                (sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
+                (sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
+            # contiguous
+            tile_sz = tensor.size(-1) // num_tiles
+            full_sz = tile_sz * tcount
+            tensor_sz = list(tensor.size())
+            tensor_sz[-1] = full_sz
+            scat_tensor = torch.zeros(tensor_sz, device='cuda', dtype=tensor.dtype)
+            scat_tensor[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)] = tensor
+        else:
+            # Two chunks, find the point of switching
+            tile_sz = tensor.size(-1) // num_tiles
+            full_sz = tile_sz * tcount
+            tensor_sz = list(tensor.size())
+            tensor_sz[-1] = full_sz
+            scat_tensor = torch.zeros(tensor_sz, device='cuda', dtype=tensor.dtype)
+            c_sz_l = (chunk_l[1] - chunk_l[0] + 1) * tile_sz
+            c_sz_r = (chunk_r[1] - chunk_r[0] + 1) * tile_sz
+            #Example: 7 8 2 3 4  -> . . 2 3 4 . . 7 8
+            scat_tensor[..., (chunk_r[0]*tile_sz):((chunk_r[1]+1)*tile_sz)] = \
+                    tensor[..., :c_sz_r]
+            scat_tensor[..., (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)] = \
+                    tensor[..., -c_sz_l:]
+        scattered_tensors.append(scat_tensor)
+    return scattered_tensors

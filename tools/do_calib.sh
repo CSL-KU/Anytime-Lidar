@@ -45,7 +45,7 @@ if ! [ -f calib_data_m11_c16.json ]; then
 fi
 
 export CFG_FILE="./cfgs/nuscenes_models/dsvt_anytime.yaml"
-export CKPT_FILE="../models/DSVT_nusc_8epochs.pth"
+export CKPT_FILE="../models/DSVT_Nuscenes_val.pth"
 if ! [ -f calib_data_m13_c"$NUM_TILES".json ]; then
 	./run_tests.sh singlemt 13 100.0 $NUM_TILES
 fi

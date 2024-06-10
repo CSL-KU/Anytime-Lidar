@@ -235,7 +235,8 @@ class Detector3DTemplate(nn.Module):
         ########################
         ###### PROJECTION ######
         ########################
-        self.enable_projection = True
+        self.enable_projection = False
+        self.enable_splitting_projections = True
         self.cur_pose, self.cur_ts = None, None
         self.past_detections = {}  #{'num_dets': []}
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
@@ -262,9 +263,6 @@ class Detector3DTemplate(nn.Module):
             self.score_thresh = 0.1
         else:
             self.score_thresh = dh_cfg.POST_PROCESSING.SCORE_THRESH
-            # Hmm, I don't have dense_head...
-
-        #self.cls_id_to_det_head_idx_map = self.cls_id_to_det_head_idx_map.cuda()
 
 
     def initialize(self, latest_token : str) -> (float, bool):
@@ -299,7 +297,7 @@ class Detector3DTemplate(nn.Module):
         pred_dict = batch_dict['final_box_dicts'][0]
 
         # Before appending the dets, extract the projected ones
-        proj_mask = pred_dict['pred_scores'] >= self.score_thresh
+        proj_mask = pred_dict['pred_scores'] > self.score_thresh
         for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
             pred_dict[k] = pred_dict[k][proj_mask]
 
@@ -446,16 +444,26 @@ class Detector3DTemplate(nn.Module):
             range_mask = torch.logical_and(range_mask, box_y >= self.pc_range[1])
             range_mask = torch.logical_and(range_mask, box_y <= self.pc_range[4])
 
+            proj_dict['pred_boxes'] = proj_dict['pred_boxes'][range_mask]
+            proj_dict['pred_scores'] = proj_dict['pred_scores'][range_mask]
+            proj_dict['pred_labels'] = proj_dict['pred_labels'][range_mask]
+
             # This op can make nms faster
+            target_key = 'projections_nms'
             with torch.cuda.stream(self.projection_stream):
-                target_key = 'projections_nms'
-                batch_dict[target_key] = cuda_projection.split_projections(
-                        proj_dict['pred_boxes'][range_mask],
-                        proj_dict['pred_scores'][range_mask],
-                        proj_dict['pred_labels'][range_mask],
-                        self.dense_head.cls_id_to_det_head_idx_map,
-                        self.dense_head.num_det_heads,
-                        True) # moves results to gpu if true
+                if self.enable_splitting_projections:
+                    batch_dict[target_key] = cuda_projection.split_projections(
+                            proj_dict['pred_boxes'],
+                            proj_dict['pred_scores'],
+                            proj_dict['pred_labels'],
+                            self.dense_head.cls_id_to_det_head_idx_map,
+                            self.dense_head.num_det_heads,
+                            True) # moves results to gpu if true
+                else:
+                    proj_dict['pred_boxes'] = proj_dict['pred_boxes'].cuda()
+                    proj_dict['pred_scores'] = proj_dict['pred_scores'].cuda()
+                    proj_dict['pred_labels'] = proj_dict['pred_labels'].cuda()
+                    batch_dict[target_key] = proj_dict
 
             # hmm, might be necessary
             if proj_all:

@@ -24,6 +24,7 @@ method_colors= [
     'tab:red',
     'tab:blue',
     'tab:purple', 
+    'tab:blue', 
 ]
 
 method_num_to_str = [
@@ -40,6 +41,8 @@ method_num_to_str = [
         '9AnytimeLidar-CP75',
         '9VALO-CP100',
         '9VALO-NRD-CP75', # no tile drop
+        '9VALO-DSVT',
+        '9DSVT',
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -109,6 +112,13 @@ if __name__ == '__main__':
             'CenterPoint75',
             'VALO-CP75',
             #'VALO-NRD-CP75',
+    ]})
+
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+            'CenterPoint75',
+            'VALO-CP75',
+            'DSVT',
+            'VALO-DSVT',
     ]})
 
 

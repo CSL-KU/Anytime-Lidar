@@ -56,7 +56,7 @@ DATA_CONFIG:
         VOXEL_SIZE: [0.3, 0.3, 8.0]
 
 MODEL:
-  NAME: TransFusionAnytime
+  NAME: TransFusion
 
   VFE:
     NAME: DynPillarVFE
@@ -94,13 +94,12 @@ MODEL:
     NUM_BEV_FEATURES: 128
 
   BACKBONE_2D:
-    NAME: BaseBEVResBackboneSliced
+    NAME: BaseBEVResBackbone
     LAYER_NUMS: [ 1, 2, 2 ]
     LAYER_STRIDES: [ 1, 2, 2 ]
     NUM_FILTERS: [ 128, 128, 256 ]
     UPSAMPLE_STRIDES: [ 0.5, 1, 2 ]
     NUM_UPSAMPLE_FILTERS: [ 128, 128, 128 ]
-
 
   DENSE_HEAD:
     CLASS_AGNOSTIC: False
@@ -164,18 +163,17 @@ MODEL:
         NMS_THRESH: 0.2
         NMS_PRE_MAXSIZE: 1000
         NMS_POST_MAXSIZE: 100
-        SCORE_THRES: 0.01
 
   POST_PROCESSING:
     RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
     SCORE_THRESH: 0.001
     OUTPUT_RAW_SCORE: False
-    EVAL_METRIC: kitti
+    EVAL_METRIC: kitti      
 
   DEADLINE_SEC: 9999.9
   STREAMING_EVAL: False
   TILE_COUNT: 18
-  METHOD: 13
+  METHOD: 14
   PROJECTION_COEFF: 1.0
 
 OPTIMIZATION:
@@ -204,3 +202,4 @@ HOOK:
   DisableAugmentationHook:
     DISABLE_AUG_LIST: ['gt_sampling']
     NUM_LAST_EPOCHS: 4
+

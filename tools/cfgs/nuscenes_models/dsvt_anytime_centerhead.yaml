@@ -56,7 +56,7 @@ DATA_CONFIG:
         VOXEL_SIZE: [0.3, 0.3, 8.0]
 
 MODEL:
-  NAME: TransFusionAnytime
+  NAME: CenterPointAnytimeV2
 
   VFE:
     NAME: DynPillarVFE
@@ -101,76 +101,58 @@ MODEL:
     UPSAMPLE_STRIDES: [ 0.5, 1, 2 ]
     NUM_UPSAMPLE_FILTERS: [ 128, 128, 128 ]
 
-
   DENSE_HEAD:
-    CLASS_AGNOSTIC: False
-    NAME: TransFusionHead
+      NAME: CenterHeadGroupSliced
+      CLASS_AGNOSTIC: False
 
-    USE_BIAS_BEFORE_NORM: False
+      CLASS_NAMES_EACH_HEAD: [
+          ['car'], 
+          ['truck', 'construction_vehicle'],
+          ['bus', 'trailer'],
+          ['barrier'],
+          ['motorcycle', 'bicycle'],
+          ['pedestrian', 'traffic_cone'],
+      ]
 
-    NUM_PROPOSALS: 200
-    HIDDEN_CHANNEL: 128
-    NUM_CLASSES: 10
-    NUM_HEADS: 8
-    NMS_KERNEL_SIZE: 3
-    FFN_CHANNEL: 256
-    DROPOUT: 0
-    BN_MOMENTUM: 0.1
-    ACTIVATION: relu
-
-    NUM_HM_CONV: 2
-    SEPARATE_HEAD_CFG:
-      HEAD_ORDER: ['center', 'height', 'dim', 'rot', 'vel']
-      HEAD_DICT: {
-          'center': {'out_channels': 2, 'num_conv': 2},
-          'height': {'out_channels': 1, 'num_conv': 2},
-          'dim': {'out_channels': 3, 'num_conv': 2},
-          'rot': {'out_channels': 2, 'num_conv': 2},
-          'vel': {'out_channels': 2, 'num_conv': 2},
-          'iou': {'out_channels': 1, 'num_conv': 2},
-
-      }
-
-    TARGET_ASSIGNER_CONFIG:
-      FEATURE_MAP_STRIDE: 2
-      DATASET: nuScenes
-      GAUSSIAN_OVERLAP: 0.1
-      MIN_RADIUS: 2
-      HUNGARIAN_ASSIGNER:
-          cls_cost: {'gamma': 2.0, 'alpha': 0.25, 'weight': 0.15}
-          reg_cost: {'weight': 0.25}
-          iou_cost: {'weight': 0.25}
-  
-    LOSS_CONFIG:
-      LOSS_WEIGHTS: {
-              'cls_weight': 1.0,
-              'bbox_weight': 0.25,
-              'hm_weight': 1.0,
-              'loss_iou_rescore_weight': 0.5,
-              'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]
+      SHARED_CONV_CHANNEL: 64
+      USE_BIAS_BEFORE_NORM: False
+      NUM_HM_CONV: 2
+      SEPARATE_HEAD_CFG:
+          HEAD_ORDER: ['center', 'center_z', 'dim', 'rot', 'vel']
+          HEAD_DICT: {
+              'center': {'out_channels': 2, 'num_conv': 2},
+              'center_z': {'out_channels': 1, 'num_conv': 2},
+              'dim': {'out_channels': 3, 'num_conv': 2},
+              'rot': {'out_channels': 2, 'num_conv': 2},
+              'vel': {'out_channels': 2, 'num_conv': 2},
           }
-      LOSS_CLS:
-        use_sigmoid: True
-        gamma: 2.0
-        alpha: 0.25
 
-    POST_PROCESSING:
-      SCORE_THRESH: 0.001
-      POST_CENTER_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-      USE_IOU_TO_RECTIFY_SCORE: True 
-      IOU_RECTIFIER: [0.5]
-      NMS_CONFIG:
-        NMS_TYPE: nms_gpu
-        NMS_THRESH: 0.2
-        NMS_PRE_MAXSIZE: 1000
-        NMS_POST_MAXSIZE: 100
-        SCORE_THRES: 0.01
+      TARGET_ASSIGNER_CONFIG:
+          FEATURE_MAP_STRIDE: 2
+          NUM_MAX_OBJS: 500
+          GAUSSIAN_OVERLAP: 0.1
+          MIN_RADIUS: 2
+
+      LOSS_CONFIG:
+          LOSS_WEIGHTS: {
+              'cls_weight': 1.0,
+              'loc_weight': 0.25,
+              'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]
+          }
+
+      POST_PROCESSING:
+          SCORE_THRESH: 0.3
+          POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
+          MAX_OBJ_PER_SAMPLE: 500
+          NMS_CONFIG:
+              NMS_TYPE: nms_gpu
+              NMS_THRESH: 0.2
+              NMS_PRE_MAXSIZE: 1000
+              NMS_POST_MAXSIZE: 83
 
   POST_PROCESSING:
-    RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-    SCORE_THRESH: 0.001
-    OUTPUT_RAW_SCORE: False
-    EVAL_METRIC: kitti
+      RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
+      EVAL_METRIC: kitti
 
   DEADLINE_SEC: 9999.9
   STREAMING_EVAL: False
@@ -200,7 +182,3 @@ OPTIMIZATION:
   GRAD_NORM_CLIP: 35
   LOSS_SCALE_FP16: 4.0
 
-HOOK:
-  DisableAugmentationHook:
-    DISABLE_AUG_LIST: ['gt_sampling']
-    NUM_LAST_EPOCHS: 4

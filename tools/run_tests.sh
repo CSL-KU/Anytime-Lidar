@@ -107,8 +107,9 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
     #DSVT mymodel
+    #CFG_FILE="./cfgs/nuscenes_models/dsvt.yaml"
     CFG_FILE="./cfgs/nuscenes_models/dsvt_anytime.yaml"
-    CKPT_FILE="../models/DSVT_nusc_8epochs.pth"
+    CKPT_FILE="../models/DSVT_Nuscenes_val.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -146,7 +147,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml" \
 	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/dsvt_anytime.yaml" )
+	"./cfgs/nuscenes_models/dsvt_anytime.yaml" \
+	"./cfgs/nuscenes_models/dsvt.yaml" )
 
     CKPT_FILES=( \
 	"../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
@@ -162,7 +164,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
 	"../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth" \
 	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"  \
-	"../models/DSVT_nusc_8epochs.pth" )
+	"../models/DSVT_Nuscenes_val.pth" \
+	"../models/DSVT_Nuscenes_val.pth" )
 
     for m in ${!CFG_FILES[@]}
     do

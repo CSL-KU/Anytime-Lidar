@@ -43,11 +43,11 @@ class AnytimeCalibrator():
         if model is None:
             self.dataset = None
             #NOTE modify the following params depending on the config file
-            self.num_det_heads = 8
+            #self.num_det_heads = 8
             self.num_tiles = 18
         else:
             self.dataset = model.dataset
-            self.num_det_heads = len(model.dense_head.class_names_each_head)
+            #self.num_det_heads = len(model.dense_head.class_names_each_head)
             self.num_tiles = model.model_cfg.TILE_COUNT
 
         self.time_reg_degree = 2
