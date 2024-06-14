@@ -544,7 +544,7 @@ class CenterHeadGroupSliced(nn.Module):
                     x = torch.nn.functional.pad(x, (p,p,p,p))
                 x = m(x)
 
-            x = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], x,
+            x = scatter_sliced_tensors(data_dict['chosen_tile_coords'], x,
                 self.sched_algo, self.tcount)
             for name, attr in zip(self.attr_conv_names, x):
                 pd[name] = attr
@@ -597,7 +597,7 @@ class CenterHeadGroupSliced(nn.Module):
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
-        heatmaps = self.scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps,
+        heatmaps = scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps,
                 self.sched_algo, self.tcount)
         data_dict['pred_dicts'] = [{'hm' : hm} for hm in heatmaps]
 
