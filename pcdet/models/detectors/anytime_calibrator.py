@@ -227,6 +227,12 @@ class AnytimeCalibrator():
             bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
             self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
                     for arr in bb2d_time_data])
+
+            assert self.bb2d_times_ms[-1] != 0.
+            for i in range(self.bb2d_times_ms.shape[0]-1, 0, -1):
+                if self.bb2d_times_ms[i] == 0.:
+                    self.bb2d_times_ms[i] = self.bb2d_times_ms[i+1]
+
             print('bb2d_times_ms')
             print(self.bb2d_times_ms)
 
