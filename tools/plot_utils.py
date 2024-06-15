@@ -305,9 +305,10 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
         return
 
     bl_eval_dict = exps_dict[e1][-1]
-    alv2_eval_dict_1 = exps_dict[e2][-1]
-    alv2_eval_dict_2 = exps_dict[e2][0] # is this the 100ms case?
-    eval_data = [bl_eval_dict, alv2_eval_dict_1, alv2_eval_dict_2]
+    #alv2_eval_dict_1 = exps_dict[e2][-1]
+    #alv2_eval_dict_2 = exps_dict[e2][0] # is this the 90ms case?
+    alv2_eval_dicts = list(reversed(exps_dict[e2]))
+    eval_data = [bl_eval_dict] + alv2_eval_dicts
 
 #    # Create CenterHead-PostAll
 #    for data in eval_data:
@@ -317,18 +318,21 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
 
     components = ['Backbone3D', 'Backbone2D', 'CenterHead']
 
-    fig, axes = plt.subplots(1, 1, figsize=(4, 6), constrained_layout=True)
     #axes = axes.ravel()
 
     #labels = [str(e['deadline_msec']) + 'msec' for e in eval_data]
     labels = [ \
         'CenterPoint75\nNo Deadline', \
         'VALO-CP75\nNo Deadline', \
+        'VALO-CP75\n285 ms Deadline', \
+        'VALO-CP75\n220 ms Deadline', \
+        'VALO-CP75\n155 ms Deadline', \
         'VALO-CP75\n90 ms Deadline']
     #labels = [ 'CenterPoint75', 'VALO-CP75']
 
     for comp in components:
-        fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
+        #fig, ax = plt.subplots(1, 1, figsize=(4, 3), constrained_layout=True)
+        fig, ax = plt.subplots(1, 1, figsize=(8, 3), constrained_layout=True)
         time_data = [np.array(ed['exec_times'][comp]) for ed in  eval_data]
         #bb3d_pred_err = [ np.expand_dims(arr, -1) for arr in bb3d_pred_err]
 
@@ -362,25 +366,26 @@ def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
 
 def plot_func_bb3d_time_diff(out_path, exps_dict):
     # compare execution times end to end
-    fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
         if 'bb3d_preds' not in evals[0] or not evals[0]['bb3d_preds']:
             continue
+        fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
         #evals = evals[:4] # use periods 100 150 200 250
-        evals = [evals[1]] + [evals[3]]
+        #evals = [evals[1]] + [evals[3]]
+        #evals = [evals[-2]] + [evals[-1]]
 
         labels = []
         for e in evals:
             m = e['method']
             dl = e["deadline_msec"]
-            if m == 4 or m == 6:
-                labels.append(f'History (dl={dl} ms)')
-            elif m == 5 or m == 7:
-                labels.append(f'Quadratic (dl={dl} ms)')
-            else:
-                continue
-                labels.append(f"VALO {str(e['deadline_msec'])}"
-                        " ms deadline")
+            #if m == 4 or m == 6:
+            labels.append(f'History (dl={dl} ms)')
+            #elif m == 5 or m == 7:
+            #    labels.append(f'Quadratic (dl={dl} ms)')
+            #else:
+            #    continue
+            #labels.append(f"VALO {str(e['deadline_msec'])}"
+            #            " ms deadline")
 
         #labels = [f"VALO {str(e['deadline_msec'])} ms period" for e in evals]
         bb3d_pred_err = [np.array(e['exec_times']['Backbone3D']) - np.array(e['bb3d_preds']) \
@@ -402,15 +407,15 @@ def plot_func_bb3d_time_diff(out_path, exps_dict):
             cdf = np.cumsum(hist * np.diff(bin_edges))
             ax.plot(bin_edges[1:], cdf, linestyle='-', label=label)
 
-    ax.set_ylabel('CDF', fontsize='x-large')
-    ax.set_xlabel('(Actual - Predicted) 3D Backbone time (msec)', fontsize='x-large')
-    ax.legend()
-    ax.grid('True', ls='--')
-    ax.set_ylim(-0.05, 1.10)
-    #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
-    #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
-    #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
-    plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.pdf")
+        ax.set_ylabel('CDF', fontsize='x-large')
+        ax.set_xlabel('(Actual - Predicted) 3D Backbone time (msec)', fontsize='x-large')
+        ax.legend()
+        ax.grid('True', ls='--')
+        ax.set_ylim(-0.05, 1.10)
+        #ax.set_ylabel('Backbone 3D time\nActual - Predicted (msec)', fontsize='x-large')
+        #ax.set_xlabel('Deadline (msec)', fontsize='x-large')
+        #fig.suptitle("Backbone3D time prediction error", fontsize='x-large')
+        plt.savefig(out_path + f"/{exp_name}_bb3d_pred_err.pdf")
 
 
 def plot_func_area_processed(out_path, exps_dict):
@@ -442,7 +447,7 @@ def plot_func_area_processed(out_path, exps_dict):
 def plot_func_tile_drop_rate(out_path, exps_dict):
     # compare execution times end to end
     for exp_name, evals in exps_dict.items(): # This loop runs according to num of methods
-        if exp_name != 'VALO' or 'chosen_tiles_1' not in evals[0] or not evals[0]['chosen_tiles_1']:
+        if 'VALO' not in exp_name or 'chosen_tiles_1' not in evals[0] or not evals[0]['chosen_tiles_1']:
             continue
 
         evals = evals[:4] # use periods 100 150 200 250
@@ -463,9 +468,6 @@ def plot_func_tile_drop_rate(out_path, exps_dict):
             #perc99 = np.percentile(data, 99)
             #data99 = data[data_abs < perc99]
             unq, cnts = np.unique(data, return_counts=True)
-
-            print(label, ', num droped tiles:', unq, ', perc', \
-                    np.round((cnts/data.shape[0])*1000)/10)
 
             # Calculate the histogram
             hist, bin_edges = np.histogram(data, bins=100, density=True)
@@ -609,7 +611,7 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
 
     plt.savefig(out_path + "/normalized_NDS_deadlines.pdf")
 
-    fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
+    fig, ax = plt.subplots(1, 1, figsize=(9, 3), constrained_layout=True)
     labels = list(merged_exps_dict.keys())
     #x_values = np.arange(len(labels))
     x_values = labels
