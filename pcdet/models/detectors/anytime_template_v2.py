@@ -225,7 +225,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
             num_tiles, tiles_queue = round_robin_sched_helper(
                     netc, self.last_tile_coord, self.tcount)
-
         if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR or \
                 self.sched_algo == SchedAlgo.AdaptiveRR:
             batch_dict['tiles_queue'] = tiles_queue
@@ -259,15 +258,16 @@ class AnytimeTemplateV2(Detector3DTemplate):
             #        break
             #####
 
-            if (not self.is_calibrating() and diffs[-1]) or (self.is_calibrating() and \
+            # when reset, process all ignoring deadline
+            if (not self.is_calibrating() and \
+                    (diffs[-1] or self.last_tile_coord == self.init_tile_coord)) or \
+                    (self.is_calibrating() and \
                     len(netc) <= self.calibrator.get_chosen_tile_num()):
                 # choose all
                 chosen_tile_coords = netc
                 if self.sched_algo == SchedAlgo.MirrorRR:
                     self.last_tile_coord = self.init_tile_coord
                 tiles_idx=0
-                #print('\nPREdicted voxels:')
-                #print(num_voxel_preds[-1].astype(np.int).flatten())
                 predicted_bb3d_time = float(bb3d_times[-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
                 predicted_voxels = num_voxel_preds[-1].astype(np.int).flatten()
@@ -281,8 +281,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                         tiles_idx += 1
 
-                #print('\npredicted voxels:')
-                #print(num_voxel_preds[tiles_idx-1].astype(np.int).flatten())
                 predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
                 predicted_voxels = num_voxel_preds[tiles_idx-1].astype(np.int).flatten()
@@ -344,10 +342,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 if self.use_voxelnext:
                     out = batch_dict['encoded_spconv_tensor']
                     batch_dict['bb3d_intermediary_vinds'].append(out.indices)
-            #print('\nactual voxels:')
             num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
                     [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=np.int)
-            #print(num_voxels_actual)
             self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
         else:
             self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
