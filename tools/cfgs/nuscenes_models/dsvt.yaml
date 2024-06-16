@@ -154,7 +154,7 @@ MODEL:
         alpha: 0.25
 
     POST_PROCESSING:
-      SCORE_THRESH: 0.001
+      SCORE_THRESH: 0.
       POST_CENTER_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
       USE_IOU_TO_RECTIFY_SCORE: True 
       IOU_RECTIFIER: [0.5]
@@ -166,7 +166,7 @@ MODEL:
 
   POST_PROCESSING:
     RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-    SCORE_THRESH: 0.001
+    SCORE_THRESH: 0.
     OUTPUT_RAW_SCORE: False
     EVAL_METRIC: kitti      
 

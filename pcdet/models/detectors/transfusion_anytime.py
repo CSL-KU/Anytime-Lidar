@@ -2,12 +2,35 @@ from .anytime_template_v2 import AnytimeTemplateV2
 import torch
 from easydict import EasyDict as edict
 from ..model_utils import model_nms_utils
+from ...ops.cuda_projection import cuda_projection
+import numpy as np
+import numba
+
+@numba.jit(nopython=True)
+def filter_projections(box_x, pc_min_x, pc_max_x, chosen_tile_coords, tcount_max):
+    to_keep = np.empty(box_x.shape[0], dtype=np.bool_)
+
+    pc_xrange = pc_max_x-pc_min_x
+    tile_sz = pc_xrange / tcount_max
+
+    real_tile_coords = np.empty(len(chosen_tile_coords), dtype=np.float_)
+    for i in range(real_tile_coords.shape[0]):
+        real_tile_coords[i] = chosen_tile_coords[i] / tcount_max * pc_xrange + pc_min_x
+
+    for i in range(box_x.shape[0]):
+        to_keep[i] = True
+        for coord in real_tile_coords:
+            if box_x[i] >= coord and box_x[i] <= coord + tile_sz:
+                to_keep[i] = False
+                break
+
+    return to_keep
 
 class TransFusionAnytime(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark = False
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -85,34 +108,31 @@ class TransFusionAnytime(AnytimeTemplateV2):
         self.measure_time_end('TransfusionHead')
 
         final_pred_dicts = batch_dict['final_box_dicts']
-        #for d in final_pred_dicts: # per batch
-        #    for k,v in d.items():
-        #        print(k, v.size())
+
+        final_pred_dicts[0]['orig_pred_boxes'] = final_pred_dicts[0]['pred_boxes']
+        final_pred_dicts[0]['orig_pred_scores'] = final_pred_dicts[0]['pred_scores']
+        final_pred_dicts[0]['orig_pred_labels'] = final_pred_dicts[0]['pred_labels']
 
         self.measure_time_start('ProjectionNMS')
         if 'projections_nms' in batch_dict:
             proj_dict = batch_dict['projections_nms']
 
-            boxes = torch.cat((final_pred_dicts[0]['pred_boxes'], proj_dict['pred_boxes']))
-            scores = torch.cat((final_pred_dicts[0]['pred_scores'], proj_dict['pred_scores']))
-            labels = torch.cat((final_pred_dicts[0]['pred_labels']-1, proj_dict['pred_labels']))
+            # filter the projections corresponding to processed tiles
+            to_keep = filter_projections(proj_dict['pred_boxes'][:, 0].cpu().numpy(),
+                    self.pc_range[0].item(), self.pc_range[3].item(),
+                    batch_dict['chosen_tile_coords'], self.tcount)
+            to_keep = torch.from_numpy(to_keep).cuda()
 
-            nms_config = edict({
-                'NMS_PRE_MAXSIZE': 1000,
-                'NMS_POST_MAXSIZE': 200,
-                'NMS_THRESH': 0.5,
-                'NMS_TYPE': 'nms_gpu'
-            })    
+            # Choose the top num_proposals detections among the projected and detected ones
+            scores = torch.cat((final_pred_dicts[0]['pred_scores'],
+                proj_dict['pred_scores'][to_keep]))
+            scores, inds = torch.topk(scores, self.model_cfg.DENSE_HEAD.NUM_PROPOSALS)
             
-            selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                box_scores=scores, box_preds=boxes,
-                nms_config=nms_config,
-                score_thresh=None
-            )
-
-            final_pred_dicts[0]['pred_boxes'] = boxes[selected]
-            final_pred_dicts[0]['pred_scores'] = selected_scores
-            final_pred_dicts[0]['pred_labels'] = labels[selected]+1
+            final_pred_dicts[0]['pred_boxes'] = torch.cat((final_pred_dicts[0]['pred_boxes'],
+                proj_dict['pred_boxes'][to_keep]))[inds]
+            final_pred_dicts[0]['pred_scores'] = scores
+            final_pred_dicts[0]['pred_labels'] = torch.cat((final_pred_dicts[0]['pred_labels'],
+                proj_dict['pred_labels'][to_keep]+1))[inds]
 
         self.measure_time_end('ProjectionNMS')
 
@@ -158,8 +178,9 @@ class TransFusionAnytime(AnytimeTemplateV2):
         print('Tensor size is:', batch_dict['spatial_features'].size())
         for i in range(1, self.tcount+1):
             dummy_dict['chosen_tile_coords'] = torch.arange(i)
+            dummy_dict['sched_algo'] = self.sched_algo
+            dummy_dict['tcount'] = self.tcount
             dummy_dict = self.backbone_2d(dummy_dict)
-            inputs = dummy_dict['spatial_features_2d']
-            self.dense_head.shared_conv(inputs)
+            self.dense_head.predict(dummy_dict)
         print('done.')
         self.cudnn_calibrated = True
