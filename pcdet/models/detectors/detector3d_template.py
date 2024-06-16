@@ -297,14 +297,20 @@ class Detector3DTemplate(nn.Module):
         pred_dict = batch_dict['final_box_dicts'][0]
 
         # Before appending the dets, extract the projected ones
-        proj_mask = pred_dict['pred_scores'] > self.score_thresh
-        for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
-            pred_dict[k] = pred_dict[k][proj_mask]
+        if self.score_thresh == 0:
+            for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
+                pred_dict[k] = pred_dict['orig_'+k]
+        else:
+            proj_mask = pred_dict['pred_scores'] > self.score_thresh
+            for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
+                pred_dict[k] = pred_dict[k][proj_mask]
 
         new_dets_dict = {}
         score_inds = torch.argsort(pred_dict['pred_scores'])
         for k in ('pred_boxes', 'pred_labels'):
             new_dets_dict[k] = pred_dict[k][score_inds]
+        if self.score_thresh == 0:
+            new_dets_dict['pred_scores'] = pred_dict['pred_scores'][score_inds]
 
         # update num dets per tile
         W, W_start = self.pc_range[3] - self.pc_range[0], self.pc_range[0]
@@ -329,6 +335,9 @@ class Detector3DTemplate(nn.Module):
 
         for k in ('pred_boxes', 'pred_labels'):
             self.past_detections[k] = torch.cat((self.past_detections[k], new_dets_dict[k]))
+        if self.score_thresh == 0:
+            self.past_detections['pred_scores'] = torch.cat((self.past_detections['pred_scores'],
+                    new_dets_dict['pred_scores']))
 
         return batch_dict
 
@@ -352,6 +361,8 @@ class Detector3DTemplate(nn.Module):
             # Remove oldest dets
             for k in ['pose_idx', 'pred_boxes', 'pred_labels']:
                 self.past_detections[k] = self.past_detections[k][-max_num_proj:]
+            if self.score_thresh == 0:
+                self.past_detections['pred_scores'] = self.past_detections['pred_scores'][-max_num_proj:]
 
         # Weed out using the pose_idx of first det
         if self.past_detections['pose_idx'].size(0) > 0:
@@ -421,8 +432,11 @@ class Detector3DTemplate(nn.Module):
         else:
             # Do projection in the GPU
             if self.past_detections['pred_boxes'].size(0) > 0:
-                proj_dict['pred_scores'] = self.score_thresh - \
-                        (self.score_thresh / (self.past_detections['pose_idx'] + 2))
+                if self.score_thresh == 0:
+                    proj_dict['pred_scores'] = self.past_detections['pred_scores']
+                else:
+                    proj_dict['pred_scores'] = self.score_thresh - \
+                            (self.score_thresh / (self.past_detections['pose_idx'] + 2))
                 proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
                 with torch.cuda.stream(self.projection_stream):
                     proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
@@ -470,6 +484,8 @@ class Detector3DTemplate(nn.Module):
                 range_mask = range_mask[:-num_boxes]
             for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
                 self.past_detections[k] = self.past_detections[k][range_mask]
+            if self.score_thresh == 0:
+                self.past_detections['pred_scores'] = self.past_detections['pred_scores'][range_mask]
 
             self.projection_stream.synchronize()
 
