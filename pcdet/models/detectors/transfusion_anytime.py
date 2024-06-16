@@ -126,7 +126,7 @@ class TransFusionAnytime(AnytimeTemplateV2):
             # Choose the top num_proposals detections among the projected and detected ones
             scores = torch.cat((final_pred_dicts[0]['pred_scores'],
                 proj_dict['pred_scores'][to_keep]))
-            scores, inds = torch.topk(scores, self.model_cfg.DENSE_HEAD.NUM_PROPOSALS)
+            scores, inds = torch.topk(scores, min(scores.size(0), self.model_cfg.DENSE_HEAD.NUM_PROPOSALS))
             
             final_pred_dicts[0]['pred_boxes'] = torch.cat((final_pred_dicts[0]['pred_boxes'],
                 proj_dict['pred_boxes'][to_keep]))[inds]
