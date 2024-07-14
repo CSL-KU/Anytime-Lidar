@@ -4,7 +4,10 @@ import pickle
 import random
 import shutil
 import subprocess
-import SharedArray
+try:
+    import SharedArray
+except:
+    pass
 
 import numpy as np
 import torch

@@ -5,8 +5,11 @@ import copy
 import numpy as np
 from skimage import io
 import torch
-import SharedArray
 import torch.distributed as dist
+try:
+    import SharedArray
+except:
+    pass
 
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils import box_utils, common_utils, calibration_kitti

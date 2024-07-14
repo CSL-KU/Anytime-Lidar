@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'bus', 'bicycle', 'pedestrian']
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-    POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+    POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
@@ -52,12 +52,14 @@ DATA_CONFIG:
           }
 
         - NAME: transform_points_to_voxels_placeholder
-          VOXEL_SIZE: [0.1, 0.1, 0.2]
+          VOXEL_SIZE: [0.075, 0.075, 0.2]
           MAX_POINTS_PER_VOXEL: 10
           MAX_NUMBER_OF_VOXELS: {
-            'train': 60000,
-            'test': 60000
+            'train': 120000,
+            'test': 160000
           }
+
+
 
 MODEL:
     NAME: CenterPointAnytimeV2
@@ -131,16 +133,16 @@ MODEL:
 
     DEADLINE_SEC: 10.0
     STREAMING_EVAL: False
-    TILE_COUNT: 16
-    METHOD: 11
+    TILE_COUNT: 18
+    METHOD: 4
     PROJECTION_COEFF: 1.0
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4
-    NUM_EPOCHS: 30
+    NUM_EPOCHS: 20
 
     OPTIMIZER: adam_onecycle
-    LR: 0.003
+    LR: 0.001
     WEIGHT_DECAY: 0.01
     MOMENTUM: 0.9
 

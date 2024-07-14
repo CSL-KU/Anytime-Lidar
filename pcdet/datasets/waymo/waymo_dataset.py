@@ -9,11 +9,14 @@ import copy
 import numpy as np
 import torch
 import multiprocessing
-import SharedArray
 import torch.distributed as dist
 from tqdm import tqdm
 from pathlib import Path
 from functools import partial
+try:
+    import SharedArray
+except:
+    pass
 
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import box_utils, common_utils
