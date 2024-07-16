@@ -1,4 +1,5 @@
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -66,8 +67,9 @@ torch::Tensor slice_and_batch_nhwc(
   torch::Tensor outp = torch::empty({num_slices, C, slice_size, slice_size},
       tensor_options);
 
-  AT_DISPATCH_FLOATING_TYPES(outp.type(), "slice_and_batch_nhwc", ([&] {
-    slice_and_batch_nhwc_kernel<scalar_t><<<grid_dims, block_dims>>>(
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(outp.type(), "slice_and_batch_nhwc", ([&] {
+    slice_and_batch_nhwc_kernel<scalar_t><<<grid_dims, block_dims, 0, stream>>>(
       inp.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
       slice_indices.packed_accessor32<int16_t,2,torch::RestrictPtrTraits>(),
       outp.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>());
