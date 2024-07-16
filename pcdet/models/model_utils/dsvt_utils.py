@@ -148,4 +148,3 @@ def get_continous_inds(setnum_per_win):
     set_inds_in_win = set_inds_in_win - 1 # [0, 0, 1, 0, 0, 1, 2]
     
     return set_win_inds, set_inds_in_win
-

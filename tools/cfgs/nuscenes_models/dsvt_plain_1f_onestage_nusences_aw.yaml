@@ -141,24 +141,27 @@ MODEL:
 
     POST_PROCESSING:
       SCORE_THRESH: 0.1
-      POST_CENTER_LIMIT_RANGE: [-80, -80, -10.0, 80, 80, 10.0]
+      POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
       MAX_OBJ_PER_SAMPLE: 500
 
       USE_IOU_TO_RECTIFY_SCORE: True
-      IOU_RECTIFIER: [0.68, 0.71, 0.65]
+      IOU_RECTIFIER: [0.5]
 
       NMS_CONFIG:
-        NMS_TYPE: multi_class_nms  # only for centerhead， use mmdet3d version nms
-        NMS_THRESH: [0.7, 0.6, 0.55]
-        NMS_PRE_MAXSIZE: [4096, 4096, 4096]
-        NMS_POST_MAXSIZE: [500, 500, 500]
-
+        NMS_TYPE: nms_gpu
+        NMS_THRESH: 0.2
+        NMS_PRE_MAXSIZE: 1000
+        NMS_POST_MAXSIZE: 100
 
   POST_PROCESSING:
     RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
     SCORE_THRESH: 0.1
     OUTPUT_RAW_SCORE: False
-    EVAL_METRIC: kitti      
+    EVAL_METRIC: kitti
+
+  DEADLINE_SEC: 10.0
+  STREAMING_EVAL: False
+  METHOD: 20
 
 OPTIMIZATION:
   BATCH_SIZE_PER_GPU: 4
