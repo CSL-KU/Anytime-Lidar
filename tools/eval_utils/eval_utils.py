@@ -66,7 +66,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     batch_size = dataloader.batch_size
     if 'calibrate' in dir(model):
         torch.cuda.cudart().cudaProfilerStop()
-        model.calibrate()
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=args.use_amp):
+                model.calibrate()
         torch.cuda.cudart().cudaProfilerStart()
 
     global speed_test
@@ -128,7 +130,9 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                     ts = get_ts(all_data_dicts[det_idx])
                     inf_idx = det_idx if det_ts == ts else det_idx - 1
                     #print(f'Init detection {inf_idx}')
-                    pred_dicts, ret_dict = model([inf_idx])
+                    with torch.cuda.amp.autocast(enabled=args.use_amp):
+                        pred_dicts, ret_dict = model([inf_idx])
+
                 #save_det_idx = det_idx #DEBUG
                 disp_dict = {}
                 statistics_info(cfg, ret_dict, metric, disp_dict)
@@ -263,7 +267,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             data_indexes = [i*batch_size+j for j in range(batch_size) \
                     if i*batch_size+j < len(dataset)]
             with torch.no_grad():
-                pred_dicts, ret_dict = model(data_indexes)
+                with torch.cuda.amp.autocast(enabled=args.use_amp):
+                    pred_dicts, ret_dict = model(data_indexes)
             batch_dict = model.latest_batch_dict
             det_elapsed_musec.append(model.last_elapsed_time_musec)
             disp_dict = {}
