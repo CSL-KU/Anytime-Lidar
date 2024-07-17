@@ -2,6 +2,8 @@ import copy
 import numpy as np
 import torch
 import torch.nn as nn
+import torch_tensorrt
+import time
 from torch.nn.init import kaiming_normal_
 from ..model_utils import model_nms_utils
 from ..model_utils import centernet_utils
@@ -10,13 +12,11 @@ from ...ops.cuda_slicer import cuda_slicer
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from ..detectors.sched_helpers import SchedAlgo
 
-import time
-
 # Divides input channels equally to convolutions
 # Produces some useless output channels for the sake of efficiency
 class AdaptiveGroupConv(nn.Module):
     def __init__(self, input_channels, output_channels_list, ksize,
-            stride, padding, bias):
+            stride, padding, bias, slice_after_forward=True):
         super().__init__()
 
         self.outp_ch_l = output_channels_list
@@ -26,6 +26,7 @@ class AdaptiveGroupConv(nn.Module):
         self.conv = nn.Conv2d(input_channels, max_ch * self.num_outp,
                 kernel_size=ksize,stride=stride,
                 padding=padding, groups=self.num_outp, bias=bias)
+        self.slc_aft_fwd=slice_after_forward
 
     def fill_bias(self, bias):
         m = self.conv
@@ -39,16 +40,17 @@ class AdaptiveGroupConv(nn.Module):
             nn.init.constant_(m.bias, 0)
 
     def forward(self, inp):
+        y = self.conv(inp)
+        return self.slice_output(y) if self.slc_aft_fwd else y
+
+    def slice_output(self, y):
         outp = [None] * self.num_outp
         max_ch = max(self.outp_ch_l)
-
-        y = self.conv(inp)
 
         for i, ch in enumerate(self.outp_ch_l):
             outp[i] = y[:,(i*max_ch):(i*max_ch+ch)]
 
         return outp
-
 
 
 class CenterHeadGroupSliced(nn.Module):
@@ -166,7 +168,7 @@ class CenterHeadGroupSliced(nn.Module):
                 outp_channels = inp_channels
 
             attr_list.append(AdaptiveGroupConv(outp_channels, attr_outp_channels, \
-                    ksize, stride=1, padding=0, bias=True))
+                    ksize, stride=1, padding=0, bias=True, slice_after_forward=False))
 
             attr_convs = nn.Sequential(*attr_list)
             if head_idx == 0:
@@ -180,7 +182,7 @@ class CenterHeadGroupSliced(nn.Module):
             attr_convs[-1].init_kaiming()
 
             self.det_heads.append(attr_convs)
-        self.calibrated = [False] * num_heads
+        self.compiled_detheads = [None] * num_heads
 
         self.predict_boxes_when_training = predict_boxes_when_training
         self.forward_ret_dict = {}
@@ -587,21 +589,21 @@ class CenterHeadGroupSliced(nn.Module):
 
         return data_dict
 
-    def forward_eval_conv(self, data_dict):
-        assert data_dict['batch_size'] == 1
-        x = data_dict['spatial_features_2d']
+    def scat_heatmaps_and_gen_pred_dicts(self, data_dict):
+        heatmaps = scatter_sliced_tensors(data_dict['chosen_tile_coords'],
+                data_dict['heatmaps'], self.sched_algo, self.tcount)
+        data_dict['pred_dicts'] = [{'hm' : hm} for hm in heatmaps]
+        return data_dict
 
-        shr_conv_outp = self.shared_conv(x)
-        data_dict['shr_conv_outp'] = shr_conv_outp
+    def forward_eval_conv(self, spatial_features_2d):
+        #assert data_dict['batch_size'] == 1
+        shr_conv_outp = self.shared_conv(spatial_features_2d)
 
         # Run heatmap convolutions and gather the actual channels
         heatmaps = self.heatmap_convs(shr_conv_outp)
         heatmaps = [self.sigmoid(hm) for hm in heatmaps]
-        heatmaps = scatter_sliced_tensors(data_dict['chosen_tile_coords'], heatmaps,
-                self.sched_algo, self.tcount)
-        data_dict['pred_dicts'] = [{'hm' : hm} for hm in heatmaps]
 
-        return data_dict
+        return shr_conv_outp, heatmaps
 
     def forward_eval_topk(self, data_dict):
         pred_dicts = data_dict['pred_dicts']
@@ -632,16 +634,12 @@ class CenterHeadGroupSliced(nn.Module):
         return data_dict
 
     def forward_eval_post(self, data_dict):
-
-
         p = pad_size = self.slice_size//2
         shr_conv_outp = scatter_sliced_tensors(data_dict['chosen_tile_coords'], \
                 [data_dict['shr_conv_outp']], self.sched_algo, self.tcount)
         shr_conv_outp = shr_conv_outp[0]
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
         padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
-
-
 
         slc_indices, x_inds, y_inds, i = [], [], [], 0
         for pd in data_dict['pred_dicts']:
@@ -661,27 +659,22 @@ class CenterHeadGroupSliced(nn.Module):
             indices = torch.stack((b_id, torch.cat(x_inds).short(), torch.cat(y_inds).short()), dim=1)
             all_slices = cuda_slicer.slice_and_batch_nhwc(padded_x, indices, self.slice_size)
 
-        for det_idx, (det_head, pd) in enumerate(zip(self.det_heads, data_dict['pred_dicts'])):
-            slc_i_1, slc_i_2 = slc_indices[det_idx]
-            if slc_i_1 == slc_i_2: # no slice
-                continue
+            for det_idx, pd in enumerate(data_dict['pred_dicts']):
+                slc_i_1, slc_i_2 = slc_indices[det_idx]
+                if slc_i_1 == slc_i_2: # no slice
+                    continue
 
-            if not self.calibrated[det_idx] and torch.backends.cudnn.benchmark:
-                self.calibrate_for_cudnn_benchmarking(all_slices[slc_i_1:slc_i_2], det_idx)
+                slc = all_slices[slc_i_1:slc_i_2]
+                if self.compiled_detheads[det_idx] is None: # and torch.backends.cudnn.benchmark:
+                    self.do_compile_dethead(slc, det_idx)
 
-            # It becomes deterministic with cudnn benchmarking enabled, ~1ms
-            outp = det_head(all_slices[slc_i_1:slc_i_2])
+                # It becomes deterministic with cudnn benchmarking enabled, ~1ms
+                outp = self.compiled_detheads[det_idx](slc)
+                outp = self.det_heads[det_idx][-1].slice_output(outp)
 
-            # finally, split the output according to the batches they belong
-            for name, attr in zip(self.attr_conv_names, outp):
-                pd[name] = attr.flatten(-3)
-
-
-#        pred_dicts = self.generate_predicted_boxes_eval(
-#            data_dict['batch_size'], data_dict['pred_dicts'], data_dict['projections_nms']
-#        )
-#
-#        data_dict['final_box_dicts'] = pred_dicts
+                # finally, split the output according to the batches they belong
+                for name, attr in zip(self.attr_conv_names, outp):
+                    pd[name] = attr.flatten(-3)
 
         return data_dict
 
@@ -691,20 +684,21 @@ class CenterHeadGroupSliced(nn.Module):
             det_dict[k] = v.clone().detach()
         return det_dict
 
-    def calibrate_for_cudnn_benchmarking(self, inp, idx):
+    def do_compile_dethead(self, inp, idx):
         max_batch_size = self.max_obj_per_sample
-        print(f'Calibrating detection head {idx+1} for cudnn benchmarking,',
-                ' max batch size:', max_batch_size, ' ...')
 
+        # NOTE Can't save/load the model because its dynamic, will have to
+        # compile it for every run. It takes ~2 sec on orin
+        # Maybe there is a way to do it but I couldn't find
+        print('#'*64 + f'\nCompiling detection head {idx+1} with tensorrt,',
+        ' max batch size:', max_batch_size, ' ...')
         N, C, H, W = inp.size()
-        dummy_inp = torch.rand((max_batch_size, C, H, W), dtype=inp.dtype, device=inp.device)
-        for n in range(1, max_batch_size+1):
-            x = dummy_inp[:n, ...]
-            self.det_heads[idx](x)
-
-        self.calibrated[idx]=True
-        print('done.')
-
+        dyn_inp = torch_tensorrt.Input(min_shape=[1, C, H, W],
+                opt_shape=[max_batch_size//2, C, H, W],
+                max_shape=[max_batch_size, C, H, W],
+                dtype=inp.dtype)
+        self.compiled_detheads[idx] = torch_tensorrt.compile(self.det_heads[idx],
+                ir='dynamo', inputs=[dyn_inp], min_block_size=2)
 
 def scatter_sliced_tensors(chosen_tile_coords, sliced_tensors, sched_algo, tcount):
     #Based on chosen_tile_coords, we need to scatter the output
