@@ -22,12 +22,13 @@ def do_inds_calc(vinds : List[torch.Tensor], vcount_area : torch.Tensor, \
         tcount : int, dividers: torch.Tensor):
     # how would be the overhead if I create a stream here?
     outp = []
-    outp.append(vcount_area[:tcount])
+    outp.append(vcount_area)
     for i, vind in enumerate(vinds):
         voxel_tile_coords = torch.div(vind[:, -1], dividers[i+1], \
                 rounding_mode='trunc').int()
-        outp.append(torch.bincount(voxel_tile_coords, \
-                minlength=tcount)[:tcount].unsqueeze(0))
+        cnts = torch.bincount(voxel_tile_coords, \
+                minlength=tcount).unsqueeze(0)
+        outp.append(cnts)
     return torch.cat(outp, dim=0).cpu() # num sparse layer groups x num_tiles
 
 
@@ -74,9 +75,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
+        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
-#        torch.use_deterministic_algorithms(True)
 
         ################################################################################
         #self.total_num_tiles = self.tcount
@@ -96,7 +98,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         elif self.sched_algo == SchedAlgo.MirrorRR:
             m2 = self.tcount//2
             m1 = m2 - 1
-            self.mtiles = np.array([m1, m2], dtype=np.int32)
+            self.mtiles = np.array([m1, m2], dtype=int)
         self.last_tile_coord = self.init_tile_coord
 
         if self.sched_algo == SchedAlgo.AdaptiveRR:
@@ -135,13 +137,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         elif reset:
             self.sched_reset()
 
-        if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
-                'bb3d_intermediary_vinds' in self.latest_batch_dict:
-            self.fut = do_inds_calc_wrapper(
-                    self.latest_batch_dict['bb3d_intermediary_vinds'],
-                    self.latest_batch_dict['vcount_area'],
-                    self.tcount, torch.tensor(self.dividers))
-
         return deadline_sec_override, reset
 
     def get_nonempty_tiles(self, voxel_coords, training=False):
@@ -166,6 +161,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.training or self.sched_disabled:
             batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords, True)
             return batch_dict
+
+        if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
+                'bb3d_intermediary_vinds' in self.latest_batch_dict:
+            self.fut = do_inds_calc_wrapper(
+                    self.latest_batch_dict['bb3d_intermediary_vinds'],
+                    self.latest_batch_dict['vcount_area'],
+                    self.tcount, torch.tensor(self.dividers))
 
         voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
         vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
@@ -270,7 +272,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 tiles_idx=0
                 predicted_bb3d_time = float(bb3d_times[-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
-                predicted_voxels = num_voxel_preds[-1].astype(np.int).flatten()
+                predicted_voxels = num_voxel_preds[-1].astype(int).flatten()
             else:
                 if self.is_calibrating():
                     tiles_idx = self.calibrator.get_chosen_tile_num()
@@ -283,7 +285,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
                 predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
-                predicted_voxels = num_voxel_preds[tiles_idx-1].astype(np.int).flatten()
+                predicted_voxels = num_voxel_preds[tiles_idx-1].astype(int).flatten()
 
                 # Voxel filtering is needed
                 if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
@@ -343,7 +345,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     out = batch_dict['encoded_spconv_tensor']
                     batch_dict['bb3d_intermediary_vinds'].append(out.indices)
             num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
-                    [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=np.int)
+                    [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
             self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
         else:
             self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
@@ -436,6 +438,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
 
         self.enable_projection = (not self.keep_projection_disabled)
+        print('Projection ', 'enabled' if self.enable_projection else 'disabled')
         self.projection_reset()
         self.last_tile_coord = self.init_tile_coord
         self.sched_reset()
@@ -470,9 +473,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
     def plot_post_eval_data(self):
         import matplotlib.pyplot as plt
         from datetime import datetime
-        #from anytime_calibrator import get_stats
-
-        root_path = '/root/shared_data/latest_exp_plots/'
+        from pathlib import Path
+        root_path = str(Path.home()) + '/shared/latest_exp_plots/'
+        os.makedirs(root_path, exist_ok=True)
         timedata = datetime.now().strftime("%m_%d_%H_%M")
 
         # plot 3d backbone time pred error
@@ -589,78 +592,3 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data_all_{timedata}.pdf')
             #ax.set_xlim([0, 70000])
-
-    def projection_for_test(self, batch_dict):
-        pred_dicts = batch_dict['final_box_dicts']
-
-        if self.enable_projection:
-            # only keeps the previous detection
-            projected_boxes=None
-            pb = self.past_detections['pred_boxes']
-            if len(pb) >= self.projLastNth and pb[-self.projLastNth].size(0) > 0:
-
-                projected_boxes = cuda_projection.project_past_detections(
-                        self.past_detections['pred_boxes'][-self.projLastNth],
-                        self.past_detections['pose_idx'][-self.projLastNth],
-                        self.past_poses[-self.projLastNth].cuda(),
-                        self.cur_pose.cuda(),
-                        self.past_ts[-self.projLastNth].cuda(),
-                        self.cur_ts.item())
-
-                projected_labels = self.past_detections['pred_labels'][-self.projLastNth]
-                projected_scores = self.past_detections['pred_scores'][-self.projLastNth]
-
-            ####USE DETECTION DATA#### START
-#            # Second, append new detections
-#            num_dets = pred_dicts[0]['pred_labels'].size(0)
-#            self.past_detections['num_dets'] = num_dets
-#            # Append the current pose
-#            self.past_poses = self.cur_pose.unsqueeze(0)
-#            self.past_ts = self.cur_ts #.unsqueeze(0)
-#            # Append the pose idx for the detection that will be added
-#            self.past_detections['pose_idx'] = \
-#                    torch.full((num_dets,), 0, dtype=torch.long, device='cuda')
-#
-#            for k in ('pred_boxes', 'pred_scores', 'pred_labels'):
-#                self.past_detections[k] = pred_dicts[0][k]
-#
-#            # append the projected detections
-#            if projected_boxes is not None:
-#                pred_dicts[0]['pred_boxes'] = projected_boxes
-#                pred_dicts[0]['pred_scores'] = projected_scores
-#                pred_dicts[0]['pred_labels'] = projected_labels
-            ####USE DETECTION DATA#### END
-
-            ####USE GROUND TRUTH#### START
-            self.past_detections['pred_boxes'].append(batch_dict['gt_boxes'][0][..., :9])
-            self.past_detections['pred_labels'].append(batch_dict['gt_boxes'][0][...,-1].int())
-            self.past_detections['pred_scores'].append(torch.ones_like(\
-                    self.past_detections['pred_labels'][-1]))
-
-            num_dets = self.past_detections['pred_scores'][-1].size(0)
-            self.past_poses.append(self.cur_pose.unsqueeze(0))
-            self.past_ts.append(self.cur_ts)
-            self.past_detections['pose_idx'].append( \
-                    torch.zeros((num_dets,), dtype=torch.long)) #, device='cuda'))
-            ####USE GROUND TRUTH#### END
-
-            while len(self.past_poses) > self.projLastNth:
-                for k in ('pred_boxes', 'pred_scores', 'pred_labels', 'pose_idx'):
-                    self.past_detections[k].pop(0)
-                self.past_poses.pop(0)
-                self.past_ts.pop(0)
-
-            # append the projected detections
-            if projected_boxes is not None:
-                pred_dicts[0]['pred_boxes']  = projected_boxes
-                pred_dicts[0]['pred_labels'] = projected_labels
-                pred_dicts[0]['pred_scores'] = projected_scores
-            else:
-                # use groud truth if projection was not possible
-                pred_dicts[0]['pred_boxes']  = self.past_detections['pred_boxes'][-1]
-                pred_dicts[0]['pred_labels'] = self.past_detections['pred_labels'][-1]
-                pred_dicts[0]['pred_scores'] = self.past_detections['pred_scores'][-1]
-
-        return batch_dict
-
-

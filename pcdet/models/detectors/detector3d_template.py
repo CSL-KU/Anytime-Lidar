@@ -31,7 +31,6 @@ from ...ops.cuda_projection import cuda_projection
 def pre_forward_hook(module, inp_args):
     dataset_indexes = inp_args[0]
     data_dicts = [module.dataset.getitem_pre(i) for i in dataset_indexes]
-    #data_dict = module.dataset.getitem_pre(dataset_index)
 
     latest_token = data_dicts[0]['metadata']['token']
 
@@ -50,33 +49,23 @@ def pre_forward_hook(module, inp_args):
     dummy_tensor = torch.zeros(1024*1024, device='cuda')
     torch.cuda.synchronize()
 
-    start_time = time.time()
-    torch.cuda.nvtx.range_push('End-to-end')
-    module.measure_time_start('End-to-end')
-    module.measure_time_start('PreProcess')
     deadline_sec_override, reset = module.initialize(latest_token)
     if reset:
         module.latest_batch_dict = None
         module.latest_valid_dets = None
         module.dl_miss_streak = 0
-    #module.measure_time_start('GetitemPost')
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
-    #data_dict = module.dataset.getitem_post(data_dict)
-    #module.measure_time_end('GetitemPost')
-    #module.measure_time_start('CollateBatch')
     batch_dict = module.dataset.collate_batch(data_dicts)
-    #module.measure_time_end('CollateBatch')
-    #module.measure_time_start('LoadToGPU')
+    module.measure_time_start('End-to-end')
+    module.measure_time_start('PreProcess')
+    start_time = time.time()
     load_data_to_gpu(batch_dict)
-    #module.measure_time_end('LoadToGPU')
-    #batch_dict.update(extra_batch)  # deadline, method, etc.
 
     # if deadline is set in the init to override, use that, otherwise, use the regular one
     batch_dict['deadline_sec'] = deadline_sec_override if deadline_sec_override != 0. else deadline_sec
     batch_dict['start_time_sec'] = start_time
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
 
-    torch.cuda.synchronize()
     module.measure_time_end('PreProcess')
     return batch_dict
 
@@ -95,9 +84,7 @@ def post_forward_hook(module, inp_args, outp_args):
         module.measure_time_end('DetectionHead')
     torch.cuda.synchronize()
     module.finish_time = time.time()
-    #print(finish_time - batch_dict['PostSched_start'])
     module.measure_time_end('End-to-end')
-    torch.cuda.nvtx.range_pop()
 
     if 'bb3d_layer_time_events' in batch_dict and \
             'bb3d_layer_times' in module.add_dict:
@@ -138,9 +125,6 @@ def post_forward_hook(module, inp_args, outp_args):
             module.latest_valid_dets = None
     else:
         module.latest_valid_dets = pred_dicts
-
-    #tm = module.finish_time - module.psched_start_time
-    #module._eval_dict['additional']['PostSched'].append(tm)
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
@@ -215,9 +199,6 @@ class Detector3DTemplate(nn.Module):
 
         print('Default deadline is:', self._eval_dict['deadline_sec'])
 
-        # To be filled by the child class, in case needed
-        #self._eval_dict['additional'] = {'PostSched':[]}
-
         self._det_dict_copy = None
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)
         self.post_hook_handle = self.register_forward_hook(post_forward_hook)
@@ -226,7 +207,6 @@ class Detector3DTemplate(nn.Module):
         self.latest_batch_dict = None
         self.latest_valid_dets = None
         self.dl_miss_streak = 0
-        #self.psched_start_time = 0
 
         self.calibrating = 0
         self.prev_scene_token = ''
