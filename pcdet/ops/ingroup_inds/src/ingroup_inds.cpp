@@ -20,10 +20,19 @@ void ingroup_inds_launcher(
 );
 
 
+at::Tensor ingroup_inds_gpu_nograd(at::Tensor group_inds);
+
 void ingroup_inds_gpu(
   at::Tensor group_inds,
   at::Tensor out_inds
 );
+
+
+torch::Tensor ingroup_inds_gpu_nograd(at::Tensor group_inds) {
+  torch::Tensor out_inds = torch::zeros_like(group_inds) - 1;
+  ingroup_inds_gpu(group_inds, out_inds);
+  return out_inds;
+}
 
 void ingroup_inds_gpu(
   at::Tensor group_inds,
@@ -34,7 +43,6 @@ void ingroup_inds_gpu(
   CHECK_INPUT(out_inds);
   int N = group_inds.size(0);
   int max_group_id = group_inds.max().item().toLong();
-
 
   long *group_inds_data = group_inds.data_ptr<long>();
   long *out_inds_data = out_inds.data_ptr<long>();
@@ -51,4 +59,8 @@ void ingroup_inds_gpu(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &ingroup_inds_gpu, "cuda version of get_inner_win_inds of SST");
+}
+
+TORCH_LIBRARY(kucsl, m) { //kucsl here is the domain name
+    m.def("kucsl::ingroup_inds_nograd", &ingroup_inds_gpu_nograd);
 }

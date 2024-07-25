@@ -36,10 +36,14 @@ def get_window_coors(coors, sparse_shape, window_shape, do_shift, shift_list=Non
     sparse_shape_x, sparse_shape_y, sparse_shape_z = sparse_shape
     assert sparse_shape_z < sparse_shape_x, 'Usually holds... in case of wrong order'
 
-    max_num_win_x = int(np.ceil((sparse_shape_x / win_shape_x)) + 1) # plus one here to meet the needs of shift.
-    max_num_win_y = int(np.ceil((sparse_shape_y / win_shape_y)) + 1) # plus one here to meet the needs of shift.
-    max_num_win_z = int(np.ceil((sparse_shape_z / win_shape_z)) + 1) # plus one here to meet the needs of shift.
-    max_num_win_per_sample = max_num_win_x * max_num_win_y * max_num_win_z
+    tmp = torch.tensor([sparse_shape_x / win_shape_x,
+            sparse_shape_y / win_shape_y,
+            sparse_shape_z / win_shape_z],
+            device='cpu', dtype=torch.float)
+    max_nums_win = (torch.ceil(tmp) + 1).int().cuda()
+    max_num_win_z = max_nums_win[2]
+    max_num_win_yz = max_nums_win[1] * max_num_win_z
+    max_num_win_per_sample = max_nums_win[0] * max_num_win_yz
 
     if do_shift:
         if shift_list is not None:
@@ -68,7 +72,7 @@ def get_window_coors(coors, sparse_shape, window_shape, do_shift, shift_list=Non
         assert (win_coors_z == 0).all()
 
     batch_win_inds = coors[:, 0] * max_num_win_per_sample + \
-                        win_coors_x * max_num_win_y * max_num_win_z + \
+                        win_coors_x * max_num_win_yz + \
                         win_coors_y * max_num_win_z + \
                         win_coors_z
 
@@ -88,10 +92,14 @@ def get_pooling_index(coors, sparse_shape, window_shape):
     win_shape_x, win_shape_y, win_shape_z = window_shape
     sparse_shape_x, sparse_shape_y, sparse_shape_z = sparse_shape
     
-    max_num_win_x = int(np.ceil((sparse_shape_x / win_shape_x)))
-    max_num_win_y = int(np.ceil((sparse_shape_y / win_shape_y))) 
-    max_num_win_z = int(np.ceil((sparse_shape_z / win_shape_z))) 
-    max_num_win_per_sample = max_num_win_x * max_num_win_y * max_num_win_z
+    tmp = torch.tensor([sparse_shape_x / win_shape_x,
+            sparse_shape_y / win_shape_y,
+            sparse_shape_z / win_shape_z],
+            device='cpu', dtype=torch.float)
+    max_nums_win = torch.ceil(tmp).int().cuda()
+    max_num_win_z = max_nums_win[2]
+    max_num_win_yz = max_nums_win[1] * max_num_win_z
+    max_num_win_per_sample = max_nums_win[0] * max_num_win_yz
 
     coors_x = coors[:, 3] 
     coors_y = coors[:, 2]
@@ -102,7 +110,7 @@ def get_pooling_index(coors, sparse_shape, window_shape):
     win_coors_z = coors_z // win_shape_z
 
     batch_win_inds = coors[:, 0] * max_num_win_per_sample + \
-                        win_coors_x * max_num_win_y * max_num_win_z + \
+                        win_coors_x * max_num_win_yz + \
                         win_coors_y * max_num_win_z + \
                         win_coors_z
 
@@ -132,9 +140,10 @@ def get_continous_inds(setnum_per_win):
         set_inds_in_win = get_continous_inds(setnum_per_win)
         # we can get: set_inds_in_win = tensor([0, 0, 1, 0, 0, 1, 2])
     '''
-    set_num = setnum_per_win.sum().item() # set_num = 7
+    #set_num = setnum_per_win.sum().item() # set_num = 7
+    set_num = torch.sum(setnum_per_win, 0, keepdim=True)
     setnum_per_win_cumsum = torch.cumsum(setnum_per_win, dim=0)[:-1] # [1, 3, 4]
-    set_win_inds = torch.full((set_num,), 0, device=setnum_per_win.device)
+    set_win_inds = torch.full((set_num[0],), 0, device=setnum_per_win.device)
     set_win_inds[setnum_per_win_cumsum] = 1 # [0, 1, 0, 1, 1, 0, 0]
     set_win_inds = torch.cumsum(set_win_inds, dim=0) # [0, 1, 1, 2, 3, 3, 3]
     

@@ -6,7 +6,7 @@ from torch.nn.init import kaiming_normal_
 from ..model_utils import model_nms_utils
 from ..model_utils import centernet_utils
 from ...utils import loss_utils
-
+from typing import Dict
 
 class SeparateHead(nn.Module):
     def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False):
@@ -49,13 +49,13 @@ class SeparateHead(nn.Module):
 
         return ret_dict
 
-    def forward(self, x):
+    def forward(self, x) -> Dict[str, torch.Tensor]:
         ret_dict = {}
         for cur_name in self.sep_head_dict:
             ret_dict[cur_name] = self.__getattr__(cur_name)(x)
+        ret_dict['hm'] = ret_dict['hm'].sigmoid()
 
         return ret_dict
-
 
 class CenterHead(nn.Module):
     def __init__(self, model_cfg, input_channels, num_class, class_names, grid_size, point_cloud_range, voxel_size,
@@ -118,6 +118,7 @@ class CenterHead(nn.Module):
             "pred_scores": torch.zeros([0], dtype=torch.float,device='cuda'),
             "pred_labels": torch.zeros([0], dtype=torch.int, device='cuda'),
         }
+
 
     def build_losses(self):
         self.add_module('hm_loss_func', loss_utils.FocalLossCenterNet())
@@ -355,12 +356,34 @@ class CenterHead(nn.Module):
             roi_labels[bs_idx, :num_boxes] = pred_dicts[bs_idx]['pred_labels']
         return rois, roi_scores, roi_labels
 
+
+
     def forward(self, data_dict):
         data_dict = self.forward_pre(data_dict)
         data_dict = self.forward_post(data_dict)
         data_dict = self.forward_topk(data_dict)
         data_dict = self.forward_genbox(data_dict)
         return data_dict
+
+    def ordered_outp_names(self):
+        names =  ['hm'] + list(self.separate_head_cfg.HEAD_ORDER)
+        if 'iou' in self.separate_head_cfg.HEAD_DICT:
+            names += ['iou']
+        return names
+
+    # Alternative function for scripting
+    #NOTE assumes single detection head
+    def forward_up_to_topk(self, spatial_features_2d):
+        assert len(self.heads_list) == 1
+        x = self.shared_conv(spatial_features_2d)
+        pred_dict = self.heads_list[0].forward(x)
+        head_order = self.ordered_outp_names()
+        out_tensors_ordered = (pred_dict[head_name] for head_name in head_order)
+        return out_tensors_ordered
+
+    def convert_out_to_batch_dict(self, out_tensors):
+        head_order = self.ordered_outp_names()
+        return {name:t for name, t in zip(head_order, out_tensors)}
 
     def forward_pre(self, data_dict):
         spatial_features_2d = data_dict['spatial_features_2d']

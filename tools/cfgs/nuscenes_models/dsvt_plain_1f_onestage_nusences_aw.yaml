@@ -53,7 +53,7 @@ DATA_CONFIG:
         VOXEL_SIZE: [0.3, 0.3, 8.0]
 
 MODEL:
-  NAME: CenterPoint
+  NAME: DSVT_CenterHead_Opt
 
   VFE:
     NAME: DynPillarVFE
@@ -63,7 +63,7 @@ MODEL:
     NUM_FILTERS: [128, 128]
 
   BACKBONE_3D:
-    NAME: DSVT
+    NAME: DSVT_ort
     INPUT_LAYER:
       sparse_shape: [360, 360, 1]
       downsample_stride: []
@@ -83,6 +83,7 @@ MODEL:
     activation: gelu
     output_shape: [360, 360]
     conv_out_channel: 128
+      #trt_engine: /home/humble/shared/Anytime-Lidar/tools/deploy_files/dsvt.engine
     # ues_checkpoint: True
 
   MAP_TO_BEV:

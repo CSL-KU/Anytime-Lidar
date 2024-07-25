@@ -4,7 +4,14 @@ from math import ceil
 
 from pcdet.models.model_utils.dsvt_utils import get_window_coors, get_inner_win_inds_cuda, get_pooling_index, get_continous_inds
 from pcdet.models.model_utils.dsvt_utils import PositionEmbeddingLearned
+from torch.onnx import register_custom_op_symbolic
 
+# load torch.ops.kucsl.ingroup_inds_nograd
+torch.ops.load_library("../pcdet/ops/ingroup_inds" \
+        "/ingroup_inds_cuda.cpython-310-aarch64-linux-gnu.so")
+def ingroup_inds_nograd(g, group_inds):
+    return g.op("kucsl::ingroup_inds_nograd", group_inds)
+register_custom_op_symbolic("kucsl::ingroup_inds_nograd", ingroup_inds_nograd, 17)
 
 class DSVTInputLayer(nn.Module):
     ''' 
@@ -66,8 +73,8 @@ class DSVTInputLayer(nn.Module):
                     block_posembed_layers.append(PositionEmbeddingLearned(input_dim, self.d_model[i]))
                 stage_posembed_layers.append(block_posembed_layers)
             self.posembed_layers.append(stage_posembed_layers)
-       
-    def forward(self, batch_dict):
+
+    def forward(self, voxel_feats, voxel_coors):
         '''
         Args:
             bacth_dict (dict): 
@@ -96,8 +103,9 @@ class DSVTInputLayer(nn.Module):
                     Shape of (N_{i}, downsample_stride[i-1].prob(), d_moel[i-1]), where prob() returns the product of all elements.
                 - ...
         '''
-        voxel_feats = batch_dict['voxel_features']
-        voxel_coors = batch_dict['voxel_coords'].long()
+        #voxel_feats = batch_dict['voxel_features']
+        #voxel_coors = batch_dict['voxel_coords'].long()
+        voxel_coors = voxel_coors.long()
 
         voxel_info = {}
         voxel_info['voxel_feats_stage0'] = voxel_feats.clone()
@@ -111,7 +119,8 @@ class DSVTInputLayer(nn.Module):
             for block_id in range(self.set_info[stage_id][1]):
                 for shift_id in range(self.num_shifts[stage_id]):
                     voxel_info[f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'] = \
-                    self.get_pos_embed(voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}'], stage_id, block_id, shift_id)
+                            self.get_pos_embed(voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}'], \
+                            stage_id, block_id, shift_id)
             
             # compute pooling information
             if stage_id < self.stage_num - 1:
@@ -211,7 +220,9 @@ class DSVTInputLayer(nn.Module):
         select_idx = select_idx + set_win_inds.view(-1, 1) * max_voxel
            
         # this function will return unordered inner window indexs of each voxel
-        inner_voxel_inds = get_inner_win_inds_cuda(contiguous_win_inds)
+        #inner_voxel_inds = get_inner_win_inds_cuda(contiguous_win_inds)
+        inner_voxel_inds = torch.ops.kucsl.ingroup_inds_nograd(contiguous_win_inds)
+
         global_voxel_inds = contiguous_win_inds * max_voxel + inner_voxel_inds
         _, order1 = torch.sort(global_voxel_inds)
 
@@ -276,7 +287,7 @@ class DSVTInputLayer(nn.Module):
             win_x, win_y, win_z = window_shape
             ndim = 3
 
-        assert coors_in_win.size(1) == 3
+        #assert coors_in_win.size(1) == 3
         z, y, x = coors_in_win[:, 0] - win_z/2, coors_in_win[:, 1] - win_y/2, coors_in_win[:, 2] - win_x/2
 
         if self.normalize_pos:

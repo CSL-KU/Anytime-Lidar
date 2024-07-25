@@ -11,23 +11,23 @@ from ...utils import common_utils
 from ..dataset import DatasetTemplate
 
 #Patchwork++
-remove_ground = False
-try:
-    import sys
-    patchwork_module_path = "/root/patchwork-plusplus/build/python_wrapper"
-    sys.path.insert(0, patchwork_module_path)
-    import pypatchworkpp
-    params = pypatchworkpp.Parameters()
-    params.sensor_height = 1.84
-    params.max_range = 54.0
-    params.enable_RNR = True
-    params.enable_TGR = True
-    params.verbose = False
-    PatchworkPLUSPLUS = pypatchworkpp.patchworkpp(params)
-    # NOTE uncomment the following line to enable ground removal
-#    remove_ground = True
-except ImportError:
-    print("Cannot find pypatchworkpp, won't remove ground.")
+#remove_ground = False
+#try:
+#    import sys
+#    patchwork_module_path = "/root/patchwork-plusplus/build/python_wrapper"
+#    sys.path.insert(0, patchwork_module_path)
+#    import pypatchworkpp
+#    params = pypatchworkpp.Parameters()
+#    params.sensor_height = 1.84
+#    params.max_range = 54.0
+#    params.enable_RNR = True
+#    params.enable_TGR = True
+#    params.verbose = False
+#    PatchworkPLUSPLUS = pypatchworkpp.patchworkpp(params)
+#    # NOTE uncomment the following line to enable ground removal
+##    remove_ground = True
+#except ImportError:
+#    print("Cannot find pypatchworkpp, won't remove ground.")
 
 class NuScenesDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None):
@@ -130,13 +130,13 @@ class NuScenesDataset(DatasetTemplate):
         sweep_times_list.append(np.zeros((points.shape[0], 1)))
 
         # REMOVE GROUND HERE
-        global remove_ground
-        if remove_ground:
-            global PatchworkPLUSPLUS
-            for i, sweep in enumerate(sweep_points_list):
-                PatchworkPLUSPLUS.estimateGround(sweep)
-                sweep_points_list[i] = PatchworkPLUSPLUS.getNonground()
-                sweep_times_list[i] = sweep_times_list[i][:sweep_points_list[i].shape[0]]
+        #global remove_ground
+        #if remove_ground:
+        #    global PatchworkPLUSPLUS
+        #    for i, sweep in enumerate(sweep_points_list):
+        #        PatchworkPLUSPLUS.estimateGround(sweep)
+        #        sweep_points_list[i] = PatchworkPLUSPLUS.getNonground()
+        #        sweep_times_list[i] = sweep_times_list[i][:sweep_points_list[i].shape[0]]
 
         points = np.concatenate(sweep_points_list, axis=0)
         times = np.concatenate(sweep_times_list, axis=0).astype(points.dtype)
