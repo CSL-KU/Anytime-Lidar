@@ -1,10 +1,27 @@
 #include <cmath>
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-//#define POINTS_PER_THREAD 1
+#define CHECK_CALL(call)                                   \
+do                                                    \
+{                                                     \
+    const cudaError_t error_code = call;              \
+    if (error_code != cudaSuccess)                    \
+    {                                                 \
+        printf("CUDA Error:\n");                      \
+        printf("    File:       %s\n", __FILE__);     \
+        printf("    Line:       %d\n", __LINE__);     \
+        printf("    Error code: %d\n", error_code);   \
+        printf("    Error text: %s\n",                \
+            cudaGetErrorString(error_code));          \
+        exit(1);                                      \
+    }                                                 \
+} while (0)
+
+
 
 template <typename scalar_t>
 using one_dim_pa32 = torch::PackedTensorAccessor32<scalar_t,1,torch::RestrictPtrTraits>;
@@ -40,8 +57,8 @@ __global__ void point_tile_mask_cuda_kernel(
 }
 
 torch::Tensor point_tile_mask(
-        torch::Tensor tile_coords, // [num_points] x*w+y notation
-        torch::Tensor chosen_tile_coords // [num_chosen_tiles] x*w+y notation
+        const torch::Tensor tile_coords, // [num_points] x*w+y notation
+        const torch::Tensor chosen_tile_coords // [num_chosen_tiles] x*w+y notation
 )
 {
 
@@ -58,10 +75,11 @@ torch::Tensor point_tile_mask(
       .requires_grad(false);
 
   torch::Tensor mask = torch::empty({tile_coords.size(0)}, tensor_options);
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
 
   AT_DISPATCH_INTEGRAL_TYPES(tile_coords.type(), "point_tile_mask_cuda", ([&] {
     auto sh_mem_size = chosen_tile_coords.size(0)*sizeof(scalar_t);
-    point_tile_mask_cuda_kernel<scalar_t><<<num_blocks, threads_per_block, sh_mem_size>>>(
+    point_tile_mask_cuda_kernel<scalar_t><<<num_blocks, threads_per_block, sh_mem_size, stream>>>(
       tile_coords.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
       chosen_tile_coords.packed_accessor32<scalar_t,1,torch::RestrictPtrTraits>(),
       mask.packed_accessor32<bool,1,torch::RestrictPtrTraits>());
@@ -69,3 +87,4 @@ torch::Tensor point_tile_mask(
 
   return mask;
 }
+
