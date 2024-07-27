@@ -92,8 +92,6 @@ class AnytimeCalibrator():
     # overhead on jetson-agx: 1 ms
     def pred_req_times_ms(self, vcount_area, tiles_queue, num_tiles): # [num_nonempty_tiles, num_max_tiles]
         if self.use_baseline_bb3d_predictor:
-            assert self.time_reg_degree == 2
-
             vcounts = vcount_area.flatten()
             num_voxels = np.empty((tiles_queue.shape[0]),dtype=float)
             for i in range(len(tiles_queue)):
@@ -172,6 +170,13 @@ class AnytimeCalibrator():
         # Fit the linear model for bb3
         all_voxels, all_times = self.get_calib_data_arranged()
 
+        #Remove noisy 1% of the data due to cudnn benchmark overhead
+        max_times = np.max(all_times, axis=1)
+        perc99 = np.percentile(max_times, 99)
+        mask = (max_times < perc99)
+        all_voxels = all_voxels[mask]
+        all_times = all_times[mask]
+
         # plot voxel to time graph
         bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
         bb3d_voxels = all_voxels[:, :1]
@@ -201,7 +206,7 @@ class AnytimeCalibrator():
                     axis=-1) +  self.time_reg_intercepts
             plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
             plt.legend()
-        plt.savefig(f'/root/shared_data/latest_exp_plots/voxels_to_bb3dtime.pdf')
+        plt.savefig(f'/home/humble/shared/latest_exp_plots/voxels_to_bb3dtime.pdf')
         plt.clf()
         if not self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs, self.time_reg_intercepts = self.fit_voxel_time_data(all_voxels, all_times)
@@ -239,7 +244,14 @@ class AnytimeCalibrator():
         if 'exec_times' in self.calib_data_dict:
             # calculate the 3dbb err cdf
             time_dict = self.calib_data_dict['exec_times']
-            bb3d_pred_err = np.array(time_dict['Backbone3D']) - \
+            if 'FusedOps1' in time_dict and 'Backbone3D-IL' in  time_dict \
+                    and 'VFE-nn' in time_dict:
+                Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
+                        np.array(time_dict['FusedOps1']) + np.array(time_dict['VFE-nn'])
+            else:
+                Backbone3D_times = time_dict['Backbone3D']
+
+            bb3d_pred_err = np.array(Backbone3D_times) - \
                     np.array(self.calib_data_dict['bb3d_preds'])
             if 'VoxelHead-conv-hm' in time_dict:
                 bb3d_pred_err += np.array(time_dict['VoxelHead-conv-hm'])

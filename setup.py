@@ -44,7 +44,7 @@ if __name__ == '__main__':
             'pyyaml',
             'scikit-image',
             'tqdm',
-            'SharedArray',
+            #'SharedArray',
             # 'spconv',  # spconv has different names depending on the cuda version
         ],
 
@@ -56,6 +56,14 @@ if __name__ == '__main__':
             'build_ext': BuildExtension,
         },
         ext_modules=[
+            make_cuda_ext(
+                name='dsvt_ops',
+                module='pcdet.ops.dsvt_ops',
+                sources=[
+                    'src/dsvt_ops.cpp',
+                    'src/dsvt_ops_cuda.cu',
+                ]
+            ),
             make_cuda_ext(
                 name='iou3d_nms_cuda',
                 module='pcdet.ops.iou3d_nms',

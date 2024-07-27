@@ -96,14 +96,6 @@ class DynamicPillarVFE(VFETemplate):
         points = points[mask]
         points_coords = points_coords[mask]
 
-#        if 'model' in kwargs:
-#            batch_dict['voxel_coords'] = points_coords[:, [1,0]]
-#            batch_dict = kwargs['model'].schedule(batch_dict)
-#            if batch_dict['mask'] is not None:
-#                mask = batch_dict['mask']
-#                points_coords = batch_dict['voxel_coords'][:, [1,0]]
-#                points = points[mask]
-
         points_xyz = points[:, [1, 2, 3]].contiguous()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \

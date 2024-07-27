@@ -2,7 +2,8 @@ import torch
 from torch import nn
 from math import ceil
 
-from pcdet.models.model_utils.dsvt_utils import get_window_coors, get_inner_win_inds_cuda, get_pooling_index, get_continous_inds
+#from pcdet.models.model_utils.dsvt_utils import get_window_coors_, get_inner_win_inds_cuda, get_pooling_index, get_continous_inds
+from pcdet.models.model_utils.dsvt_utils import get_inner_win_inds_cuda, get_pooling_index, get_continous_inds
 from pcdet.models.model_utils.dsvt_utils import PositionEmbeddingLearned
 from torch.onnx import register_custom_op_symbolic
 
@@ -12,6 +13,13 @@ torch.ops.load_library("../pcdet/ops/ingroup_inds" \
 def ingroup_inds_nograd(g, group_inds):
     return g.op("kucsl::ingroup_inds_nograd", group_inds)
 register_custom_op_symbolic("kucsl::ingroup_inds_nograd", ingroup_inds_nograd, 17)
+
+
+torch.ops.load_library("../pcdet/ops/dsvt_ops" \
+        "/dsvt_ops.cpython-310-aarch64-linux-gnu.so")
+def get_window_coors(g, coors, sparse_shape, window_shape, do_shift, shift_list, return_win_coors):
+    return g.op("dsvt_ops::get_window_coors", coors, sparse_shape, window_shape, do_shift, shift_list, return_win_coors)
+register_custom_op_symbolic("dsvt_ops::get_window_coors", get_window_coors, 17)
 
 class DSVTInputLayer(nn.Module):
     ''' 
@@ -258,8 +266,10 @@ class DSVTInputLayer(nn.Module):
     @torch.no_grad()
     def window_partition(self, voxel_info, stage_id):
         for i in range(2):
-            batch_win_inds, coors_in_win = get_window_coors(voxel_info[f'voxel_coors_stage{stage_id}'], 
-                                                        self.sparse_shape_list[stage_id], self.window_shape[stage_id][i], i == 1, self.shift_list[stage_id][i])
+            batch_win_inds, coors_in_win = torch.ops.dsvt_ops.get_window_coors(
+                    voxel_info[f'voxel_coors_stage{stage_id}'],
+                    self.sparse_shape_list[stage_id], self.window_shape[stage_id][i],
+                    i == 1, self.shift_list[stage_id][i], False)
                                             
             voxel_info[f'batch_win_inds_stage{stage_id}_shift{i}'] = batch_win_inds
             voxel_info[f'coors_in_win_stage{stage_id}_shift{i}'] = coors_in_win

@@ -19,6 +19,7 @@ from .voxelnext_anytime import VoxelNeXtAnytime
 from .transfusion import TransFusion
 from .transfusion_anytime import TransFusionAnytime
 from .dsvt_centerhead_opt import DSVT_CenterHead_Opt
+from .dsvt_centerhead_valo import DSVT_CenterHead_VALO
 
 __all__ = {
     'Detector3DTemplate': Detector3DTemplate,
@@ -42,6 +43,7 @@ __all__ = {
     'TransFusion': TransFusion,
     'TransFusionAnytime': TransFusionAnytime,
     'DSVT_CenterHead_Opt': DSVT_CenterHead_Opt,
+    'DSVT_CenterHead_VALO': DSVT_CenterHead_VALO,
 }
 
 

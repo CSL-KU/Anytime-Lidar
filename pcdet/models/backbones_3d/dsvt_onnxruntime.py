@@ -97,8 +97,13 @@ class DSVT_ort(nn.Module):
         self.set_info = set_info
         self.num_point_features = self.model_cfg.conv_out_channel
 
+        self.num_layer_groups = 1
         self.input_layer_traced = None
         #self._reset_parameters()
+
+    def get_inds_dividers(self, tile_size_voxels):
+        # numbers here are determined with respect to strides
+        return []
 
 
     #@torch.jit.ignore    
@@ -125,8 +130,19 @@ class DSVT_ort(nn.Module):
         self.layer_norms_list = self.residual_norm_stage_0
 
         if self.input_layer_traced == None:
+            ## BEGIN JIT TRACE BACKEND ##
             self.input_layer_traced = torch.jit.trace(self.input_layer,
                     example_inputs=(voxel_feats, voxel_coors), strict=False)
+            # Do a few invocations to invoke JIT optimization
+            num_voxels = voxel_feats.size(0)
+            while True:
+                num_voxels -= 2000
+                if num_voxels <= 0:
+                    break
+                vf, vc = voxel_feats[:num_voxels], voxel_coors[:num_voxels]
+                self.input_layer_traced(vf, vc) #batch_dict)
+            ## END JIT TRACE BACKEND ##
+
         voxel_info = self.input_layer_traced(voxel_feats, voxel_coors) #batch_dict)
 
         voxel_feat = voxel_info['voxel_feats_stage0']

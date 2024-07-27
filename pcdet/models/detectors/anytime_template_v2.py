@@ -297,10 +297,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
 
+
                 if 'voxel_features' in batch_dict:
                     batch_dict['voxel_features'] = \
                             batch_dict['voxel_features'][tile_filter].contiguous()
                 batch_dict['voxel_coords'] = voxel_coords[tile_filter].contiguous()
+
+                if 'features' in batch_dict and 'unq_inv' in batch_dict:
+                    feat, unq_inv = batch_dict['features'], batch_dict['unq_inv']
+                    point_mask = tile_filter[unq_inv]
+                    batch_dict['unq_inv'] = unq_inv[point_mask].contiguous()
+                    batch_dict['features'] = feat[point_mask].contiguous()
 
             self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
             self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
@@ -480,8 +487,15 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # plot 3d backbone time pred error
         time_dict = self.get_time_dict()
-        if len(time_dict['Backbone3D']) == len(self.add_dict['bb3d_preds']):
-            bb3d_pred_err = np.array(time_dict['Backbone3D']) - np.array(self.add_dict['bb3d_preds'])
+        if 'FusedOps1' in time_dict and 'Backbone3D-IL' in  time_dict:
+            Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
+                    np.array(time_dict['FusedOps1'])
+        else:
+            Backbone3D_times = time_dict['Backbone3D']
+
+
+        if len(Backbone3D_times) == len(self.add_dict['bb3d_preds']):
+            bb3d_pred_err = np.array(Backbone3D_times) - np.array(self.add_dict['bb3d_preds'])
             if 'VoxelHead-conv-hm' in time_dict:
                 bb3d_pred_err += np.array(time_dict['VoxelHead-conv-hm'])
 
