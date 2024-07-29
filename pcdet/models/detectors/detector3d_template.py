@@ -1051,12 +1051,6 @@ class Detector3DTemplate(nn.Module):
         return self.calibrating > 0
 
     def calibrate(self, batch_size=1):
-        #data_dict = self.load_data_with_ds_index(0)
-        #print('\ndata_dict:')
-        #self.print_dict(data_dict)
-
-        # just do a regular forward first
-        #data_dict["abs_deadline_sec"] = time.time () + 10.0
         self.calibration_on()
         training = self.training
         self.eval()
@@ -1064,21 +1058,11 @@ class Detector3DTemplate(nn.Module):
         enable_proj = self.enable_projection
         self.enable_projection = False
         self._eval_dict['deadline_sec'] = 10.0
-        pred_dicts, recall_dict = self([i for i in range(batch_size)]) # this calls forward!
+        for j in range(5):
+            pred_dicts, recall_dict = self([j*batch_size+i for i in range(batch_size)])
         self.enable_projection = enable_proj
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
         self.prev_scene_token = '' 
-
-        #Print full tensor sizes
-        #print('\ndata_dict after forward:')
-        #self.print_dict(self.latest_batch_dict)
-
-        #print('\nDetections:')
-        #for pd in pred_dicts:
-        #    self.print_dict(pd)
-
-        #print('\nRecall dict:')
-        #self.print_dict(recall_dict)
 
         if isinstance(pred_dicts, list):
             det = pred_dicts[0]

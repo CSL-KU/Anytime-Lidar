@@ -31,7 +31,6 @@ def do_inds_calc(vinds : List[torch.Tensor], vcount_area : torch.Tensor, \
         outp.append(cnts)
     return torch.cat(outp, dim=0).cpu() # num sparse layer groups x num_tiles
 
-
 # The fork call must be done in torch scripted function for it to be async
 @torch.jit.script
 def do_inds_calc_wrapper(vinds : List[torch.Tensor], \
@@ -39,6 +38,42 @@ def do_inds_calc_wrapper(vinds : List[torch.Tensor], \
         tcount : int, dividers: torch.Tensor):
     fut = torch.jit.fork(do_inds_calc, vinds, vcount_area, tcount, dividers)
     return fut
+
+@torch.jit.script
+def process_points(points_coords : torch.Tensor, tile_size_voxels : float, tcount : int):
+    point_tile_coords = torch.div(points_coords[:, 0], tile_size_voxels,
+            rounding_mode='trunc').long()
+    pcounts = torch.bincount(point_tile_coords, minlength=tcount).cpu()
+    return point_tile_coords, pcounts
+
+@torch.jit.script
+def get_nonempty_tiles(voxel_x_coords : torch.Tensor, tile_size_voxels : float):
+    # Calculate where each voxel resides in which tile
+    voxel_tile_coords = torch.div(voxel_x_coords, tile_size_voxels, \
+            rounding_mode='trunc').long()
+
+    nonempty_tile_coords, voxel_counts = torch.unique(voxel_tile_coords, \
+            sorted=True, return_counts=True)
+
+    return nonempty_tile_coords, voxel_counts
+
+@torch.jit.script
+def get_voxel_x_coords_from_points(points : torch.Tensor, points_coords : torch.Tensor,
+        scale_xy : int, scale_y : int) -> torch.Tensor:
+    merge_coords = points[:, 0].int() * scale_xy + \
+                   points_coords[:, 0] * scale_y + \
+                   points_coords[:, 1]
+    unq_coords= torch.unique(merge_coords, sorted=False, dim=0)
+    return (unq_coords % scale_xy) // scale_y
+
+@torch.jit.script
+def tile_calculations(points : torch.Tensor, points_coords: torch.Tensor,
+        tile_size_voxels : float, scale_xy : int, scale_y : int, tcount : int):
+    fut = torch.jit.fork(process_points, points_coords, tile_size_voxels, tcount)
+    voxel_x_coords = get_voxel_x_coords_from_points(points, points_coords, scale_xy, scale_y)
+    netc, voxel_counts = get_nonempty_tiles(voxel_x_coords, tile_size_voxels)
+    point_tile_coords, point_counts = torch.jit.wait(fut)
+    return point_tile_coords, point_counts, netc, voxel_counts
 
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -146,40 +181,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return deadline_sec_override, reset
 
-    def get_nonempty_tiles(self, voxel_x_coords, training=False):
-        # Calculate where each voxel resides in which tile
-        voxel_tile_coords = torch.div(voxel_x_coords, self.tile_size_voxels, \
-                rounding_mode='trunc').long()
-
-        if training:
-            nonempty_tile_coords = torch.unique(voxel_tile_coords, sorted=True)
-            return nonempty_tile_coords
-        else:
-            nonempty_tile_coords, voxel_counts = torch.unique(voxel_tile_coords, \
-                    sorted=True, return_counts=True)
-
-            netc = nonempty_tile_coords.cpu().numpy()
-            voxel_counts = voxel_counts.cpu().numpy()
-
-            return voxel_tile_coords, netc, voxel_counts
-
-    def get_voxel_x_coords_from_points(self, batch_dict):
-        points = batch_dict['points']
-        points_coords = batch_dict['points_coords']
-
-        merge_coords = points[:, 0].int() * self.vfe.scale_xy + \
-                       points_coords[:, 0] * self.vfe.scale_y + \
-                       points_coords[:, 1]
-
-        unq_coords= torch.unique(merge_coords, sorted=False, dim=0)
-        return (unq_coords % self.vfe.scale_xy) // self.vfe.scale_y
-
     def schedule1(self, batch_dict):
-        #voxel_coords = batch_dict['voxel_coords']
-        voxel_x_coords = self.get_voxel_x_coords_from_points(batch_dict)
-
         if self.training or self.sched_disabled:
-            batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_x_coords, True)
+            voxel_x_coords = self.get_voxel_x_coords_from_points(batch_dict)
+            voxel_tile_coords = torch.div(voxel_x_coords, self.tile_size_voxels, \
+                    rounding_mode='trunc').long()
+            # choose all nonempty
+            batch_dict['chosen_tile_coords'] = torch.unique(voxel_tile_coords, sorted=True)
             return batch_dict
 
         if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
@@ -189,151 +197,97 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.latest_batch_dict['vcount_area'],
                     self.tcount, torch.tensor(self.dividers))
 
-        point_tile_coords = torch.div(batch_dict['points_coords'][:, 0], self.tile_size_voxels, \
-                rounding_mode='trunc').long()
-        pcount_area = torch.bincount(point_tile_coords, minlength=self.tcount).cpu().numpy()
-        pcount_area = np.expand_dims(pcount_area, 0)
+        points, points_coords = batch_dict['points'], batch_dict['points_coords']
+        point_tile_coords, pcounts, netc, netc_vcounts = tile_calculations(points,
+                points_coords, self.tile_size_voxels, self.vfe.scale_xy, self.vfe.scale_y, self.tcount)
 
-        voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_x_coords)
-        vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
-        vcount_area[netc] = netc_vcounts
-        vcount_area = np.expand_dims(vcount_area, 0)
-        batch_dict['vcount_area'] = torch.from_numpy(vcount_area).int().cuda()
-
-        if self.sched_algo == SchedAlgo.MirrorRR:
-            netc, netc_vcounts= fill_tile_gaps(netc, netc_vcounts)
-        elif self.sched_algo == SchedAlgo.AdaptiveRR:
-            latest_token = batch_dict['metadata'][0]['token']
-            cur_ts = self.token_to_ts[latest_token]
-
-            # upper limit 25%
-            if self.num_blacklisted_tiles > netc.shape[0] - int(self.tcount//4):
-                self.num_blacklisted_tiles = netc.shape[0] - int(self.tcount//4)
-
-            if self.reset_ts is not None:
-                elapsed_time_sec = (cur_ts - self.reset_ts) / 1000000.0
-                if elapsed_time_sec > self.processing_time_limit_sec:
-                    # Reset
-                    if self.processed_area_perc < 1.0:
-                        # We need to blacklist tiles
-                        self.num_blacklisted_tiles += int(np.ceil(\
-                                (netc.shape[0] - self.num_blacklisted_tiles) * \
-                                (1.0 - self.processed_area_perc)))
-                        self.num_blacklisted_tiles = min(self.num_blacklisted_tiles, \
-                                netc.shape[0] - int(self.tcount//4))
-                    elif self.processed_area_perc > 1.0:
-                        self.num_blacklisted_tiles -= int(np.ceil(\
-                                (netc.shape[0] - self.num_blacklisted_tiles) * \
-                                (self.processed_area_perc - 1.0)))
-                        self.num_blacklisted_tiles = max(self.num_blacklisted_tiles, 0)
-
-                    self.reset_ts = cur_ts
-                    self.processed_area_perc = 0.
-
-            else:
-                self.reset_ts = cur_ts
-
-            if self.num_blacklisted_tiles > 0:
-                lptr, rptr = 0, netc_vcounts.shape[0]-1
-                bt = self.num_blacklisted_tiles
-                while bt > 0 and rptr - lptr > 0:
-                    if netc_vcounts[lptr] < netc_vcounts[rptr]:
-                        lptr += 1
-                    else:
-                        rptr -= 1
-                    bt -= 1
-                netc = netc[lptr:rptr+1]
-                netc_vcounts = netc_vcounts[lptr:rptr+1]
-
-            self.cur_netc_num_tiles = netc.shape[0]
+        netc = netc.cpu().numpy()
+        pcount_area = pcounts.cpu().unsqueeze(0).numpy()
+        netc_vcounts = netc_vcounts.cpu().unsqueeze(0).numpy()
+        vcount_area = np.zeros((1,self.tcount), dtype=netc_vcounts.dtype)
+        vcount_area[:, netc] = netc_vcounts
 
         batch_dict['nonempty_tile_coords'] = netc
 
-        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-            num_tiles, tiles_queue = round_robin_sched_helper(
+        num_tiles, tiles_queue = round_robin_sched_helper(
                     netc, self.last_tile_coord, self.tcount)
-        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.MirrorRR or \
-                self.sched_algo == SchedAlgo.AdaptiveRR:
-            batch_dict['tiles_queue'] = tiles_queue
-            self.add_dict['nonempty_tiles'].append(netc.tolist())
+        batch_dict['tiles_queue'] = tiles_queue
+        self.add_dict['nonempty_tiles'].append(netc.tolist())
 
-            if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
-                    'bb3d_intermediary_vinds' in self.latest_batch_dict:
-                voxel_dists = torch.jit.wait(self.fut)
-                self.calibrator.commit_bb3d_updates(self.latest_batch_dict['chosen_tile_coords'], \
-                    voxel_dists.numpy())
+        if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
+                'bb3d_intermediary_vinds' in self.latest_batch_dict:
+            voxel_dists = torch.jit.wait(self.fut)
+            self.calibrator.commit_bb3d_updates(self.latest_batch_dict['chosen_tile_coords'], \
+                voxel_dists.numpy())
 
-            vfe_times, bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = \
-                    self.calibrator.pred_req_times_ms(pcount_area ,vcount_area, \
-                    tiles_queue, num_tiles)
-            if not self.use_baseline_bb3d_predictor:
-                bb3d_times = np.sum(bb3d_times_layerwise, axis=-1)
+        vfe_times, bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = \
+                self.calibrator.pred_req_times_ms(pcount_area ,vcount_area, \
+                tiles_queue, num_tiles)
+        if not self.use_baseline_bb3d_predictor:
+            bb3d_times = np.sum(bb3d_times_layerwise, axis=-1)
+        else:
+            bb3d_times = bb3d_times_layerwise
+        batch_dict['post_bb3d_times'] = post_bb3d_times
+        tpreds = vfe_times + bb3d_times + post_bb3d_times
+        psched_start_time = time.time()
+        rem_time_ms = (batch_dict['abs_deadline_sec'] - psched_start_time) * 1000
+
+        # Choose configuration that can meet the deadline, that's it
+        diffs = tpreds < rem_time_ms
+
+        ##### MANUAL OVERRIDE
+        #tiles_to_run = 4
+        #for idx, nt in enumerate(num_tiles):
+        #    if nt >= tiles_to_run:
+        #        tiles_idx = idx + 1
+        #        break
+        #####
+
+        # when reset, process all ignoring deadline
+        if (not self.is_calibrating() and \
+                (diffs[-1] or self.last_tile_coord == self.init_tile_coord)) or \
+                (self.is_calibrating() and \
+                len(netc) <= self.calibrator.get_chosen_tile_num()):
+            # choose all
+            chosen_tile_coords = netc
+            if self.sched_algo == SchedAlgo.MirrorRR:
+                self.last_tile_coord = self.init_tile_coord
+            tiles_idx=0
+            predicted_vfe_time  = float(vfe_times[-1])
+            predicted_bb3d_time = float(bb3d_times[-1])
+            predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
+            predicted_voxels = num_voxel_preds[-1].astype(int).flatten()
+        else:
+            if self.is_calibrating():
+                tiles_idx = self.calibrator.get_chosen_tile_num()
+                if tiles_idx >= len(diffs):
+                    tiles_idx = len(diffs)
             else:
-                bb3d_times = bb3d_times_layerwise
-            batch_dict['post_bb3d_times'] = post_bb3d_times
-            tpreds = vfe_times + bb3d_times + post_bb3d_times
-            psched_start_time = time.time()
-            rem_time_ms = (batch_dict['abs_deadline_sec'] - psched_start_time) * 1000
+                tiles_idx=1
+                while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
+                    tiles_idx += 1
 
-            # Choose configuration that can meet the deadline, that's it
-            diffs = tpreds < rem_time_ms
+            predicted_vfe_time  = float(vfe_times[tiles_idx-1])
+            predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
+            predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
+            predicted_voxels = num_voxel_preds[tiles_idx-1].astype(int).flatten()
 
-            ##### MANUAL OVERRIDE
-            #tiles_to_run = 4
-            #for idx, nt in enumerate(num_tiles):
-            #    if nt >= tiles_to_run:
-            #        tiles_idx = idx + 1
-            #        break
-            #####
+            # Voxel filtering is needed
+            chosen_tile_coords = tiles_queue[:tiles_idx]
+            self.last_tile_coord = chosen_tile_coords[-1].item()
 
-            # when reset, process all ignoring deadline
-            if (not self.is_calibrating() and \
-                    (diffs[-1] or self.last_tile_coord == self.init_tile_coord)) or \
-                    (self.is_calibrating() and \
-                    len(netc) <= self.calibrator.get_chosen_tile_num()):
-                # choose all
-                chosen_tile_coords = netc
-                if self.sched_algo == SchedAlgo.MirrorRR:
-                    self.last_tile_coord = self.init_tile_coord
-                tiles_idx=0
-                predicted_vfe_time  = float(vfe_times[-1])
-                predicted_bb3d_time = float(bb3d_times[-1])
-                predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
-                predicted_voxels = num_voxel_preds[-1].astype(int).flatten()
-            else:
-                if self.is_calibrating():
-                    tiles_idx = self.calibrator.get_chosen_tile_num()
-                    if tiles_idx >= len(diffs):
-                        tiles_idx = len(diffs)
-                else:
-                    tiles_idx=1
-                    while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
-                        tiles_idx += 1
+            # Filter the points, let the voxel be generated from filtered points
+            tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
+                    torch.from_numpy(chosen_tile_coords).cuda())
+            batch_dict['points'] = batch_dict['points'][tile_filter]
 
-                predicted_vfe_time  = float(vfe_times[tiles_idx-1])
-                predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
-                predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
-                predicted_voxels = num_voxel_preds[tiles_idx-1].astype(int).flatten()
-
-                # Voxel filtering is needed
-                if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-                    chosen_tile_coords = tiles_queue[:tiles_idx]
-                    self.last_tile_coord = chosen_tile_coords[-1].item()
-                else:
-                    chosen_tile_coords = np.concatenate((self.mtiles, tiles_queue[:tiles_idx-1]))
-
-                # Filter the points, let the voxel be generated from filtered points
-                tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
-                        torch.from_numpy(chosen_tile_coords).cuda())
-                batch_dict['points'] = batch_dict['points'][tile_filter]
-
-            if self.vfe_time_pred:
-                self.add_dict['vfe_preds'].append(predicted_vfe_time)
-            self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
-            self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
-            self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
-            batch_dict['chosen_tile_coords'] = chosen_tile_coords
-            self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
+        if self.vfe_time_pred:
+            self.add_dict['vfe_preds'].append(predicted_vfe_time)
+        self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
+        self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
+        self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
+        batch_dict['chosen_tile_coords'] = chosen_tile_coords
+        self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
 
         if self.vfe_time_pred:
             self.add_dict['vfe_point_nums'].append([batch_dict['points'].size(0)])

@@ -301,8 +301,8 @@ class AnytimeCalibrator():
             #print('Expected bb3d error ms:', self.expected_bb3d_err)
 
             if self.vfe_time_pred and 'VFE-nn' in time_dict and 'vfe_preds' in self.calib_data_dict:
-                vfe_nn_times = time_dict['VFE-nn']
-                vfe_pred_err = np.array(vfe_nn_times) - np.array(self.calib_data_dict['vfe_preds'])
+                vfe_nn_times = np.array(time_dict['VFE-gen-pillars']) + np.array(time_dict['VFE-nn'])
+                vfe_pred_err = vfe_nn_times - np.array(self.calib_data_dict['vfe_preds'])
 
                 print('Overall VFE time prediction error stats:')
                 min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(vfe_pred_err)
