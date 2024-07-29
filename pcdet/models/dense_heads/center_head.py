@@ -12,6 +12,7 @@ class SeparateHead(nn.Module):
     def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False):
         super().__init__()
         self.sep_head_dict = sep_head_dict
+        self.conv_names = tuple(sep_head_dict.keys())
 
         for cur_name in self.sep_head_dict:
             output_channels = self.sep_head_dict[cur_name]['out_channels']
@@ -49,9 +50,9 @@ class SeparateHead(nn.Module):
 
         return ret_dict
 
-    def forward(self, x) -> Dict[str, torch.Tensor]:
+    def forward(self, x : torch.Tensor) -> Dict[str, torch.Tensor]:
         ret_dict = {}
-        for cur_name in self.sep_head_dict:
+        for cur_name in self.conv_names:
             ret_dict[cur_name] = self.__getattr__(cur_name)(x)
         ret_dict['hm'] = ret_dict['hm'].sigmoid()
 

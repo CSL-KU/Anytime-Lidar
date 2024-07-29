@@ -11,28 +11,7 @@ import os
 import struct
 import sys
 #import torch_tensorrt
-#from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
-
-class OptimizedFwdPipeline1(torch.nn.Module):
-    def __init__(self, backbone_3d, map_to_bev):
-        super().__init__()
-        self.backbone_3d = backbone_3d
-        self.map_to_bev = map_to_bev
-
-    def forward(self,
-            voxel_feat : torch.Tensor, 
-            set_voxel_inds_tensor_shift_0 : torch.Tensor,
-            set_voxel_inds_tensor_shift_1 : torch.Tensor,
-            set_voxel_masks_tensor_shift_0 : torch.Tensor, 
-            set_voxel_masks_tensor_shift_1: torch.Tensor,
-            pos_embed_tensor : torch.Tensor,
-            voxel_coords : torch.Tensor) -> torch.Tensor:
-        output = self.backbone_3d(
-                voxel_feat, set_voxel_inds_tensor_shift_0, 
-                set_voxel_inds_tensor_shift_1, set_voxel_masks_tensor_shift_0,
-                set_voxel_masks_tensor_shift_1, pos_embed_tensor)
-        spatial_features = self.map_to_bev(1, output, voxel_coords) # 1 is batch size
-        return spatial_features
+from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 
 class OptimizedFwdPipeline2(torch.nn.Module):
     def __init__(self, backbone_2d, dense_head):
@@ -46,7 +25,7 @@ class OptimizedFwdPipeline2(torch.nn.Module):
                 self.dense_head.forward_up_to_topk(spatial_features_2d)
         return hm, center, center_z, dim, rot, vel, iou
 
-# Optimized with onnxruntime and torchscript
+# Optimized with tensorrt
 class DSVT_CenterHead_VALO(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
@@ -66,129 +45,114 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 self.dense_head = self.module_list
 
         self.update_time_dict( {
-            'VFE-gen-pillars' : [],
             'Sched1': [],
+            'VFE-gen-pillars' : [],
             'VFE-nn' : [],
             'Backbone3D-IL': [],
-            'FusedOps1':[],
+            'Backbone3D-Fwd':[],
             'Sched2': [],
             'FusedOps2':[],
             'CenterHead-Topk': [],
             'CenterHead-GenBox': [],
         })
 
-        #self.inf_stream = torch.cuda.Stream()
-        self.ort_session1 = None
-        self.ort_out1_sizes = None
-
-        self.ort_session2 = None
-        self.ort_out2_sizes = None
-        self.ort_out2_scales = None
-
-        cuda_conf = {
-                'device_id': torch.cuda.current_device(),
-                'user_compute_stream': str(torch.cuda.current_stream().cuda_stream),
-                'arena_extend_strategy': 'kNextPowerOfTwo',
-                #'gpu_mem_limit': 2 * 1024 * 1024 * 1024,
-                'cudnn_conv_algo_search': 'HEURISTIC',  #'EXHAUSTIVE',
-                'do_copy_in_default_stream': True,
-                'use_tf32': 1,
-        }
-
-        self.ort_EP_list= [#('TensorrtExecutionProvider', tensorrt_conf),
-                ('CUDAExecutionProvider', cuda_conf),
-                'CPUExecutionProvider']
-
-
-
-    def infer_ort(self, ort_session, inputs, sizes_of_outps, sync=False):
-        # ONNX
-        ro = ort.RunOptions()
-        ro.add_run_config_entry("disable_synchronize_execution_providers", "1")
-        outputs = [torch.empty(sz, device='cuda', dtype=torch.float) \
-                for sz in sizes_of_outps]
-        io_binding = self.get_iobinding(ort_session, inputs, outputs)
-        ort_session.run_with_iobinding(io_binding, run_options=ro)
-        if sync:
-            torch.cuda.synchronize() # Do I have to? Doesn't matter a lot since rest is short
-        return outputs
+        self.inf_stream = torch.cuda.Stream()
+        self.optimization1_done = False
+        self.optimization2_done = False
 
     def forward(self, batch_dict):
-        #with torch.cuda.stream(self.inf_stream):
-        self.measure_time_start('VFE-gen-pillars')
-        batch_dict = self.vfe.forward_gen_pillars(batch_dict)
-        self.measure_time_end('VFE-gen-pillars')
+        with torch.cuda.stream(self.inf_stream):
 
-        self.measure_time_start('Sched1')
-        batch_dict = self.schedule1(batch_dict)
-        self.measure_time_end('Sched1')
+            self.measure_time_start('Sched1')
+            batch_dict = self.vfe.range_filter(batch_dict)
+            batch_dict = self.schedule1(batch_dict)
+            #batch_dict['chosen_tile_coords'] = np.arange(6)
+            self.measure_time_end('Sched1')
 
-        if self.is_calibrating():
-            batch_dict['bb3d_num_voxels'] = [batch_dict['voxel_coords'].size(0)]
-            e1 = torch.cuda.Event(enable_timing=True)
-            e1.record()
+            if self.is_calibrating():
+                e1 = torch.cuda.Event(enable_timing=True)
+                e1.record()
 
-        self.measure_time_start('VFE-nn')
-        batch_dict = self.vfe.forward_nn(batch_dict)
-        torch.cuda.synchronize()
-        self.measure_time_end('VFE-nn')
+            self.measure_time_start('VFE-gen-pillars')
+            batch_dict = self.vfe.forward_gen_pillars(batch_dict, apply_range_filter=False)
+            self.measure_time_end('VFE-gen-pillars')
 
-        self.measure_time_start('Backbone3D-IL')
-        vinfo = self.backbone_3d.get_voxel_info(batch_dict['voxel_features'],
-                batch_dict['voxel_coords'])
-        torch.cuda.synchronize()
-        self.measure_time_end('Backbone3D-IL')
+            self.measure_time_start('VFE-nn')
+            batch_dict = self.vfe.forward_nn(batch_dict)
+            self.measure_time_end('VFE-nn')
 
-        if self.ort_session2 == None:
-            self.optimize1(vinfo)
+            if self.is_calibrating():
+                e2 = torch.cuda.Event(enable_timing=True)
+                e2.record()
+                batch_dict['vfe_layer_time_events'] = [e1, e2]
 
-        self.measure_time_start('FusedOps1')
-        batch_dict['spatial_features'] = self.infer_ort(self.ort_session1, vinfo, 
-                self.ort_out1_sizes, True)[0]
-        self.measure_time_end('FusedOps1')
+            self.measure_time_start('Backbone3D-IL')
+            vinfo = self.backbone_3d.get_voxel_info(batch_dict['voxel_features'],
+                    batch_dict['voxel_coords'])
 
-        if self.is_calibrating():
-            e2 = torch.cuda.Event(enable_timing=True)
-            e2.record()
-            batch_dict['bb3d_layer_time_events'] = [e1, e2]
+            self.measure_time_end('Backbone3D-IL')
 
-        if self.ort_session2 == None:
-            self.optimize2(batch_dict['spatial_features'])
+            if not self.optimization1_done:
+                self.optimize1(vinfo[:-1])
 
-        self.measure_time_start('Sched2')
-        batch_dict = self.schedule2(batch_dict)
-        batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
-        self.measure_time_end('Sched2')
+            self.measure_time_start('Backbone3D-Fwd')
+            inputs_dict = {'voxel_feat': vinfo[0],
+                    'set_voxel_inds_tensor_shift_0': vinfo[1],
+                    'set_voxel_inds_tensor_shift_1': vinfo[2],
+                    'set_voxel_masks_tensor_shift_0': vinfo[3],
+                    'set_voxel_masks_tensor_shift_1': vinfo[4],
+                    'pos_embed_tensor' : vinfo[5],
+            }
+            if self.backbone_3d_trt != None:
+                output = self.backbone_3d_trt(inputs_dict, vinfo[0].size())['output']
+            else:
+                vinfo_ = vinfo[:-1]
+                output = self.backbone_3d(*vinfo_)
+            self.measure_time_end('Backbone3D-Fwd')
 
-        self.measure_time_start('FusedOps2')
-        sf = batch_dict['spatial_features']
-        out2_sizes = [(sz[0], sz[1], sz[2], int(sf.size(3) / scl)) \
-                for sz, scl in zip(self.ort_out2_sizes, self.ort_out2_scales)]
-        outputs = self.infer_ort(self.ort_session2, [sf], out2_sizes, True)
-        #batch_dict = self.do_projection(batch_dict)
-        outputs = scatter_sliced_tensors(batch_dict['chosen_tile_coords'], outputs,
-                self.sched_algo, self.tcount)
-        out_dict = self.dense_head.convert_out_to_batch_dict(outputs)
-        batch_dict["pred_dicts"] = [out_dict]
-        self.measure_time_end('FusedOps2')
+            if self.is_calibrating():
+                e3 = torch.cuda.Event(enable_timing=True)
+                e3.record()
+                batch_dict['bb3d_layer_time_events'] = [e2, e3]
 
-        if self.is_calibrating():
-            e3 = torch.cuda.Event(enable_timing=True)
-            e3.record()
-            batch_dict['bb2d_time_events'] = [e2, e3]
+            self.measure_time_start('Sched2')
+            batch_dict = self.schedule2(batch_dict)
+            batch_dict['spatial_features'] = self.map_to_bev(1, output, vinfo[-1]) # 1 is batch size
+            if not self.optimization2_done:
+                self.optimize2(batch_dict['spatial_features'])
+            batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
+            self.measure_time_end('Sched2')
 
-        #TODO , use the optimized cuda code for the rest available in autoware
-        self.measure_time_start('CenterHead-Topk')
-        batch_dict = self.dense_head.forward_topk(batch_dict)
-        self.measure_time_end('CenterHead-Topk')
-        self.measure_time_start('CenterHead-GenBox')
-        batch_dict = self.dense_head.forward_genbox(batch_dict)
-        self.measure_time_end('CenterHead-GenBox')
+            self.measure_time_start('FusedOps2')
+            sf = batch_dict['spatial_features']
 
-        if self.is_calibrating():
-            e4 = torch.cuda.Event(enable_timing=True)
-            e4.record()
-            batch_dict['detheadpost_time_events'] = [e3, e4]
+            outputs = self.fused_ops2_trt({'spatial_features': sf})
+            outputs = [outputs[nm] for nm in self.dense_head.ordered_outp_names()]
+            batch_dict = self.do_projection(batch_dict)
+
+            outputs = scatter_sliced_tensors(batch_dict['chosen_tile_coords'], outputs,
+                    self.sched_algo, self.tcount)
+            out_dict = self.dense_head.convert_out_to_batch_dict(outputs)
+            batch_dict["pred_dicts"] = [out_dict]
+            self.measure_time_end('FusedOps2')
+
+            if self.is_calibrating():
+                e4 = torch.cuda.Event(enable_timing=True)
+                e4.record()
+                batch_dict['bb2d_time_events'] = [e3, e4]
+
+            #TODO , use the optimized cuda code for the rest available in autoware
+            self.measure_time_start('CenterHead-Topk')
+            batch_dict = self.dense_head.forward_topk(batch_dict)
+            self.measure_time_end('CenterHead-Topk')
+            self.measure_time_start('CenterHead-GenBox')
+            batch_dict = self.dense_head.forward_genbox(batch_dict)
+            self.measure_time_end('CenterHead-GenBox')
+
+            if self.is_calibrating():
+                e5 = torch.cuda.Event(enable_timing=True)
+                e5.record()
+                batch_dict['detheadpost_time_events'] = [e4, e5]
 
 #        if self.training:
 #            loss, tb_dict, disp_dict = self.get_training_loss()
@@ -198,8 +162,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 #                    }
 #            return ret_dict, tb_dict, disp_dict
 #        else:
-            # let the hooks of parent class handle this
-        return batch_dict
+                # let the hooks of parent class handle this
+            return batch_dict
 
     def optimize1(self, fwd_data):
         optimize_start = time.time()
@@ -211,14 +175,12 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 'set_voxel_masks_tensor_shift_0',
                 'set_voxel_masks_tensor_shift_1',
                 'pos_embed_tensor',
-                'voxel_coords'
         ]
 
-        output_names = ['spatial_features']
+        output_names = ['output']
 
-        opt_fwd = OptimizedFwdPipeline1(self.backbone_3d, self.map_to_bev)
+        opt_fwd = self.backbone_3d
         opt_fwd.eval()
-        eager_outputs = opt_fwd(*fwd_data)
 
         generated_onnx=False
         base_dir = "./deploy_files_valo"
@@ -243,11 +205,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 "pos_embed_tensor": {
                     2: "voxel_number",
                 },
-                "voxel_coords": {
-                    0: "voxel_number",
-                }
             }
-            
+
             torch.onnx.export(
                     opt_fwd,
                     fwd_data,
@@ -256,30 +215,15 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                     opset_version=17,
                     custom_opsets={"kucsl": 17}
             )
-            #generated_onnx=True
 
-        self.ort_out1_sizes = [eager_outputs.shape]
-        print('Optimized forward pipeline 1 output sizes:\n', self.ort_out1_sizes)
-
-        so = ort.SessionOptions()
-        #so.log_severity_level = 1
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        so.optimized_model_filepath = f"{base_dir}/dsvt1_optimized.onnx" # speeds up initialization
-
-        if os.path.exists(so.optimized_model_filepath):
-            onnx_path=so.optimized_model_filepath
-        self.ort_session1 = ort.InferenceSession(onnx_path, providers=self.ort_EP_list, sess_options=so)
-        self.ort_session1.enable_fallback()
-
-        # Invoke JIT optimization
-        self.infer_ort(self.ort_session1, fwd_data, self.ort_out1_sizes, True)
-        torch.cuda.synchronize()
-
+        trt_path = self.model_cfg.BACKBONE_3D.trt_engine
+        try:
+            self.backbone_3d_trt = TRTWrapper(trt_path, input_names, output_names)
+        except:
+            self.backbone_3d_trt = None
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
-        #if generated_onnx:
-        #    print('Optimization done, please run again.')
-        #    sys.exit(0)
+        self.optimization1_done = True
 
     def optimize2(self, fwd_data):
         optimize_start = time.time()
@@ -291,8 +235,6 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 
         opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
         opt_fwd2.eval()
-        #print(type(fwd_data))
-        #print(fwd_data.shape)
         eager_outputs = opt_fwd2(fwd_data)
 
         generated_onnx=False
@@ -306,7 +248,6 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             }
             for nm in output_names:
                 dynamic_axes[nm] = {3 : "out_width"}
-            #NOTE add outputs as well?
 
             torch.onnx.export(
                     opt_fwd2,
@@ -318,37 +259,19 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             )
             generated_onnx=True
 
-        self.ort_out2_sizes = [tuple(out.shape) for out in eager_outputs]
-        print('Optimized forward pipeline 2 output sizes:\n', self.ort_out2_sizes)
-        self.ort_out2_scales = [fwd_data.size(3) / sz[3] for sz in self.ort_out2_sizes]
-
-        so = ort.SessionOptions()
-        #so.log_severity_level = 1
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        so.optimized_model_filepath = f"{base_dir}/dsvt2_optimized.onnx" # speeds up initialization
-        if os.path.exists(so.optimized_model_filepath):
-            onnx_path=so.optimized_model_filepath
-        self.ort_session2 = ort.InferenceSession(onnx_path, providers=self.ort_EP_list, sess_options=so)
-        self.ort_session2.enable_fallback()
-
-        # Invoke JIT optimization for all sizes, needed for cudnn benchmarking
-        for i in range(1, self.tcount+1):
-            dummy_dict = {'batch_size':1, 'spatial_features': fwd_data.detach().clone(),
-                    'chosen_tile_coords': torch.arange(i)}
-            dummy_dict = self.backbone_2d.prune_spatial_features(dummy_dict)
-            inp = dummy_dict['spatial_features']
-            out2_sizes = [(sz[0], sz[1], sz[2], int(inp.size(3) / scl)) \
-                    for sz, scl in zip(self.ort_out2_sizes, self.ort_out2_scales)]
-            self.infer_ort(self.ort_session2, [inp], out2_sizes, True)
-            torch.cuda.synchronize()
+        sf = fwd_data 
+        trt_path = self.model_cfg.BACKBONE_2D.trt_engine
+        try:
+            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, output_names)
+        except:
+            self.fused_ops2_trt = None
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
+        self.optimization2_done = True
         if generated_onnx:
-            print('Optimization done, please run again.')
+            print('ONNX files created, please run again.')
             sys.exit(0)
-
-
 
     def get_iobinding(self, ort_session, inp_tensors, outp_tensors):
         typedict = {torch.float: np.float32,
@@ -412,6 +335,43 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
     def calibrate(self, batch_size=1):
         return super().calibrate(1)
 
+    def dump_tensors(self, inputs_dict):
+        for name, t in inputs_dict.items():
+            print('torch', name, t.shape, t.dtype)
+            data = t.cpu().contiguous().numpy() # t is a pytorch tensor
+            print('numpy', name, data.shape, data.dtype)
+            with open(f"deploy_files_valo/{name}.bin", "wb") as f:
+                data = np.ravel(data)
+                if data.dtype == np.float32:
+                    for d in data:
+                        f.write(struct.pack("<f", d.item()))
+                elif data.dtype == np.int64:
+                    for d in data:
+                        f.write(struct.pack("<q", d.item()))  # 'q' is for int64
+                elif data.dtype == np.int32:
+                    for d in data:
+                        f.write(struct.pack("<i", d.item()))  # 'i' is for int32
+                elif data.dtype == np.bool_:
+                    for d in data:
+                        f.write(struct.pack("<B", d.item()))  # 'B' is for unsigned char
+                else:
+                    raise ValueError(f"Unsupported data type: {data.dtype}")
+        print('Done saving tensors.')
+
+    def infer_ort(self, ort_session, inputs, sizes_of_outps, sync=False):
+        # ONNX
+        ro = ort.RunOptions()
+        ro.add_run_config_entry("disable_synchronize_execution_providers", "1")
+        outputs = [torch.empty(sz, device='cuda', dtype=torch.float) \
+                for sz in sizes_of_outps]
+        io_binding = self.get_iobinding(ort_session, inputs, outputs)
+        ort_session.run_with_iobinding(io_binding, run_options=ro)
+        if sync:
+            torch.cuda.synchronize() # Do I have to? Doesn't matter a lot since rest is short
+        return outputs
+
+
+
 ############SOME CODE HERE TO USE LATER IF NEEDED ##################
 #        trt_path = self.model_cfg.BACKBONE_3D.trt_engine
 #        self.compiled_bb3d = TRTWrapper(trt_path, input_names, output_names)
@@ -424,7 +384,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 #               'pos_embed_tensor' : vinfo[5]}
 #        out = self.compiled_bb3d(inputs_dict)['output']
 #        print(out.size(), out)
-
+#
 #            inp1, inp2, inp3, inp4, inp5, inp6 = vinfo
 #            torch._dynamo.mark_dynamic(inp1, 0, min=3000, max=30000)
 #            torch._dynamo.mark_dynamic(inp2, 1, min=60, max=400)
@@ -468,5 +428,96 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 #                        'set_voxel_masks_tensor_shift_1': vinfo[4],
 #                        'pos_embed_tensor' : vinfo[5]}
 #                output = self.compiled_bb3d(inputs_dict)['output']
+
+# ONNX RT conf
+        #self.ort_out1_sizes = [eager_outputs.shape]
+        #print('Optimized forward pipeline 1 output sizes:\n', self.ort_out1_sizes)
+
+        #so = ort.SessionOptions()
+        #so.log_severity_level = 1
+        #so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        #so.optimized_model_filepath = f"{base_dir}/dsvt1_optimized.onnx" # speeds up initialization
+
+        #if os.path.exists(so.optimized_model_filepath):
+        #    onnx_path=so.optimized_model_filepath
+        #self.ort_session1 = ort.InferenceSession(onnx_path, providers=self.ort_EP_list, sess_options=so)
+        #self.ort_session1.enable_fallback()
+
+        # Invoke JIT optimization
+        #self.infer_ort(self.ort_session1, fwd_data, self.ort_out1_sizes, True)
+
+#        self.ort_out2_sizes = [tuple(out.shape) for out in eager_outputs]
+#        print('Optimized forward pipeline 2 output sizes:\n', self.ort_out2_sizes)
+#        self.ort_out2_scales = [fwd_data.size(3) / sz[3] for sz in self.ort_out2_sizes]
+#
+#        so = ort.SessionOptions()
+#        #so.log_severity_level = 1
+#        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+#        so.optimized_model_filepath = f"{base_dir}/dsvt2_optimized.onnx" # speeds up initialization
+#        if os.path.exists(so.optimized_model_filepath):
+#            onnx_path=so.optimized_model_filepath
+#        self.ort_session2 = ort.InferenceSession(onnx_path, providers=self.ort_EP_list, sess_options=so)
+#        self.ort_session2.enable_fallback()
+#
+#        # Invoke JIT optimization for all sizes, needed for cudnn benchmarking
+#        for i in range(1, self.tcount+1):
+#            dummy_dict = {'batch_size':1, 'spatial_features': fwd_data.detach().clone(),
+#                    'chosen_tile_coords': torch.arange(i)}
+#            dummy_dict = self.backbone_2d.prune_spatial_features(dummy_dict)
+#            inp = dummy_dict['spatial_features']
+#            out2_sizes = [(sz[0], sz[1], sz[2], int(inp.size(3) / scl)) \
+#                    for sz, scl in zip(self.ort_out2_sizes, self.ort_out2_scales)]
+#            self.infer_ort(self.ort_session2, [inp], out2_sizes, True)
+
+        #self.ort_session1 = None
+        #self.ort_out1_sizes = None
+        #self.ort_session2 = None
+        #self.ort_out2_sizes = None
+        #self.ort_out2_scales = None
+
+#        cuda_conf = {
+#                'device_id': torch.cuda.current_device(),
+#                'user_compute_stream': str(torch.cuda.current_stream().cuda_stream),
+#                'arena_extend_strategy': 'kNextPowerOfTwo',
+#                #'gpu_mem_limit': 2 * 1024 * 1024 * 1024,
+#                'cudnn_conv_algo_search': 'HEURISTIC',  #'EXHAUSTIVE',
+#                'do_copy_in_default_stream': True,
+#                'use_tf32': 1,
+#        }
+#
+#        self.ort_EP_list= [#('TensorrtExecutionProvider', tensorrt_conf),
+#                ('CUDAExecutionProvider', cuda_conf),
+#                'CPUExecutionProvider']
+
+
+#class OptimizedFwdPipeline1(torch.nn.Module):
+#    def __init__(self, backbone_3d, map_to_bev):
+#        super().__init__()
+#        self.backbone_3d = backbone_3d
+#        self.map_to_bev = map_to_bev
+#
+#    def forward(self,
+#            voxel_feat : torch.Tensor, 
+#            set_voxel_inds_tensor_shift_0 : torch.Tensor,
+#            set_voxel_inds_tensor_shift_1 : torch.Tensor,
+#            set_voxel_masks_tensor_shift_0 : torch.Tensor, 
+#            set_voxel_masks_tensor_shift_1: torch.Tensor,
+#            pos_embed_tensor : torch.Tensor,
+#            voxel_coords : torch.Tensor) -> torch.Tensor:
+#        output = self.backbone_3d(
+#                voxel_feat, set_voxel_inds_tensor_shift_0, 
+#                set_voxel_inds_tensor_shift_1, set_voxel_masks_tensor_shift_0,
+#                set_voxel_masks_tensor_shift_1, pos_embed_tensor)
+#        spatial_features = self.map_to_bev(1, output, voxel_coords) # 1 is batch size
+#        return spatial_features
+
+            #ORT
+            #out2_sizes = [(sz[0], sz[1], sz[2], int(sf.size(3) / scl)) \
+            #        for sz, scl in zip(self.ort_out2_sizes, self.ort_out2_scales)]
+            #outputs = self.infer_ort(self.ort_session2, [sf], out2_sizes, True)
+
+            #BASELINE
+            #spatial_features_2d = self.backbone_2d(sf)
+            #outputs = self.dense_head.forward_up_to_topk(spatial_features_2d)
 
 

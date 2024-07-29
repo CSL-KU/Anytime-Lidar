@@ -86,6 +86,12 @@ def post_forward_hook(module, inp_args, outp_args):
     module.finish_time = time.time()
     module.measure_time_end('End-to-end')
 
+    if 'vfe_layer_time_events' in batch_dict and \
+            'vfe_layer_times' in module.add_dict:
+        events = batch_dict['vfe_layer_time_events']
+        times = [events[i].elapsed_time(events[i+1]) for i in range(len(events)-1)]
+        module.add_dict['vfe_layer_times'].append(times)
+
     if 'bb3d_layer_time_events' in batch_dict and \
             'bb3d_layer_times' in module.add_dict:
         events = batch_dict['bb3d_layer_time_events']

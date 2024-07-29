@@ -33,7 +33,6 @@ class PFNLayerV2(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, inputs, unq_inv):
-
         x = self.linear(inputs)
         x = self.norm(x) if self.use_norm else x
         x = self.relu(x)
@@ -88,15 +87,20 @@ class DynamicPillarVFE(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
-    def forward_gen_pillars(self, batch_dict, **kwargs):
+    def range_filter(self, batch_dict):
         points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
-
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
         mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
-        points = points[mask]
-        points_coords = points_coords[mask]
+        batch_dict['points'] = points[mask]
+        batch_dict['points_coords'] = points_coords[mask]
+        return batch_dict
 
-        points_xyz = points[:, [1, 2, 3]].contiguous()
+    def forward_gen_pillars(self, batch_dict, **kwargs):
+        if kwargs.get('apply_range_filter', True):
+            batch_dict = self.range_filter(batch_dict)
+
+        points = batch_dict['points']
+        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
                        points_coords[:, 0] * self.scale_y + \
@@ -104,6 +108,7 @@ class DynamicPillarVFE(VFETemplate):
         
         unq_coords, unq_inv, unq_cnt = torch.unique(merge_coords, return_inverse=True, return_counts=True, dim=0)
 
+        points_xyz = points[:, [1, 2, 3]].contiguous()
         points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0)
         f_cluster = points_xyz - points_mean[unq_inv, :]
 

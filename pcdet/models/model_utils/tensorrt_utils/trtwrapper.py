@@ -56,6 +56,7 @@ class TRTWrapper(torch.nn.Module):
     def forward(
             self,
             inputs: Dict[str, torch.Tensor],
+            output_sz: tuple[int] = None
     ) -> Dict[str, torch.Tensor]:
         """Run forward inference.
 
@@ -65,12 +66,11 @@ class TRTWrapper(torch.nn.Module):
         Return:
             Dict[str, torch.Tensor]: The output name and tensor pairs.
         """
-        bindings = [None] * (len(self._input_names) + len(self._output_names))
 
         profile_id = 0
         for input_name, input_tensor in inputs.items():
             # check if input shape is valid
-            profile = self.engine.get_profile_shape(profile_id, input_name)
+            profile = self.engine.get_tensor_profile_shape(input_name, profile_id)
             assert input_tensor.dim() == len(
                 profile[0]), 'Input dim is different from engine profile.'
             for s_min, s_input, s_max in zip(eval(repr(profile[0])), input_tensor.shape,
@@ -79,41 +79,31 @@ class TRTWrapper(torch.nn.Module):
                     f'Input shape of {input_name} should be between ' \
                     + f'{profile[0]} and {profile[2]}' \
                     + f' but get {tuple(input_tensor.shape)}.'
-            idx = self.engine.get_binding_index(input_name)
 
-            # All input tensors must be gpu variables
-            # assert 'cuda' in input_tensor.device.type
-            # input_tensor = input_tensor.contiguous()
-            if input_tensor.dtype == torch.long:
-                input_tensor = input_tensor.int()
-                print(input_name)
-            self.context.set_binding_shape(idx, tuple(input_tensor.shape))
-            bindings[idx] = input_tensor.contiguous().data_ptr()
+            self.context.set_input_shape(input_name, tuple(input_tensor.shape))
+            self.context.set_tensor_address(input_name, input_tensor.data_ptr())
+
+        assert self.context.all_binding_shapes_specified
+
 
         # create output tensors
         outputs = {}
         for output_name in self._output_names:
-            idx = self.engine.get_binding_index(output_name)
-            dtype = torch_dtype_from_trt(self.engine.get_binding_dtype(idx))
-            shape = eval(repr(self.context.get_binding_shape(idx)))
+            dtype = torch_dtype_from_trt(self.engine.get_tensor_dtype(output_name))
+            shape = eval(repr(self.context.get_tensor_shape(output_name)))
 
-            device = torch_device_from_trt(self.engine.get_location(idx))
-            output = torch.empty(size=shape, dtype=dtype, device=device)
+            if output_sz is not None:
+                shape = output_sz
+            output = torch.empty(size=shape, dtype=dtype, device='cuda').contiguous()
+            self.context.set_tensor_address(output_name, output.data_ptr())
             outputs[output_name] = output
-            bindings[idx] = output.data_ptr()
 
-        self.__trt_execute(bindings=bindings)
+        self.__trt_execute() #bindings=bindings)
 
         return outputs
 
-    # @TimeCounter.count_time()
-    def __trt_execute(self, bindings: Sequence[int]):
-        """Run inference with TensorRT.
-
-        Args:
-            bindings (list[int]): A list of integer binding the input/output.
-        """
-        self.context.execute_async_v2(
-            bindings,
+    def __trt_execute(self):
+        """Run inference with TensorRT."""
+        self.context.execute_async_v3(
             torch.cuda.current_stream().cuda_stream,
         )

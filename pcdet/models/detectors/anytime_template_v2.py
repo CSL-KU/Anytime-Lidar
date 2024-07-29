@@ -64,6 +64,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.sched_algo = SchedAlgo.RoundRobin
 
+        self.vfe_time_pred = ('DynPillarVFE' == self.model_cfg.VFE.NAME)
+
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
             self.model_cfg.BACKBONE_2D.METHOD = self.sched_algo
@@ -118,11 +120,16 @@ class AnytimeTemplateV2(Detector3DTemplate):
         ##########################################
 
     def clear_add_dict(self):
+        self.add_dict['vfe_layer_times'] = []
+        self.add_dict['vfe_point_nums'] = []
+        self.add_dict['vfe_preds'] = [] # debug
+
         self.add_dict['bb3d_layer_times'] = []
-        self.add_dict['bb3d_preds'] = []
-        self.add_dict['bb3d_preds_layerwise'] = []
         self.add_dict['bb3d_voxel_nums'] = []
-        self.add_dict['bb3d_voxel_preds'] = []
+        self.add_dict['bb3d_preds'] = [] # debug
+
+        self.add_dict['bb3d_preds_layerwise'] = [] # debug
+        self.add_dict['bb3d_voxel_preds'] = [] # debug
         self.add_dict['nonempty_tiles'] = []
         self.add_dict['chosen_tiles_1'] = []
         self.add_dict['chosen_tiles_2'] = []
@@ -139,9 +146,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return deadline_sec_override, reset
 
-    def get_nonempty_tiles(self, voxel_coords, training=False):
+    def get_nonempty_tiles(self, voxel_x_coords, training=False):
         # Calculate where each voxel resides in which tile
-        voxel_tile_coords = torch.div(voxel_coords[:, -1], self.tile_size_voxels, \
+        voxel_tile_coords = torch.div(voxel_x_coords, self.tile_size_voxels, \
                 rounding_mode='trunc').long()
 
         if training:
@@ -156,10 +163,23 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
             return voxel_tile_coords, netc, voxel_counts
 
+    def get_voxel_x_coords_from_points(self, batch_dict):
+        points = batch_dict['points']
+        points_coords = batch_dict['points_coords']
+
+        merge_coords = points[:, 0].int() * self.vfe.scale_xy + \
+                       points_coords[:, 0] * self.vfe.scale_y + \
+                       points_coords[:, 1]
+
+        unq_coords= torch.unique(merge_coords, sorted=False, dim=0)
+        return (unq_coords % self.vfe.scale_xy) // self.vfe.scale_y
+
     def schedule1(self, batch_dict):
-        voxel_coords = batch_dict['voxel_coords']
+        #voxel_coords = batch_dict['voxel_coords']
+        voxel_x_coords = self.get_voxel_x_coords_from_points(batch_dict)
+
         if self.training or self.sched_disabled:
-            batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_coords, True)
+            batch_dict['chosen_tile_coords'] = self.get_nonempty_tiles(voxel_x_coords, True)
             return batch_dict
 
         if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
@@ -169,7 +189,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.latest_batch_dict['vcount_area'],
                     self.tcount, torch.tensor(self.dividers))
 
-        voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_coords)
+        point_tile_coords = torch.div(batch_dict['points_coords'][:, 0], self.tile_size_voxels, \
+                rounding_mode='trunc').long()
+        pcount_area = torch.bincount(point_tile_coords, minlength=self.tcount).cpu().numpy()
+        pcount_area = np.expand_dims(pcount_area, 0)
+
+        voxel_tile_coords, netc, netc_vcounts = self.get_nonempty_tiles(voxel_x_coords)
         vcount_area = np.zeros((self.tcount,), dtype=netc_vcounts.dtype)
         vcount_area[netc] = netc_vcounts
         vcount_area = np.expand_dims(vcount_area, 0)
@@ -238,14 +263,15 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 self.calibrator.commit_bb3d_updates(self.latest_batch_dict['chosen_tile_coords'], \
                     voxel_dists.numpy())
 
-            bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = self.calibrator.pred_req_times_ms(\
-                    vcount_area, tiles_queue, num_tiles)
+            vfe_times, bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = \
+                    self.calibrator.pred_req_times_ms(pcount_area ,vcount_area, \
+                    tiles_queue, num_tiles)
             if not self.use_baseline_bb3d_predictor:
                 bb3d_times = np.sum(bb3d_times_layerwise, axis=-1)
             else:
                 bb3d_times = bb3d_times_layerwise
             batch_dict['post_bb3d_times'] = post_bb3d_times
-            tpreds = bb3d_times + post_bb3d_times
+            tpreds = vfe_times + bb3d_times + post_bb3d_times
             psched_start_time = time.time()
             rem_time_ms = (batch_dict['abs_deadline_sec'] - psched_start_time) * 1000
 
@@ -270,6 +296,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 if self.sched_algo == SchedAlgo.MirrorRR:
                     self.last_tile_coord = self.init_tile_coord
                 tiles_idx=0
+                predicted_vfe_time  = float(vfe_times[-1])
                 predicted_bb3d_time = float(bb3d_times[-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
                 predicted_voxels = num_voxel_preds[-1].astype(int).flatten()
@@ -283,6 +310,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                         tiles_idx += 1
 
+                predicted_vfe_time  = float(vfe_times[tiles_idx-1])
                 predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
                 predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
                 predicted_voxels = num_voxel_preds[tiles_idx-1].astype(int).flatten()
@@ -294,26 +322,21 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 else:
                     chosen_tile_coords = np.concatenate((self.mtiles, tiles_queue[:tiles_idx-1]))
 
-                tile_filter = cuda_point_tile_mask.point_tile_mask(voxel_tile_coords, \
+                # Filter the points, let the voxel be generated from filtered points
+                tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
+                batch_dict['points'] = batch_dict['points'][tile_filter]
 
-
-                if 'voxel_features' in batch_dict:
-                    batch_dict['voxel_features'] = \
-                            batch_dict['voxel_features'][tile_filter].contiguous()
-                batch_dict['voxel_coords'] = voxel_coords[tile_filter].contiguous()
-
-                if 'features' in batch_dict and 'unq_inv' in batch_dict:
-                    feat, unq_inv = batch_dict['features'], batch_dict['unq_inv']
-                    point_mask = tile_filter[unq_inv]
-                    batch_dict['unq_inv'] = unq_inv[point_mask].contiguous()
-                    batch_dict['features'] = feat[point_mask].contiguous()
-
+            if self.vfe_time_pred:
+                self.add_dict['vfe_preds'].append(predicted_vfe_time)
             self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
             self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
             self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
             batch_dict['chosen_tile_coords'] = chosen_tile_coords
             self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
+
+        if self.vfe_time_pred:
+            self.add_dict['vfe_point_nums'].append([batch_dict['points'].size(0)])
 
         batch_dict['record_int_vcoords'] = not self.sched_disabled and \
                 not self.use_baseline_bb3d_predictor and \
@@ -467,6 +490,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             with open(self.calib_fname, 'r') as handle:
                 calib_dict = json.load(handle)
                 calib_dict['bb3d_preds'] = self.add_dict['bb3d_preds']
+                calib_dict['vfe_preds'] = self.add_dict['vfe_preds']
                 calib_dict['exec_times'] = self.get_time_dict()
             with open(self.calib_fname, 'w') as handle:
                 json.dump(calib_dict, handle, indent=4)
@@ -487,9 +511,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # plot 3d backbone time pred error
         time_dict = self.get_time_dict()
-        if 'FusedOps1' in time_dict and 'Backbone3D-IL' in  time_dict:
+        if 'Backbone3D-IL' in  time_dict:
             Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
-                    np.array(time_dict['FusedOps1'])
+                    np.array(time_dict['Backbone3D-Fwd'])
         else:
             Backbone3D_times = time_dict['Backbone3D']
 

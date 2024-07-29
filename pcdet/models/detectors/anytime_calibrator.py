@@ -50,15 +50,19 @@ class AnytimeCalibrator():
             #self.num_det_heads = len(model.dense_head.class_names_each_head)
             self.num_tiles = model.model_cfg.TILE_COUNT
 
+        # only use baseline predictor for this one
+        self.vfe_time_pred = ('DynPillarVFE' == model.model_cfg.VFE.NAME)
+        self.vfe_num_l_groups = 1
+
         self.time_reg_degree = 2
-        self.bb3d_num_l_groups  =self.model.backbone_3d.num_layer_groups
+        self.bb3d_num_l_groups  = self.model.backbone_3d.num_layer_groups
         if self.model.use_voxelnext:
             # count the convolutions of the detection head to be
             # a part of 3D backbone
             self.bb3d_num_l_groups += 1 # detection head convolutions
 
         self.use_baseline_bb3d_predictor = self.model.use_baseline_bb3d_predictor
-        self.move_indscalc_to_init = self.model.move_indscalc_to_init
+        #self.move_indscalc_to_init = self.model.move_indscalc_to_init # needed?
         if self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
             self.time_reg_intercepts = np.ones((1,), dtype=float)
@@ -70,6 +74,10 @@ class AnytimeCalibrator():
             self.voxel_coeffs_over_layers = np.array([[1.] * self.num_tiles \
                     for _ in range(self.bb3d_num_l_groups)])
 
+        if self.vfe_time_pred:
+            self.vfe_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
+            self.vfe_time_reg_intercepts = np.ones((1,), dtype=float)
+
         # backbone2d and detection head heatmap convolutions
         # first elem unused
         self.det_head_post_wcet_ms = .0
@@ -78,6 +86,7 @@ class AnytimeCalibrator():
 
         self.expected_bb3d_err = 0.
         self.num_voxels_normalizer = 100000.
+        self.num_points_normalizer = 1000000.
         self.chosen_tiles_calib = self.num_tiles
 
 
@@ -89,18 +98,33 @@ class AnytimeCalibrator():
         else:
             self.voxel_coeffs_over_layers[:, ctc] = voxel_dists
 
-    # overhead on jetson-agx: 1 ms
-    def pred_req_times_ms(self, vcount_area, tiles_queue, num_tiles): # [num_nonempty_tiles, num_max_tiles]
-        if self.use_baseline_bb3d_predictor:
-            vcounts = vcount_area.flatten()
-            num_voxels = np.empty((tiles_queue.shape[0]),dtype=float)
-            for i in range(len(tiles_queue)):
-                num_voxels[i] = np.sum(vcounts[tiles_queue[:i+1]])
+    def make_pred_baseline(self, count_area, tiles_queue, reg_coeffs,
+            reg_intercepts, normalizer):
+        counts = count_area.flatten()
+        num_points = np.empty((tiles_queue.shape[0]),dtype=float)
+        for i in range(len(tiles_queue)):
+            num_points[i] = np.sum(counts[tiles_queue[:i+1]])
 
-            num_voxels_n_ = np.expand_dims(num_voxels, -1) / self.num_voxels_normalizer
-            num_voxels_n_ = np.concatenate((num_voxels_n_, np.square(num_voxels_n_)), axis=-1)
-            bb3d_time_preds = np.sum(num_voxels_n_ * self.time_reg_coeffs.flatten(), \
-                    axis=-1) +  self.time_reg_intercepts + self.expected_bb3d_err
+        num_points_n_ = np.expand_dims(num_points, -1) / normalizer
+        num_points_n_ = np.concatenate((num_points_n_, np.square(num_points_n_)), axis=-1)
+        time_preds = np.sum(num_points_n_ * reg_coeffs.flatten(), \
+                axis=-1) + reg_intercepts
+        return time_preds, num_points
+
+    # overhead on jetson-agx: 1 ms
+    def pred_req_times_ms(self, pcount_area, vcount_area, tiles_queue, num_tiles): # [num_nonempty_tiles, num_max_tiles]
+        if self.vfe_time_pred:
+            vfe_time_preds, num_points = self.make_pred_baseline(pcount_area, tiles_queue,
+                  self.vfe_time_reg_coeffs, self.vfe_time_reg_intercepts,
+                  self.num_points_normalizer)
+        else:
+            vfe_time_preds = np.zeros((tiles_queue.shape[0], 1), dtype=float)
+
+        if self.use_baseline_bb3d_predictor:
+            bb3d_time_preds, num_voxels = self.make_pred_baseline(vcount_area, tiles_queue,
+                  self.time_reg_coeffs, self.time_reg_intercepts,
+                  self.num_voxels_normalizer)
+            bb3d_time_preds += self.expected_bb3d_err
         else:
             if self.scale_num_voxels:
                 vcounts = vcount_area * self.voxel_coeffs_over_layers 
@@ -123,14 +147,15 @@ class AnytimeCalibrator():
                 bb3d_time_preds[:, 0] += self.expected_bb3d_err
 
         if self.model.use_voxelnext:
-            return bb3d_time_preds, self.det_head_post_wcet_ms, num_voxels
+            return vfe_time_preds, bb3d_time_preds, self.det_head_post_wcet_ms, num_voxels
         else:
-            return bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
+            return vfe_time_preds, bb3d_time_preds, self.bb2d_times_ms[num_tiles] + \
                     self.det_head_post_wcet_ms, num_voxels
 
     def pred_final_req_time_ms(self, dethead_indexes):
         return self.det_head_post_wcet_ms
 
+    # this can be used for both points and voxels
     def fit_voxel_time_data(self, voxel_data, times_data):
         coeffs, intercepts = [], []
         for i in range(self.bb3d_num_l_groups): # should be 4, num bb3d conv blocks
@@ -146,21 +171,17 @@ class AnytimeCalibrator():
         return np.array(coeffs), np.array(intercepts)
 
     def get_calib_data_arranged(self):
-        if self.calib_data_dict['version'] == 1:
-            bb3d_voxels_samples = self.calib_data_dict['bb3d_voxels']
-            exec_times_ms_samples = self.calib_data_dict['bb3d_time_ms']
+        all_voxels = self.calib_data_dict['bb3d_voxels']
+        all_times = self.calib_data_dict['bb3d_time_ms']
+        all_points = self.calib_data_dict.get('vfe_points', None)
+        all_vfe_times = self.calib_data_dict.get('vfe_time_ms', None)
 
-            all_times, all_voxels = [], []
-            for bb3d_voxels_s, exec_times_ms_s in zip(bb3d_voxels_samples, exec_times_ms_samples):
-                all_voxels.extend(bb3d_voxels_s)
-                all_times.extend(exec_times_ms_s)
-        elif self.calib_data_dict['version'] == 2:
-            all_voxels = self.calib_data_dict['bb3d_voxels']
-            all_times = self.calib_data_dict['bb3d_time_ms']
-
-        all_times=np.array(all_times, dtype=float)
         all_voxels=np.array(all_voxels, dtype=float)
-        return all_voxels, all_times
+        all_times=np.array(all_times, dtype=float)
+        if all_points is not None and all_vfe_times is not None:
+          all_points=np.array(all_points, dtype=float)
+          all_vfe_times=np.array(all_vfe_times, dtype=float)
+        return all_voxels, all_times, all_points, all_vfe_times
 
     def read_calib_data(self, fname='calib_data.json'):
         f = open(fname)
@@ -168,30 +189,48 @@ class AnytimeCalibrator():
         f.close()
 
         # Fit the linear model for bb3
-        all_voxels, all_times = self.get_calib_data_arranged()
+        all_voxels, all_times, all_points, all_vfe_times = self.get_calib_data_arranged()
 
         #Remove noisy 1% of the data due to cudnn benchmark overhead
-        max_times = np.max(all_times, axis=1)
-        perc99 = np.percentile(max_times, 99)
-        mask = (max_times < perc99)
-        all_voxels = all_voxels[mask]
-        all_times = all_times[mask]
+        def remove_noise(times, voxels):
+            max_times = np.max(times, axis=1)
+            perc99 = np.percentile(max_times, 99)
+            mask = (times < perc99)
+            return np.expand_dims(times[mask], -1), np.expand_dims(voxels[mask], -1)
+
+        all_times, all_voxels = remove_noise(all_times, all_voxels)
+        all_vfe_times, all_points = remove_noise(all_vfe_times, all_points)
 
         # plot voxel to time graph
         bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
         bb3d_voxels = all_voxels[:, :1]
-        fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-        #ax.grid(True)
-        ax.scatter(bb3d_voxels, bb3d_times) #, label='data')
-        #ax.set_xlim([0, 70000])
-        #ax.set_ylim([0, 150])
-        #ax.set_xlim([0, 20000])
-        #ax.set_ylim([0, 220])
-        ax.set_xlabel('Number of input voxels', fontsize='x-large')
-        ax.set_ylabel('3D backbone\nexecution time (msec)', fontsize='x-large')
+        vfe_times  = np.sum(all_vfe_times, axis=-1, keepdims=True)
+        vfe_points = all_points[:, :1]
+        fig, axes = plt.subplots(2, 1, figsize=(6, 6), constrained_layout=True)
+        axes[0].scatter(vfe_points, vfe_times, label='data') #, label='data')
+        axes[0].set_xlabel('Number of input points', fontsize='x-large')
+        axes[0].set_ylabel('VFE execution time (msec)', fontsize='x-large')
+        axes[1].scatter(bb3d_voxels, bb3d_times, label='data') #, label='data')
+        axes[1].set_xlabel('Number of input voxels', fontsize='x-large')
+        axes[1].set_ylabel('3D backbone\nexecution time (msec)', fontsize='x-large')
 
         # As a baseline predictor, do linear regression using
-        # the number of voxels
+        # the number of voxels or points
+
+        if self.vfe_time_pred:
+            vfe_points_n = vfe_points / self.num_points_normalizer
+            if self.time_reg_degree == 2:
+                vfe_points_n = np.concatenate((vfe_points_n,
+                    np.square(vfe_points_n)), axis=-1)
+            reg = LinearRegression().fit(vfe_points_n, vfe_times)
+
+            self.vfe_time_reg_coeffs = reg.coef_
+            self.vfe_time_reg_intercepts = reg.intercept_
+
+            pred_times = np.sum(vfe_points_n * self.vfe_time_reg_coeffs.flatten(), \
+                    axis=-1) +  self.vfe_time_reg_intercepts
+            axes[0].scatter(vfe_points.flatten(), pred_times.flatten(), label='pred')
+
         if self.use_baseline_bb3d_predictor:
             bb3d_voxels_n = bb3d_voxels / self.num_voxels_normalizer
             if self.time_reg_degree == 2:
@@ -204,10 +243,11 @@ class AnytimeCalibrator():
 
             pred_times = np.sum(bb3d_voxels_n * self.time_reg_coeffs.flatten(), \
                     axis=-1) +  self.time_reg_intercepts
-            plt.scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
-            plt.legend()
-        plt.savefig(f'/home/humble/shared/latest_exp_plots/voxels_to_bb3dtime.pdf')
+            axes[1].scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
+        plt.legend()
+        plt.savefig(f'/home/humble/shared/latest_exp_plots/vfe_and_bb3d_time.pdf')
         plt.clf()
+
         if not self.use_baseline_bb3d_predictor:
             self.time_reg_coeffs, self.time_reg_intercepts = self.fit_voxel_time_data(all_voxels, all_times)
 
@@ -244,10 +284,9 @@ class AnytimeCalibrator():
         if 'exec_times' in self.calib_data_dict:
             # calculate the 3dbb err cdf
             time_dict = self.calib_data_dict['exec_times']
-            if 'FusedOps1' in time_dict and 'Backbone3D-IL' in  time_dict \
-                    and 'VFE-nn' in time_dict:
+            if 'Backbone3D-IL' in time_dict:
                 Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
-                        np.array(time_dict['FusedOps1']) + np.array(time_dict['VFE-nn'])
+                        np.array(time_dict['Backbone3D-Fwd'])
             else:
                 Backbone3D_times = time_dict['Backbone3D']
 
@@ -259,7 +298,16 @@ class AnytimeCalibrator():
             print('Overall 3D Backbone time prediction error stats:')
             min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_pred_err)
             self.expected_bb3d_err = int(os.getenv('PRED_ERR_MS', 0))
-            print('Expected bb3d error ms:', self.expected_bb3d_err)
+            #print('Expected bb3d error ms:', self.expected_bb3d_err)
+
+            if self.vfe_time_pred and 'VFE-nn' in time_dict and 'vfe_preds' in self.calib_data_dict:
+                vfe_nn_times = time_dict['VFE-nn']
+                vfe_pred_err = np.array(vfe_nn_times) - np.array(self.calib_data_dict['vfe_preds'])
+
+                print('Overall VFE time prediction error stats:')
+                min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(vfe_pred_err)
+                #self.expected_vfe_err = int(os.getenv('PRED_ERR_MS', 0))
+                #print('Expected bb3d error ms:', self.expected_vfe_err)
 
     def get_chosen_tile_num(self):
         return self.chosen_tiles_calib
@@ -310,6 +358,8 @@ class AnytimeCalibrator():
                 "version": 2,
                 "bb3d_time_ms": self.model.add_dict['bb3d_layer_times'][1:],
                 "bb3d_voxels": self.model.add_dict['bb3d_voxel_nums'][1:],
+                "vfe_time_ms": self.model.add_dict['vfe_layer_times'][1:],
+                "vfe_points": self.model.add_dict['vfe_point_nums'][1:],
                 "chosen_tile_coords": self.model.add_dict['chosen_tiles_1'][1:],
                 "det_head_post_time_ms": dh_post_time_data,
         }
