@@ -98,7 +98,7 @@ class DSVT_ort(nn.Module):
         self.num_point_features = self.model_cfg.conv_out_channel
 
         self.num_layer_groups = 1
-        self.input_layer_traced = None
+        self.input_layer_scripted = None
         #self._reset_parameters()
 
     def get_inds_dividers(self, tile_size_voxels):
@@ -129,10 +129,8 @@ class DSVT_ort(nn.Module):
         self.dsvtblocks_list = self.stage_0
         self.layer_norms_list = self.residual_norm_stage_0
 
-        if self.input_layer_traced == None:
-            ## BEGIN JIT TRACE BACKEND ##
-            self.input_layer_traced = torch.jit.trace(self.input_layer,
-                    example_inputs=(voxel_feats, voxel_coors), strict=False)
+        if self.input_layer_scripted == None:
+            self.input_layer_scripted = torch.jit.script(self.input_layer)
             # Do a few invocations to invoke JIT optimization
             num_voxels = voxel_feats.size(0)
             while True:
@@ -140,10 +138,9 @@ class DSVT_ort(nn.Module):
                 if num_voxels <= 0:
                     break
                 vf, vc = voxel_feats[:num_voxels], voxel_coors[:num_voxels]
-                self.input_layer_traced(vf, vc) #batch_dict)
-            ## END JIT TRACE BACKEND ##
+                self.input_layer_scripted(vf, vc)
 
-        voxel_info = self.input_layer_traced(voxel_feats, voxel_coors) #batch_dict)
+        voxel_info = self.input_layer_scripted(voxel_feats, voxel_coors) #batch_dict)
 
         voxel_feat = voxel_info['voxel_feats_stage0']
         set_voxel_inds_list = [[voxel_info[f'set_voxel_inds_stage{s}_shift{i}'] for i in range(self.num_shifts[s])] for s in range(self.stage_num)]

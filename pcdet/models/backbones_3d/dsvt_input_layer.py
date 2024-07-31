@@ -1,4 +1,5 @@
 import torch
+import time
 from torch import nn
 from math import ceil
 
@@ -6,6 +7,7 @@ from math import ceil
 from pcdet.models.model_utils.dsvt_utils import get_inner_win_inds_cuda, get_pooling_index, get_continous_inds
 from pcdet.models.model_utils.dsvt_utils import PositionEmbeddingLearned
 from torch.onnx import register_custom_op_symbolic
+from typing import Dict, List, Tuple, Final
 
 # load torch.ops.kucsl.ingroup_inds_nograd
 torch.ops.load_library("../pcdet/ops/ingroup_inds" \
@@ -22,6 +24,9 @@ def get_window_coors(g, coors, sparse_shape, window_shape, do_shift, shift_list,
 register_custom_op_symbolic("dsvt_ops::get_window_coors", get_window_coors, 17)
 
 class DSVTInputLayer(nn.Module):
+    stage_num: Final[int]
+    downsample_stride: List[int]
+
     ''' 
     This class converts the output of vfe to dsvt input.
     We do in this class:
@@ -69,7 +74,7 @@ class DSVTInputLayer(nn.Module):
         for ds_stride in self.downsample_stride:
             last_sparse_shape = self.sparse_shape_list[-1]
             self.sparse_shape_list.append((ceil(last_sparse_shape[0]/ds_stride[0]), ceil(last_sparse_shape[1]/ds_stride[1]), ceil(last_sparse_shape[2]/ds_stride[2])))
-        
+
         # position embedding layers
         self.posembed_layers = nn.ModuleList()
         for i in range(len(self.set_info)):
@@ -82,7 +87,7 @@ class DSVTInputLayer(nn.Module):
                 stage_posembed_layers.append(block_posembed_layers)
             self.posembed_layers.append(stage_posembed_layers)
 
-    def forward(self, voxel_feats, voxel_coors):
+    def forward(self, voxel_feats : torch.Tensor, voxel_coors : torch.Tensor) -> Dict[str,torch.Tensor]:
         '''
         Args:
             bacth_dict (dict): 
@@ -111,8 +116,6 @@ class DSVTInputLayer(nn.Module):
                     Shape of (N_{i}, downsample_stride[i-1].prob(), d_moel[i-1]), where prob() returns the product of all elements.
                 - ...
         '''
-        #voxel_feats = batch_dict['voxel_features']
-        #voxel_coors = batch_dict['voxel_coords'].long()
         voxel_coors = voxel_coors.long()
 
         voxel_info = {}
@@ -122,22 +125,87 @@ class DSVTInputLayer(nn.Module):
         for stage_id in range(self.stage_num):
             # window partition of corrsponding stage-map
             voxel_info = self.window_partition(voxel_info, stage_id)
-            # generate set id of corrsponding stage-map
-            voxel_info = self.get_set(voxel_info, stage_id)
-            for block_id in range(self.set_info[stage_id][1]):
-                for shift_id in range(self.num_shifts[stage_id]):
-                    voxel_info[f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'] = \
-                            self.get_pos_embed(voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}'], \
-                            stage_id, block_id, shift_id)
-            
+            torch.cuda.synchronize() # if I don't sync here, the forked calls fail
+
+            batch_win_inds_shift0 = voxel_info[f'batch_win_inds_stage{stage_id}_shift0']
+            coors_in_win_shift0 = voxel_info[f'coors_in_win_stage{stage_id}_shift0']
+            set_s0_fut = torch.jit.fork(self.get_set_helper, batch_win_inds_shift0, coors_in_win_shift0, stage_id, 0)
+
+            batch_win_inds_shift1 = voxel_info[f'batch_win_inds_stage{stage_id}_shift1']
+            coors_in_win_shift1 = voxel_info[f'coors_in_win_stage{stage_id}_shift1']
+            set_s1_fut = torch.jit.fork(self.get_set_helper, batch_win_inds_shift1, coors_in_win_shift1, stage_id, 1)
+
+            #NOTE the unrolled version of
+            #for block_id in range(self.set_info[stage_id][1]):
+            #    for shift_id in range(self.num_shifts[stage_id]):
+            #        print(stage_id, block_id, shift_id)
+            #        voxel_info[f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'] = \
+            #                self.get_pos_embed(voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}'], \
+            #                stage_id, block_id, shift_id)
+            # Unrolled:
+            stage_id, block_id, shift_id = 0, 0, 0
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out1 = self.pos_embed_wrapper(self.posembed_layers[0][0][0], coors, stage_id, shift_id)
+            out1_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 0, 1
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out2 = self.pos_embed_wrapper(self.posembed_layers[0][0][1], coors, stage_id, shift_id)
+            out2_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 1, 0
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out3 = self.pos_embed_wrapper(self.posembed_layers[0][1][0], coors, stage_id, shift_id)
+            out3_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 1, 1
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out4 = self.pos_embed_wrapper(self.posembed_layers[0][1][1], coors, stage_id, shift_id)
+            out4_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 2, 0
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out5 = self.pos_embed_wrapper(self.posembed_layers[0][2][0], coors, stage_id, shift_id)
+            out5_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 2, 1
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out6 = self.pos_embed_wrapper(self.posembed_layers[0][2][1], coors, stage_id, shift_id)
+            out6_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 3, 0
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out7 = self.pos_embed_wrapper(self.posembed_layers[0][3][0], coors, stage_id, shift_id)
+            out7_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            stage_id, block_id, shift_id = 0, 3, 1
+            coors = voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}']
+            out8 = self.pos_embed_wrapper(self.posembed_layers[0][3][1], coors, stage_id, shift_id)
+            out8_key = f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'
+
+            out_keys = [out1_key, out2_key, out3_key, out4_key, out5_key, out6_key, out7_key, out8_key]
+            outs = [out1, out2, out3, out4, out5, out6, out7, out8]
+            for k, out in zip(out_keys, outs):
+                voxel_info[k] = out
+
+            set_voxel_inds_shift0, set_voxel_mask_s0 = torch.jit.wait(set_s0_fut)
+            voxel_info[f'set_voxel_inds_stage{stage_id}_shift0'] = set_voxel_inds_shift0
+            voxel_info[f'set_voxel_mask_stage{stage_id}_shift0'] = set_voxel_mask_s0
+
+            set_voxel_inds_shift1, set_voxel_mask_s1 = torch.jit.wait(set_s1_fut)
+            voxel_info[f'set_voxel_inds_stage{stage_id}_shift1'] = set_voxel_inds_shift1
+            voxel_info[f'set_voxel_mask_stage{stage_id}_shift1'] = set_voxel_mask_s1
+
             # compute pooling information
             if stage_id < self.stage_num - 1:
                 voxel_info = self.subm_pooling(voxel_info, stage_id)
         
         return voxel_info
     
-    @torch.no_grad()
-    def subm_pooling(self, voxel_info, stage_id):
+    #@torch.no_grad()
+    @torch.jit.ignore
+    def subm_pooling(self, voxel_info : Dict[str,torch.Tensor], stage_id : int) \
+            -> Dict[str,torch.Tensor]:
         # x,y,z stride
         cur_stage_downsample = self.downsample_stride[stage_id]
         # batch_win_coords is from 1 of x, y
@@ -162,8 +230,19 @@ class DSVTInputLayer(nn.Module):
         voxel_info[f'voxel_coors_stage{stage_id+1}'] = pool_coors
         
         return voxel_info
+
+    def get_set_helper(self, batch_win_inds: torch.Tensor, coors_in_win: torch.Tensor, stage_id : int, shift_id : int) \
+            -> Tuple[torch.Tensor, torch.Tensor]:
+        set_voxel_inds= self.get_set_single_shift(batch_win_inds, stage_id, shift_id=shift_id, coors_in_win=coors_in_win)
+        # compute key masks, voxel duplication must happen continuously
+        prefix_set_voxel_inds = torch.roll(set_voxel_inds.clone(), shifts=1, dims=-1)
+        prefix_set_voxel_inds[ :, :, 0] = -1
+        set_voxel_mask = (set_voxel_inds == prefix_set_voxel_inds)
+        return set_voxel_inds, set_voxel_mask
+
     
-    def get_set(self, voxel_info, stage_id):
+    def get_set(self, voxel_info : Dict[str, torch.Tensor], stage_id : int) \
+            -> Dict[str, torch.Tensor]:
         '''
         This is one of the core operation of DSVT. 
         Given voxels' window ids and relative-coords inner window, we partition them into window-bounded and size-equivalent local sets.
@@ -201,7 +280,8 @@ class DSVTInputLayer(nn.Module):
 
         return voxel_info
     
-    def get_set_single_shift(self, batch_win_inds, stage_id, shift_id=None, coors_in_win=None):
+    def get_set_single_shift(self, batch_win_inds: torch.Tensor, stage_id : int,
+            shift_id: int, coors_in_win: torch.Tensor):
         device = batch_win_inds.device
         # the number of voxels assigned to a set
         voxel_num_set = self.set_info[stage_id][0]
@@ -263,8 +343,9 @@ class DSVTInputLayer(nn.Module):
         all_set_voxel_inds = torch.stack((set_voxel_inds_sorty, set_voxel_inds_sortx), dim=0)
         return all_set_voxel_inds
 
-    @torch.no_grad()
-    def window_partition(self, voxel_info, stage_id):
+    #@torch.no_grad()
+    def window_partition(self, voxel_info : Dict[str,torch.Tensor], stage_id : int) \
+            -> Dict[str,torch.Tensor]:
         for i in range(2):
             batch_win_inds, coors_in_win = torch.ops.dsvt_ops.get_window_coors(
                     voxel_info[f'voxel_coors_stage{stage_id}'],
@@ -276,7 +357,14 @@ class DSVTInputLayer(nn.Module):
         
         return voxel_info
 
-    def get_pos_embed(self, coors_in_win, stage_id, block_id, shift_id):
+    def pos_embed_wrapper(self, embed_layer : PositionEmbeddingLearned, coords : torch.Tensor, \
+            stage_id : int, shift_id : int) -> torch.Tensor:
+        loc = self.get_pos_embed(coords, stage_id, shift_id)
+        return embed_layer.forward(loc)
+
+
+    def get_pos_embed(self, coors_in_win : torch.Tensor, stage_id : int, \
+            shift_id : int) -> torch.Tensor:
         '''
         Args:
         coors_in_win: shape=[N, 3], order: z, y, x
@@ -284,7 +372,6 @@ class DSVTInputLayer(nn.Module):
         # [N,]
         window_shape = self.window_shape[stage_id][shift_id]
        
-        embed_layer = self.posembed_layers[stage_id][block_id][shift_id]
         if len(window_shape) == 2:
             ndim = 2
             win_x, win_y = window_shape
@@ -309,7 +396,4 @@ class DSVTInputLayer(nn.Module):
             location = torch.stack((x, y), dim=-1)
         else:
             location = torch.stack((x, y, z), dim=-1)
-        pos_embed = embed_layer(location)
-
-        return pos_embed
-
+        return location

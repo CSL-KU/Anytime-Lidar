@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from pcdet.ops.ingroup_inds.ingroup_inds_op import ingroup_inds
-
+from typing import List
 
 get_inner_win_inds_cuda = ingroup_inds
 
@@ -24,7 +24,7 @@ class PositionEmbeddingLearned(nn.Module):
         return position_embedding
 
 
-@torch.no_grad()
+#@torch.no_grad()
 def get_window_coors(coors, sparse_shape, window_shape, do_shift, shift_list=None, return_win_coors=False):
 
     if len(window_shape) == 2:
@@ -87,8 +87,7 @@ def get_window_coors(coors, sparse_shape, window_shape, do_shift, shift_list=Non
     
     return batch_win_inds, coors_in_win
 
-
-def get_pooling_index(coors, sparse_shape, window_shape):
+def get_pooling_index(coors : torch.Tensor, sparse_shape : List[int], window_shape : List[int]):
     win_shape_x, win_shape_y, win_shape_z = window_shape
     sparse_shape_x, sparse_shape_y, sparse_shape_z = sparse_shape
     
@@ -127,7 +126,7 @@ def get_pooling_index(coors, sparse_shape, window_shape):
     return batch_win_inds, coors_in_win, index_in_win, batch_win_coords
 
 
-def get_continous_inds(setnum_per_win):
+def get_continous_inds(setnum_per_win : torch.Tensor):
     '''
     Args:
         setnum_per_win (Tensor[int]): Number of sets assigned to each window with shape (win_num).
@@ -143,7 +142,8 @@ def get_continous_inds(setnum_per_win):
     #set_num = setnum_per_win.sum().item() # set_num = 7
     set_num = torch.sum(setnum_per_win, 0, keepdim=True)
     setnum_per_win_cumsum = torch.cumsum(setnum_per_win, dim=0)[:-1] # [1, 3, 4]
-    set_win_inds = torch.full((set_num[0],), 0, device=setnum_per_win.device)
+    #set_win_inds = torch.full((set_num[0],), 0, device=setnum_per_win.device)
+    set_win_inds = torch.zeros(set_num[0], dtype=torch.long, device=setnum_per_win.device)
     set_win_inds[setnum_per_win_cumsum] = 1 # [0, 1, 0, 1, 1, 0, 0]
     set_win_inds = torch.cumsum(set_win_inds, dim=0) # [0, 1, 1, 2, 3, 3, 3]
     
