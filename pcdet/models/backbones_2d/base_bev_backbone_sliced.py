@@ -43,17 +43,13 @@ class BaseBEVBackboneSlicedBase(nn.Module):
         spatial_features = data_dict['spatial_features']
 
         ctc = data_dict['chosen_tile_coords']
-        if self.sched_algo == SchedAlgo.MirrorRR:
-            ctc = np.sort(ctc)
         ctc_s, ctc_e = ctc[0], ctc[-1]
         tile_sz = spatial_features.size(-1) // self.tcount
         if len(ctc) == self.tcount:
             # Select all
             x = spatial_features
             chunks = [(ctc_s, ctc_e)]
-        elif (self.sched_algo == SchedAlgo.RoundRobin and ctc_s <= ctc_e) or \
-                 (self.sched_algo == SchedAlgo.AdaptiveRR and ctc_s <= ctc_e) or \
-                 (self.sched_algo == SchedAlgo.MirrorRR and ctc_e - ctc_s + 1 == ctc.shape[0]):
+        elif ctc_s <= ctc_e:
             # Contiguous
             x = spatial_features[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)]
             chunks = [(ctc_s, ctc_e)]
@@ -61,12 +57,8 @@ class BaseBEVBackboneSlicedBase(nn.Module):
             # Two chunks, find the point of switching
             # Following piece of code take 0.6 ms in jetson agx
             i = 0
-            if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-                while ctc[i] < ctc[i+1]:
-                    i += 1
-            elif self.sched_algo == SchedAlgo.MirrorRR:
-                while ctc[i]+1 == ctc[i+1]:
-                    i += 1
+            while ctc[i] < ctc[i+1]:
+                i += 1
             chunk_r = (ctc_s, ctc[i])
             chunk_l = (ctc[i+1], ctc_e)
             c_sz_l = (chunk_l[1] - chunk_l[0] + 1) * tile_sz

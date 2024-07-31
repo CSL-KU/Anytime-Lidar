@@ -244,10 +244,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #####
 
         # when reset, process all ignoring deadline
-        if (not self.is_calibrating() and \
-                (diffs[-1] or self.last_tile_coord == self.init_tile_coord)) or \
-                (self.is_calibrating() and \
-                len(netc) <= self.calibrator.get_chosen_tile_num()):
+        if (not self.is_calibrating() and diffs[-1]) or \
+                (self.is_calibrating() and len(netc) <= self.calibrator.get_chosen_tile_num()):
             # choose all
             chosen_tile_coords = netc
             if self.sched_algo == SchedAlgo.MirrorRR:
@@ -280,6 +278,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
                     torch.from_numpy(chosen_tile_coords).cuda())
             batch_dict['points'] = batch_dict['points'][tile_filter]
+        self.last_tile_coord = chosen_tile_coords[-1].item()
 
         if self.vfe_time_pred:
             self.add_dict['vfe_preds'].append(predicted_vfe_time)
@@ -304,35 +303,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         return batch_dict
 
-    # Recalculate chosen tiles based on the time spent on bb3d
     def schedule2(self, batch_dict):
         if self.sched_disabled:
             return batch_dict
 
         # bb3d time predictor commit
-        if not self.use_baseline_bb3d_predictor:
-            if not self.move_indscalc_to_init:
-                vcoords = batch_dict['bb3d_intermediary_vcoords']
-                if self.use_voxelnext:
-                    out = batch_dict['encoded_spconv_tensor']
-                    voxel_tile_coords = torch.div(out.indices[:, -1], self.tile_size_voxels / 8, \
-                            rounding_mode='trunc').int()
-                    voxel_dist = torch.bincount(voxel_tile_coords, minlength=self.tcount)[:self.tcount]
-                    # just for the sake of timing
-                    vcoords.append(voxel_dist.unsqueeze(0))
-
-                vcoords.insert(0, batch_dict['vcount_area'])
-                voxel_dists = torch.cat(vcoords, dim=0).cpu().numpy() # num sparse layer groups x num_tiles 
-                self.calibrator.commit_bb3d_updates(batch_dict['chosen_tile_coords'], voxel_dists)
-            else:
-                if self.use_voxelnext:
-                    out = batch_dict['encoded_spconv_tensor']
-                    batch_dict['bb3d_intermediary_vinds'].append(out.indices)
-            num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
-                    [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
-            self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
-        else:
-            self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
+        self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
 
         # Tile dropping
         if self.enable_tile_drop:
@@ -341,28 +317,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
             rem_time_ms = (batch_dict['abs_deadline_sec'] - time.time()) * 1000
             diffs = post_bb3d_times < rem_time_ms
 
-            m = int(self.sched_algo == SchedAlgo.MirrorRR)
-            if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1-m]:
+            if not diffs[batch_dict['chosen_tile_coords'].shape[0]-1]:
                 tiles_idx=1
                 while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                     tiles_idx += 1
 
-                ctc = batch_dict['tiles_queue'][:tiles_idx-m]
-                if self.sched_algo == SchedAlgo.MirrorRR:
-                    batch_dict['chosen_tile_coords'] = np.concatenate((self.mtiles, ctc))
-                elif self.sched_algo == SchedAlgo.RoundRobin or \
-                        self.sched_algo == SchedAlgo.AdaptiveRR:
-                    batch_dict['chosen_tile_coords'] = ctc
-                    self.last_tile_coord = ctc[-1].item()
+                ctc = batch_dict['tiles_queue'][:tiles_idx]
+                batch_dict['chosen_tile_coords'] = ctc
+                self.last_tile_coord = ctc[-1].item()
 
-            if self.sched_algo == SchedAlgo.MirrorRR and \
-                    batch_dict['chosen_tile_coords'].shape[0] > self.mtiles.shape[0]:
-                self.last_tile_coord = batch_dict['chosen_tile_coords'][-1].item()
         ctc = batch_dict['chosen_tile_coords'].tolist()
         self.add_dict['chosen_tiles_2'].append(ctc)
-
-        if self.sched_algo == SchedAlgo.AdaptiveRR:
-            self.processed_area_perc += len(ctc) / self.cur_netc_num_tiles
 
         return batch_dict
 

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from typing import Dict, List, Tuple, Final
 
 class PointPillarScatter(nn.Module):
     def __init__(self, model_cfg, grid_size, **kwargs):
@@ -49,6 +49,11 @@ class PointPillarScatter(nn.Module):
 
 
 class PointPillarScatter3d(nn.Module):
+    num_bev_features_before_compression: Final[int]
+    nz : Final[int]
+    ny : Final[int]
+    nx : Final[int]
+
     def __init__(self, model_cfg, grid_size, **kwargs):
         super().__init__()
         
@@ -57,7 +62,7 @@ class PointPillarScatter3d(nn.Module):
         self.num_bev_features = self.model_cfg.NUM_BEV_FEATURES
         self.num_bev_features_before_compression = self.model_cfg.NUM_BEV_FEATURES // self.nz
 
-    def forward(self, batch_size, pillar_features, coords):
+    def forward_training(self, batch_size, pillar_features, coords):
         batch_spatial_features = []
         for batch_idx in range(batch_size):
             spatial_feature = torch.zeros(
@@ -78,3 +83,20 @@ class PointPillarScatter3d(nn.Module):
         batch_spatial_features = torch.stack(batch_spatial_features, 0)
         batch_spatial_features = batch_spatial_features.view(batch_size, self.num_bev_features_before_compression * self.nz, self.ny, self.nx)
         return batch_spatial_features.contiguous()
+
+    def forward(self, pillar_features : torch.Tensor, coords : torch.Tensor) -> torch.Tensor:
+        spatial_feature = torch.zeros(
+            self.num_bev_features_before_compression,
+            self.nz * self.nx * self.ny,
+            dtype=pillar_features.dtype,
+            device=pillar_features.device)
+
+        this_coords = coords
+        indices = this_coords[:, 1] * self.ny * self.nx + this_coords[:, 2] * self.nx + this_coords[:, 3]
+        indices = indices.to(dtype=torch.long)
+        pillars = pillar_features
+        pillars = pillars.t()
+        spatial_feature[:, indices] = pillars
+
+        spatial_feature = spatial_feature.view(1, self.num_bev_features_before_compression * self.nz, self.ny, self.nx)
+        return spatial_feature.contiguous()

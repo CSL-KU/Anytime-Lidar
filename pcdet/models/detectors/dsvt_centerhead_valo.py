@@ -93,6 +93,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 
             if not self.optimization1_done:
                 self.optimize1(vinfo[:-1])
+                self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
 
             self.measure_time_start('Backbone3D-Fwd')
             inputs_dict = {'voxel_feat': vinfo[0],
@@ -107,6 +108,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             else:
                 vinfo_ = vinfo[:-1]
                 output = self.backbone_3d(*vinfo_)
+
+            batch_dict['spatial_features'] = self.map_to_bev_scrpt(output, vinfo[-1]) # 1 is batch size
             self.measure_time_end('Backbone3D-Fwd')
 
             if self.is_calibrating():
@@ -114,11 +117,11 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 e3.record()
                 batch_dict['bb3d_layer_time_events'] = [e2, e3]
 
-            self.measure_time_start('Sched2')
-            batch_dict = self.schedule2(batch_dict)
-            batch_dict['spatial_features'] = self.map_to_bev(1, output, vinfo[-1]) # 1 is batch size
             if not self.optimization2_done:
                 self.optimize2(batch_dict['spatial_features'])
+
+            self.measure_time_start('Sched2')
+            batch_dict = self.schedule2(batch_dict)
             batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
             self.measure_time_end('Sched2')
 
