@@ -46,8 +46,9 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 
         self.update_time_dict( {
             'Sched1': [],
-            'VFE-gen-pillars' : [],
-            'VFE-nn' : [],
+            #'VFE-gen-pillars' : [],
+            #'VFE-nn' : [],
+            'VFE' : [],
             'Backbone3D-IL': [],
             'Backbone3D-Fwd':[],
             'Sched2': [],
@@ -73,13 +74,11 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 e1 = torch.cuda.Event(enable_timing=True)
                 e1.record()
 
-            self.measure_time_start('VFE-gen-pillars')
-            batch_dict = self.vfe.forward_gen_pillars(batch_dict, apply_range_filter=False)
-            self.measure_time_end('VFE-gen-pillars')
-
-            self.measure_time_start('VFE-nn')
-            batch_dict = self.vfe.forward_nn(batch_dict)
-            self.measure_time_end('VFE-nn')
+            self.measure_time_start('VFE')
+            points = batch_dict['points']
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            batch_dict['pillar_features'] = batch_dict['voxel_features']
+            self.measure_time_end('VFE')
 
             if self.is_calibrating():
                 e2 = torch.cuda.Event(enable_timing=True)
@@ -126,8 +125,11 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             self.measure_time_start('FusedOps2')
             sf = batch_dict['spatial_features']
 
-            outputs = self.fused_ops2_trt({'spatial_features': sf})
-            outputs = [outputs[nm] for nm in self.dense_head.ordered_outp_names()]
+            if self.fused_ops2_trt != None:
+                outputs = self.fused_ops2_trt({'spatial_features': sf})
+                outputs = [outputs[nm] for nm in self.dense_head.ordered_outp_names()]
+            else:
+                outputs = self.opt_fwd2(sf)
             batch_dict = self.do_projection(batch_dict)
 
             outputs = scatter_sliced_tensors(batch_dict['chosen_tile_coords'], outputs,
@@ -233,9 +235,9 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         output_names = self.dense_head.ordered_outp_names()
         print('Fused operations output names:', output_names)
 
-        opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
-        opt_fwd2.eval()
-        eager_outputs = opt_fwd2(fwd_data)
+        self.opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
+        self.opt_fwd2.eval()
+        eager_outputs = self.opt_fwd2(fwd_data)
 
         generated_onnx=False
         base_dir = "./deploy_files_valo"
@@ -250,7 +252,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 dynamic_axes[nm] = {3 : "out_width"}
 
             torch.onnx.export(
-                    opt_fwd2,
+                    self.opt_fwd2,
                     fwd_data,
                     onnx_path, input_names=input_names,
                     output_names=output_names, dynamic_axes=dynamic_axes,

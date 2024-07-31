@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Tuple
 
 try:
     import torch_scatter
@@ -9,7 +10,6 @@ except Exception as e:
     pass
 
 from .vfe_template import VFETemplate
-
 
 class PFNLayerV2(nn.Module):
     def __init__(self,
@@ -32,11 +32,14 @@ class PFNLayerV2(nn.Module):
         
         self.relu = nn.ReLU()
 
-    def forward(self, inputs, unq_inv):
+    def forward(self, inputs : torch.Tensor, unq_inv : torch.Tensor, \
+            num_out_inds : int) -> torch.Tensor:
         x = self.linear(inputs)
         x = self.norm(x) if self.use_norm else x
         x = self.relu(x)
-        x_max = torch_scatter.scatter_max(x, unq_inv, dim=0)[0]
+
+        x_max = torch.zeros((num_out_inds, x.size(1)), dtype=x.dtype, device=x.device)
+        torch_scatter.scatter_max(x, unq_inv, dim=0, out=x_max)
 
         if self.last_vfe:
             return x_max
@@ -95,21 +98,23 @@ class DynamicPillarVFE(VFETemplate):
         batch_dict['points_coords'] = points_coords[mask]
         return batch_dict
 
-    def forward_gen_pillars(self, batch_dict, **kwargs):
-        if kwargs.get('apply_range_filter', True):
-            batch_dict = self.range_filter(batch_dict)
+    #def forward_gen_pillars(self, batch_dict, **kwargs):
+    def forward_gen_pillars(self, points : torch.Tensor) \
+            -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        # NOTE apply_range_filter should be executed before this
+        #if kwargs.get('apply_range_filter', True):
+        #    batch_dict = self.range_filter(batch_dict)
 
-        points = batch_dict['points']
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
                        points_coords[:, 0] * self.scale_y + \
                        points_coords[:, 1]
         
-        unq_coords, unq_inv, unq_cnt = torch.unique(merge_coords, return_inverse=True, return_counts=True, dim=0)
+        unq_coords, unq_inv = torch.unique(merge_coords, return_inverse=True, dim=0)
 
         points_xyz = points[:, [1, 2, 3]].contiguous()
-        points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0)
+        points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, 0)
         f_cluster = points_xyz - points_mean[unq_inv, :]
 
         f_center = torch.zeros_like(points_xyz)
@@ -129,29 +134,25 @@ class DynamicPillarVFE(VFETemplate):
 
         # generate voxel coordinates
         unq_coords = unq_coords.int()
+        z_ = torch.zeros(unq_coords.shape[0], device=unq_coords.device, dtype=torch.int)
         voxel_coords = torch.stack((unq_coords // self.scale_xy,
-                                   (unq_coords % self.scale_xy) // self.scale_y,
+                                   z_,
                                    unq_coords % self.scale_y,
-                                   torch.zeros(unq_coords.shape[0]).to(unq_coords.device).int()
-                                   ), dim=1)
-        voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
-        batch_dict['voxel_coords'] = voxel_coords
-        batch_dict['features'] = features
-        batch_dict['unq_inv'] = unq_inv
-        return batch_dict
+                                   (unq_coords % self.scale_xy) // self.scale_y), dim=1)
 
-    def forward_nn(self, batch_dict):
-        features = batch_dict['features']
-        unq_inv= batch_dict['unq_inv']
+        return voxel_coords, features, unq_inv, points_mean.size(0)
+
+    def forward_nn(self, features : torch.Tensor, unq_inv : torch.Tensor, num_out_inds : int) -> torch.Tensor:
 
         for pfn in self.pfn_layers:
-            features = pfn(features, unq_inv)
+            features = pfn(features, unq_inv, num_out_inds)
 
-        batch_dict['voxel_features'] = batch_dict['pillar_features'] = features
-        return batch_dict
+        return features
 
-    def forward(self, batch_dict, **kwargs):
-        return self.forward_nn(self.forward_gen_pillars(batch_dict, **kwargs))
+    def forward(self, points : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        voxel_coords, features, unq_inv, num_out_inds = self.forward_gen_pillars(points)
+        features = self.forward_nn(features, unq_inv, num_out_inds)
+        return voxel_coords, features
 
 
 class DynamicPillarVFESimple2D(VFETemplate):

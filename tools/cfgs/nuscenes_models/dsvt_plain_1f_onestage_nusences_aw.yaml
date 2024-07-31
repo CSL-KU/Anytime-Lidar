@@ -83,7 +83,7 @@ MODEL:
     activation: gelu
     output_shape: [360, 360]
     conv_out_channel: 128
-      #trt_engine: /home/humble/shared/Anytime-Lidar/tools/deploy_files/dsvt.engine
+    trt_engine: /home/humble/shared/Anytime-Lidar/tools/deploy_files/dsvt.engine
     # ues_checkpoint: True
 
   MAP_TO_BEV:
