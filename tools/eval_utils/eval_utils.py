@@ -107,7 +107,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             print(tns)
 
         # process each scene seperately
-        # NOTE For nonblocking, set E2E_REL_DEADLINE_S to 0
+        # NOTE For nonblocking, set E2E_REL_DEADLINE_S to 0, but it doesn't work now, need to check
         do_dyn_sched = bool(int(os.getenv('DO_DYN_SCHED', '0')))
         e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.1)) * 1000000)
         print('Dynamic Scheduling:', 'ON' if do_dyn_sched else 'OFF')
@@ -259,6 +259,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             assert samples_added == num_samples
 
     else:
+        pred_tuples = [None] *len(dataloader)
+
         for i in range(len(dataloader)):
             if speed_test and i == num_samples:
                 break
@@ -294,16 +296,21 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                     clusters=batch_dict.get('clusters', None))
 
             statistics_info(cfg, ret_dict, metric, disp_dict)
-            annos = dataset.generate_prediction_dicts(
-                batch_dict, pred_dicts, class_names,
-                output_path=final_output_dir if args.save_to_file else None
-            )
-            det_annos += annos
+            bd = {k:batch_dict[k] for k in ('frame_id', 'metadata')}
+            pred_tuples[i] = (bd, pred_dicts)
             if cfg.LOCAL_RANK == 0:
                 progress_bar.set_postfix(disp_dict)
                 progress_bar.update()
 
-            gc.collect()
+            if i % 100 == 0:
+                gc.collect() # don't invoke this all the time as it slows down
+        op = final_output_dir if args.save_to_file else None
+        for bd, pred_dicts in pred_tuples:
+            annos = dataset.generate_prediction_dicts(
+                bd, pred_dicts, class_names, output_path=op
+            )
+            det_annos += annos
+
     gc.enable()
 
     if visualize:
