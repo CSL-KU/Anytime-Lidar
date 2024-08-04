@@ -211,7 +211,12 @@ class NuScenesDataset(DatasetTemplate):
         else:
             nusc = NuScenes(version=self.dataset_cfg.VERSION, dataroot=str(self.root_path),
                     verbose=True)
-        nusc_annos = nuscenes_utils.transform_det_annos_to_nusc_annos(det_annos, nusc)
+        if 'boxes_in_global_coords' in kwargs:
+            boxes_in_global_coords = kwargs['boxes_in_global_coords']
+        else:
+            boxes_in_global_coords = False
+        nusc_annos = nuscenes_utils.transform_det_annos_to_nusc_annos( \
+                det_annos, nusc, boxes_in_global_coords=boxes_in_global_coords)
         nusc_annos['meta'] = {
             'use_camera': False,
             'use_lidar': True,

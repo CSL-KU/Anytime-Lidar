@@ -275,7 +275,8 @@ class CenterHead(nn.Module):
         tb_dict['rpn_loss'] = loss.item()
         return loss, tb_dict
 
-    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs, projections=None):
+    # NEW
+    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs=None, projections=None):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -285,9 +286,7 @@ class CenterHead(nn.Module):
             'pred_labels': [],
         } for k in range(batch_size)]
         for idx, pred_dict in enumerate(pred_dicts):
-            #batch_hm = pred_dict['hm'].sigmoid()
-            topk_outp = topk_outputs[idx]
-            batch_hm = pred_dict['hm'] # already did sigmoid
+            batch_hm = pred_dict['hm'].sigmoid()
             batch_center = pred_dict['center']
             batch_center_z = pred_dict['center_z']
             batch_dim = pred_dict['dim'].exp()
@@ -295,21 +294,30 @@ class CenterHead(nn.Module):
             batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
             batch_vel = pred_dict['vel'] if 'vel' in self.separate_head_cfg.HEAD_ORDER else None
 
+            batch_iou = (pred_dict['iou'] + 1) * 0.5 if 'iou' in pred_dict else None
+
+            topk_outp = None if topk_outputs is None else topk_outputs[idx]
             final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
                 heatmap=batch_hm, rot_cos=batch_rot_cos, rot_sin=batch_rot_sin,
-                center=batch_center, center_z=batch_center_z, dim=batch_dim, vel=batch_vel,
-                topk_outp=topk_outp,
+                center=batch_center, center_z=batch_center_z, dim=batch_dim, vel=batch_vel, iou=batch_iou,
                 point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
                 feature_map_stride=self.feature_map_stride,
                 K=post_process_cfg.MAX_OBJ_PER_SAMPLE,
                 circle_nms=(post_process_cfg.NMS_CONFIG.NMS_TYPE == 'circle_nms'),
                 score_thresh=post_process_cfg.SCORE_THRESH,
-                post_center_limit_range=post_center_limit_range
+                post_center_limit_range=post_center_limit_range,
+                topk_outp=topk_outp
             )
 
             for k, final_dict in enumerate(final_pred_dicts):
                 final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
-                if post_process_cfg.NMS_CONFIG.NMS_TYPE != 'circle_nms':
+
+                if post_process_cfg.get('USE_IOU_TO_RECTIFY_SCORE', False) and 'pred_iou' in final_dict:
+                    pred_iou = torch.clamp(final_dict['pred_iou'], min=0, max=1.0)
+                    IOU_RECTIFIER = final_dict['pred_scores'].new_tensor(post_process_cfg.IOU_RECTIFIER)
+                    final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - IOU_RECTIFIER[final_dict['pred_labels']]) * torch.pow(pred_iou, IOU_RECTIFIER[final_dict['pred_labels']])
+
+                if post_process_cfg.NMS_CONFIG.NMS_TYPE not in  ['circle_nms', 'multi_class_nms']:
                     if projections is not None:
                         # get the projections that match and cat them for NMS
                         for j in projections[idx].keys():
@@ -321,9 +329,21 @@ class CenterHead(nn.Module):
                         score_thresh=None
                     )
 
-                    final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
-                    final_dict['pred_scores'] = selected_scores
-                    final_dict['pred_labels'] = final_dict['pred_labels'][selected]
+                elif post_process_cfg.NMS_CONFIG.NMS_TYPE == 'multi_class_nms':
+                    if projections is not None:
+                        # get the projections that match and cat them for NMS
+                        for j in projections[idx].keys():
+                            final_dict[j] = torch.cat((final_dict[j], projections[idx][j]), dim=0)
+
+                    selected, selected_scores = model_nms_utils.multi_classes_nms_mmdet(
+                        box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
+                        box_labels=final_dict['pred_labels'], nms_config=post_process_cfg.NMS_CONFIG,
+                        score_thresh=post_process_cfg.NMS_CONFIG.get('SCORE_THRESH', None)
+                    )
+
+                final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
+                final_dict['pred_scores'] = selected_scores
+                final_dict['pred_labels'] = final_dict['pred_labels'][selected]
 
                 ret_dict[k]['pred_boxes'].append(final_dict['pred_boxes'])
                 ret_dict[k]['pred_scores'].append(final_dict['pred_scores'])
@@ -338,6 +358,8 @@ class CenterHead(nn.Module):
                 ret_dict[k]['pred_labels'] = torch.cat(ret_dict[k]['pred_labels'], dim=0) + 1
 
         return ret_dict
+
+
 
     @staticmethod
     def reorder_rois_for_refining(batch_size, pred_dicts):
@@ -426,7 +448,7 @@ class CenterHead(nn.Module):
         if not self.training or self.predict_boxes_when_training:
             pred_dicts = data_dict['pred_dicts']
             pred_dicts = self.generate_predicted_boxes( \
-                    data_dict['batch_size'], pred_dicts, data_dict['topk_outputs'], \
+                    data_dict['batch_size'], pred_dicts, data_dict.get('topk_outputs', None), \
                     data_dict.get('projections_nms', None))
 
             if self.predict_boxes_when_training:

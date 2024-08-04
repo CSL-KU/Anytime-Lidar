@@ -65,6 +65,14 @@ if __name__ == '__main__':
                 ]
             ),
             make_cuda_ext(
+                name='ioubev_nms_cuda',
+                module='pcdet.ops.ioubev_nms',
+                sources=[
+                    'src/iou3d.cpp',
+                    'src/iou3d_kernel.cu',
+                ]
+            ),
+            make_cuda_ext(
                 name='iou3d_nms_cuda',
                 module='pcdet.ops.iou3d_nms',
                 sources=[

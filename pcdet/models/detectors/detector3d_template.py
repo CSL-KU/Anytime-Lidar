@@ -72,6 +72,7 @@ def pre_forward_hook(module, inp_args):
 def post_forward_hook(module, inp_args, outp_args):
     assert not isinstance(outp_args, tuple)
     batch_dict = outp_args
+    module.measure_time_start('PostProcess')
     pp_args = module.post_processing_pre(batch_dict) # NMS
     if 'final_box_dicts' in  batch_dict:
         if 'pred_ious' in batch_dict['final_box_dicts'][0]:
@@ -81,8 +82,15 @@ def post_forward_hook(module, inp_args, outp_args):
     elif 'batch_cls_preds' in  batch_dict:
         for arg_arr in pp_args[:3]:
             arg_arr[0].cpu()
-        module.measure_time_end('DetectionHead')
-    torch.cuda.synchronize()
+    module.measure_time_end('PostProcess')
+    #torch.cuda.synchronize() # the cpu calls syncs anyway
+
+    if module.is_calibrating():
+        e = torch.cuda.Event(enable_timing=True)
+        e.record()
+        e_prev = batch_dict['bb2d_time_events'][1]
+        batch_dict['detheadpost_time_events'] = [e_prev, e]
+
     module.finish_time = time.time()
     module.measure_time_end('End-to-end')
 
@@ -156,6 +164,7 @@ class Detector3DTemplate(nn.Module):
         self._time_dict = {
             'End-to-end': [],
             'PreProcess': [],
+            'PostProcess': [],
         }
         self.update_time_dict(dict())
        

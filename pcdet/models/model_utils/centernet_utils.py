@@ -132,26 +132,31 @@ def _circle_nms(boxes, min_radius, post_max_size=83):
 
     return keep
 
-
-def _gather_feat(feat, ind, mask=None):
+@torch.jit.script
+def _gather_feat(feat : torch.Tensor, ind : torch.Tensor):
     dim = feat.size(2)
     ind = ind.unsqueeze(2).expand(ind.size(0), ind.size(1), dim)
     feat = feat.gather(1, ind)
-    if mask is not None:
-        mask = mask.unsqueeze(2).expand_as(feat)
-        feat = feat[mask]
-        feat = feat.view(-1, dim)
     return feat
 
+def _gather_feat_masked(feat : torch.Tensor, ind : torch.Tensor, mask : torch.Tensor):
+    dim = feat.size(2)
+    ind = ind.unsqueeze(2).expand(ind.size(0), ind.size(1), dim)
+    feat = feat.gather(1, ind)
+    mask = mask.unsqueeze(2).expand_as(feat)
+    feat = feat[mask]
+    feat = feat.view(-1, dim)
+    return feat
 
-def _transpose_and_gather_feat(feat, ind):
+@torch.jit.script
+def _transpose_and_gather_feat(feat : torch.Tensor, ind : torch.Tensor):
     feat = feat.permute(0, 2, 3, 1).contiguous()
     feat = feat.view(feat.size(0), -1, feat.size(3))
     feat = _gather_feat(feat, ind)
     return feat
 
-
-def _topk(scores, K=40, using_slicing=False):
+@torch.jit.script
+def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False):
     batch, num_class, height, width = scores.size()
 
     topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)
@@ -218,10 +223,9 @@ def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z,
     })
     return ret_pred_dicts
 
-
-def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim, topk_outp=None,
-                             point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, K=100,
-                             circle_nms=False, score_thresh=None, post_center_limit_range=None):
+def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim,
+                             point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, iou=None, K=100,
+                             circle_nms=False, score_thresh=None, post_center_limit_range=None, topk_outp=None):
     batch_size, num_class, _, _ = heatmap.size()
 
     if circle_nms:
@@ -233,6 +237,7 @@ def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim, t
         scores, inds, class_ids, ys, xs = _topk(heatmap, K=K)
     else:
         scores, inds, class_ids, ys, xs = topk_outp
+
     center = _transpose_and_gather_feat(center, inds).view(batch_size, K, 2)
     rot_sin = _transpose_and_gather_feat(rot_sin, inds).view(batch_size, K, 1)
     rot_cos = _transpose_and_gather_feat(rot_cos, inds).view(batch_size, K, 1)
@@ -250,6 +255,9 @@ def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim, t
     if vel is not None:
         vel = _transpose_and_gather_feat(vel, inds).view(batch_size, K, 2)
         box_part_list.append(vel)
+
+    if iou is not None:
+        iou = _transpose_and_gather_feat(iou, inds).view(batch_size, K)
 
     final_box_preds = torch.cat((box_part_list), dim=-1)
     final_scores = scores.view(batch_size, K)
@@ -284,6 +292,9 @@ def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim, t
             'pred_scores': cur_scores,
             'pred_labels': cur_labels
         })
+
+        if iou is not None:
+            ret_pred_dicts[-1]['pred_iou'] = iou[k, cur_mask]
     return ret_pred_dicts
 
 def _topk_1d(scores, batch_size, batch_idx, obj, K=40, nuscenes=False):

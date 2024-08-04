@@ -436,7 +436,7 @@ def lidar_nusc_box_to_global(nusc, boxes, sample_token):
     return box_list
 
 
-def transform_det_annos_to_nusc_annos(det_annos, nusc):
+def transform_det_annos_to_nusc_annos(det_annos, nusc, boxes_in_global_coords=False):
     nusc_annos = {
         'results': {},
         'meta': None,
@@ -445,9 +445,10 @@ def transform_det_annos_to_nusc_annos(det_annos, nusc):
     for det in det_annos:
         annos = []
         box_list = boxes_lidar_to_nusenes(det)
-        box_list = lidar_nusc_box_to_global(
-            nusc=nusc, boxes=box_list, sample_token=det['metadata']['token']
-        )
+        if not boxes_in_global_coords:
+            box_list = lidar_nusc_box_to_global(
+                nusc=nusc, boxes=box_list, sample_token=det['metadata']['token']
+            )
 
         for k, box in enumerate(box_list):
             name = det['name'][k]

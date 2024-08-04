@@ -61,6 +61,9 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         self.optimization1_done = False
         self.optimization2_done = False
 
+        # Force projection to be disabled
+        self.keep_projection_disabled = True
+
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
 
@@ -75,6 +78,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 e1.record()
 
             self.measure_time_start('VFE')
+
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
@@ -154,10 +158,11 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             batch_dict = self.dense_head.forward_genbox(batch_dict)
             self.measure_time_end('CenterHead-GenBox')
 
-            if self.is_calibrating():
-                e5 = torch.cuda.Event(enable_timing=True)
-                e5.record()
-                batch_dict['detheadpost_time_events'] = [e4, e5]
+            # Move this to detector3d_template post hook
+            #if self.is_calibrating():
+            #    e5 = torch.cuda.Event(enable_timing=True)
+            #    e5.record()
+            #    batch_dict['detheadpost_time_events'] = [e4, e5]
 
 #        if self.training:
 #            loss, tb_dict, disp_dict = self.get_training_loss()
