@@ -16,10 +16,11 @@ from pcdet.utils import common_utils
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Header
+from std_msgs.msg import String, Header, MultiArrayDimension
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import TransformStamped, Quaternion, Twist
 from autoware_auto_perception_msgs.msg import TrackedObjects, DetectedObjects, DetectedObject, ObjectClassification
+from valo_msgs.msg import Float32MultiArrayStamped
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import PointCloud2, PointField
 import tf2_ros
@@ -47,13 +48,30 @@ def points_to_pc2(points):
     #    PointField(name='time', offset=16, datatype=PointField.FLOAT32, count=1),
     ]
     point_cloud.is_bigendian = False
-    point_cloud.point_step = 16  # 5 fields x 4 bytes each
+    point_cloud.point_step = 16  # 4 fields x 4 bytes each
     point_cloud.row_step = point_cloud.point_step * points.shape[0]
 
     # Flatten the array for the data field
     point_cloud.data = points.tobytes()
     return point_cloud
 
+def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
+    t = TransformStamped()
+
+    t.header.stamp = stamp
+    t.header.frame_id = frame_id
+    t.child_frame_id = child_frame_id
+
+    t.transform.translation.x = translation[0]
+    t.transform.translation.y = translation[1]
+    t.transform.translation.z = translation[2]
+
+    t.transform.rotation.w = rotation_q[0]
+    t.transform.rotation.x = rotation_q[1]
+    t.transform.rotation.y = rotation_q[2]
+    t.transform.rotation.z = rotation_q[3]
+
+    return t
 
 class InferenceServer(Node):
 
@@ -72,7 +90,7 @@ class InferenceServer(Node):
         self.inf_publisher = self.create_publisher(String, 'inference_request', 1,
                 callback_group=self.re_callback_group)
 
-        self.det_publisher = self.create_publisher(DetectedObjects, 'detected_objects', 10)
+        self.det_publisher = self.create_publisher(Float32MultiArrayStamped, 'detected_objects_raw', 1)
 
         self.detpub_helper_subs =  self.create_subscription(Header, 'publish_request',
                 self.publish_dets_callback, 10, callback_group=self.re_callback_group)
@@ -164,121 +182,57 @@ class InferenceServer(Node):
 
         self.model = model
 
-    def pose_to_tf(self, translation, rotation_q, stamp, frame_id, child_frame_id):
-        t = TransformStamped()
-
-        t.header.stamp = stamp
-        t.header.frame_id = frame_id
-        t.child_frame_id = child_frame_id
-
-        t.transform.translation.x = translation[0]
-        t.transform.translation.y = translation[1]
-        t.transform.translation.z = translation[2]
-
-        t.transform.rotation.w = rotation_q[0]
-        t.transform.rotation.x = rotation_q[1]
-        t.transform.rotation.y = rotation_q[2]
-        t.transform.rotation.z = rotation_q[3]
-
-        return t
-
     def tf_timer_callback(self):
         with self.mutex:
             pose = self.cur_pose.tolist()
             stamp = deepcopy(self.cur_stamp)
 
-        tf_ep = self.pose_to_tf(pose[7:10], pose[10:], stamp, 'world', 'body')
+        tf_ep = pose_to_tf(pose[7:10], pose[10:], stamp, 'world', 'body')
         self.br.sendTransform(tf_ep)
-        tf_cs = self.pose_to_tf(pose[:3], pose[3:7], stamp, 'body', 'base_link')
+        tf_cs = pose_to_tf(pose[:3], pose[3:7], stamp, 'body', 'base_link')
         self.br.sendTransform(tf_cs)
 
-    def publish_detections(self, pred_dict, stamp):
-        tstart = time.time()
-        #NOTE not sure if the values on the left are correct
-        SIGN_UNKNOWN=1
-        BOUNDING_BOX=0
-        cls_mapping = {
-                1:1, # car
-                2:2, # truck
-                3:3, # bus
-                4:6, # bicycle
-                5:7, # pedestrian
-        }
-
-        all_objs = DetectedObjects()
-        all_objs.header = Header()
-        all_objs.header.stamp = stamp
-        all_objs.header.frame_id = 'base_link'
-
-        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
-        pred_labels = pred_dict['pred_labels'] # (N)
-        pred_scores = pred_dict['pred_scores'] # (N)
-
-        yaws = pred_boxes[:, 6]
-        vel_x = pred_boxes[:, 7]
-        vel_y = pred_boxes[:, 8]
-
-        #yaws = -yaws -math.pi / 2 # to ros2 format, not sure if I need it
-        quaterns = [tf_transformations.quaternion_from_euler(0, 0, yaw) for yaw in yaws]
-
-        linear_x = torch.sqrt(torch.pow(vel_x, 2) + torch.pow(vel_y, 2)).tolist()
-        angular_z = (2 * (torch.atan2(vel_y, vel_x) - yaws)).tolist()
-
-        for i in range(pred_labels.size(0)):
-            obj = DetectedObject()
-            obj.existence_probability = pred_scores[i].item()
-
-            oc = ObjectClassification()
-            oc.probability = 1.0;
-            oc.label = cls_mapping[pred_labels[i].item()]
-
-            obj.classification.append(oc)
-
-            if oc.label <= 3: #it is an car-like object
-                obj.kinematics.orientation_availability=SIGN_UNKNOWN
-
-            pbox = pred_boxes[i].tolist()
-
-            obj.kinematics.pose_with_covariance.pose.position.x = pbox[0]
-            obj.kinematics.pose_with_covariance.pose.position.y = pbox[1]
-            obj.kinematics.pose_with_covariance.pose.position.z = pbox[2]
-
-            q = quaterns[i]
-            obj.kinematics.pose_with_covariance.pose.orientation.x = q[0]
-            obj.kinematics.pose_with_covariance.pose.orientation.y = q[1]
-            obj.kinematics.pose_with_covariance.pose.orientation.z = q[2]
-            obj.kinematics.pose_with_covariance.pose.orientation.w = q[3]
-
-            obj.shape.type = BOUNDING_BOX
-            obj.shape.dimensions.x = pbox[3]
-            obj.shape.dimensions.y = pbox[4]
-            obj.shape.dimensions.z = pbox[5]
-
-            twist = Twist()
-            twist.linear.x = linear_x[i]
-            twist.angular.z = angular_z[i]
-            obj.kinematics.twist_with_covariance.twist = twist
-            obj.kinematics.has_twist = True
-
-            all_objs.objects.append(obj)
-
-        self.det_publisher.publish(all_objs)
-        tend = time.time()
-        #print(f'Publishing {len(all_objs.objects)} objects, it took {tend-tstart} secs')
-        #print(f'Publishing {len(all_objs.objects)} objects at time {round(tend,3)}')
-
+    # Whole func takes 4-5 ms
     def publish_dets_callback(self, msg):
+        tstart = time.time()
         idx = int(msg.frame_id)
         pred_dict = self.batch_dicts_arr[idx]['final_box_dicts'][0]
-        self.publish_detections(pred_dict, msg.stamp)
+        #self.publish_detections(pred_dict, msg.stamp)
+        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+        pred_scores = pred_dict['pred_scores'].unsqueeze(-1) # (N, 1)
+        pred_labels = pred_dict['pred_labels'].float().unsqueeze(-1) # (N, 1)
 
-        # Also publish point cloud for debug
-        # NOTE these are filtered points!
-        #points = self.batch_dicts_arr[idx]['points_np']
+        all_data = torch.cat((pred_boxes, pred_scores, pred_labels), dim=1)
 
+        float_arr = Float32MultiArrayStamped()
+        float_arr.header.frame_id = 'base_link'
+        float_arr.header.stamp = msg.stamp
+
+        dim2 = MultiArrayDimension()
+        dim2.label = "obj_attributes"
+        dim2.size = all_data.shape[1]
+        dim2.stride = all_data.shape[1]
+
+        dim1 = MultiArrayDimension()
+        dim1.label = "num_objects"
+        dim1.size = all_data.shape[0]
+        dim1.stride = all_data.shape[0] * all_data.shape[1]
+
+        float_arr.array.layout.dim.append(dim1)
+        float_arr.array.layout.dim.append(dim2)
+        float_arr.array.layout.data_offset = 0
+        float_arr.array.data = all_data.flatten().tolist() # NOTE this can be slow
+
+        self.det_publisher.publish(float_arr)
+
+        # NOTE You can publish the filtered points too!
+
+        # Following takes 3 ms
         pc2_msg = self.debug_pts_arr[idx]
         pc2_msg.header.stamp = msg.stamp
         self.pc_publisher.publish(pc2_msg)
+        tend = time.time()
+        print(f'Publishing took {round((tend-tstart)*1000, 2)} ms')
 
     def tracker_callback(self, msg):
         with self.tracker_mutex:
@@ -386,9 +340,18 @@ class InferenceServer(Node):
 
         #for tracked_objs in self.all_tracked_objects:
         #    print('Tracked objects:', len(tracked_objs.objects))
-        print(f'Sampled {len(self.all_tracked_objects)} tracker results')
+        num_sampled = len(self.all_tracked_objects)
+        print(f'Sampled {num_sampled} tracker results')
 
         #convert these back to batch dict format
+        
+
+        det_annos = []
+        for bd in batch_dicts_arr:
+            det_annos += dataset.generate_prediction_dicts(
+                bd, bd['final_box_dicts'], dataset.class_names, output_path=None
+            )
+
 
 #        det_annos = []
 #        for bd in batch_dicts_arr:
@@ -434,5 +397,77 @@ if __name__ == '__main__':
 #pred_boxes = batch_dict['final_box_dicts'][0]['pred_boxes']
 #pred_boxes = cuda_projection.move_to_world_coords(pred_boxes, cur_pose)
 #batch_dict['final_box_dicts'][0]['pred_boxes'] = pred_boxes
+
+#    def publish_detections(self, pred_dict, stamp):
+#        #NOTE not sure if the values on the left are correct
+#        SIGN_UNKNOWN=1
+#        BOUNDING_BOX=0
+#        cls_mapping = {
+#                1:1, # car
+#                2:2, # truck
+#                3:3, # bus
+#                4:6, # bicycle
+#                5:7, # pedestrian
+#        }
+#
+#        all_objs = DetectedObjects()
+#        all_objs.header = Header()
+#        all_objs.header.stamp = stamp
+#        all_objs.header.frame_id = 'base_link'
+#
+#        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+#        pred_labels = pred_dict['pred_labels'] # (N)
+#        pred_scores = pred_dict['pred_scores'] # (N)
+#
+#        yaws = pred_boxes[:, 6]
+#        vel_x = pred_boxes[:, 7]
+#        vel_y = pred_boxes[:, 8]
+#
+#        #yaws = -yaws -math.pi / 2 # to ros2 format, not sure if I need it
+#        quaterns = [tf_transformations.quaternion_from_euler(0, 0, yaw) for yaw in yaws]
+#
+#        linear_x = torch.sqrt(torch.pow(vel_x, 2) + torch.pow(vel_y, 2)).tolist()
+#        angular_z = (2 * (torch.atan2(vel_y, vel_x) - yaws)).tolist()
+#
+#        for i in range(pred_labels.size(0)):
+#            obj = DetectedObject()
+#            obj.existence_probability = pred_scores[i].item()
+#
+#            oc = ObjectClassification()
+#            oc.probability = 1.0;
+#            oc.label = cls_mapping[pred_labels[i].item()]
+#
+#            obj.classification.append(oc)
+#
+#            if oc.label <= 3: #it is an car-like object
+#                obj.kinematics.orientation_availability=SIGN_UNKNOWN
+#
+#            pbox = pred_boxes[i].tolist()
+#
+#            obj.kinematics.pose_with_covariance.pose.position.x = pbox[0]
+#            obj.kinematics.pose_with_covariance.pose.position.y = pbox[1]
+#            obj.kinematics.pose_with_covariance.pose.position.z = pbox[2]
+#
+#            q = quaterns[i]
+#            obj.kinematics.pose_with_covariance.pose.orientation.x = q[0]
+#            obj.kinematics.pose_with_covariance.pose.orientation.y = q[1]
+#            obj.kinematics.pose_with_covariance.pose.orientation.z = q[2]
+#            obj.kinematics.pose_with_covariance.pose.orientation.w = q[3]
+#
+#            obj.shape.type = BOUNDING_BOX
+#            obj.shape.dimensions.x = pbox[3]
+#            obj.shape.dimensions.y = pbox[4]
+#            obj.shape.dimensions.z = pbox[5]
+#
+#            twist = Twist()
+#            twist.linear.x = linear_x[i]
+#            twist.angular.z = angular_z[i]
+#            obj.kinematics.twist_with_covariance.twist = twist
+#            obj.kinematics.has_twist = True
+#
+#            all_objs.objects.append(obj)
+#
+#        self.det_publisher.publish(all_objs)
+#        #print(f'Publishing {len(all_objs.objects)} objects at time {round(tend,3)}')
 
 
