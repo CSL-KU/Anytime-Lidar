@@ -16,8 +16,8 @@ from pcdet.utils import common_utils
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Header, MultiArrayDimension
-from rclpy.executors import MultiThreadedExecutor
+from std_msgs.msg import String, Header, MultiArrayDimension, Int32
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from geometry_msgs.msg import TransformStamped, Quaternion, Twist
 from autoware_auto_perception_msgs.msg import TrackedObjects, DetectedObjects, DetectedObject, ObjectClassification
 from valo_msgs.msg import Float32MultiArrayStamped
@@ -26,14 +26,15 @@ from sensor_msgs.msg import PointCloud2, PointField
 import tf2_ros
 import math
 import threading
-import tf_transformations
-from copy import deepcopy
+from tf_transformations import euler_from_quaternion
+from copy import copy #, deepcopy
 import numpy as np
+from multiprocessing import Process, Barrier, Pool
 
 def points_to_pc2(points):
     point_cloud = PointCloud2()
-    point_cloud.header = Header()
-    point_cloud.header.frame_id = 'base_link'
+    #point_cloud.header = Header()
+    #point_cloud.header.frame_id = 'base_link'
     # Assign stamp later
     point_cloud.height = 1
     point_cloud.width = points.shape[0]
@@ -55,6 +56,9 @@ def points_to_pc2(points):
     point_cloud.data = points.tobytes()
     return point_cloud
 
+def collate_dataset(indices, dataset):
+    return [dataset.collate_batch([dataset[idx]]) for idx in indices]
+
 def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
     t = TransformStamped()
 
@@ -73,41 +77,32 @@ def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
 
     return t
 
-class InferenceServer(Node):
+def get_dataset(cfg):
+    log_file = ('./tmp_results/log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
+    logger = common_utils.create_logger(log_file, rank=cfg.LOCAL_RANK)
+    #log_config_to_file(cfg, logger=logger)
+    test_set, test_loader, sampler = build_dataloader(
+        dataset_cfg=cfg.DATA_CONFIG, class_names=cfg.CLASS_NAMES, batch_size=1,
+        dist=False, workers=0, logger=logger, training=False
+    )
+    return logger, test_set
 
-    def __init__(self):
-        super().__init__('inference_server')
-        self.init_model()
+class StreamingEvaluator(Node):
+    def __init__(self, args, period_sec):
+        super().__init__('streaming_evaluator')
 
-        self.mutex = threading.Lock()  # Create a mutex
-        # this has two transforms each having 7 elems, x y z quaternion
-        # cst csr ept epr
-        self.cur_pose = torch.zeros(14, dtype=torch.float, device='cpu')
-
-        self.re_callback_group = rclpy.callback_groups.ReentrantCallbackGroup()
-        self.inf_subscription = self.create_subscription(String, 'inference_request',
-                self.infer_callback, 1, callback_group=self.re_callback_group)
-        self.inf_publisher = self.create_publisher(String, 'inference_request', 1,
-                callback_group=self.re_callback_group)
-
-        self.det_publisher = self.create_publisher(Float32MultiArrayStamped, 'detected_objects_raw', 1)
-
-        self.detpub_helper_subs =  self.create_subscription(Header, 'publish_request',
-                self.publish_dets_callback, 10, callback_group=self.re_callback_group)
-        self.publish_requester = self.create_publisher(Header, 'publish_request', 10)
-
+        self.period_sec = period_sec
         # receive and update the buffer
-        self.tracker_mutex = threading.Lock()  # Create a mutex
-        self.latest_tracked_objs = TrackedObjects()
-        self.all_tracked_objects = []
-        self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
-                self.tracker_callback, 10, callback_group=self.re_callback_group)
+        self.all_tracked_objects = [TrackedObjects()]
+        self.sampled_indices = []
 
-        # Broadcast every 25 ms
-        period_sec = 0.025
-        self.br = tf2_ros.TransformBroadcaster(self)
-        self.tf_timer = self.create_timer(period_sec, self.tf_timer_callback,
-                callback_group=self.re_callback_group)
+        #self.cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
+        #self.cb_group = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
+        self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
+                self.tracker_callback, 1) #, callback_group=self.cb_group)
+
+        self.cmd_sub = self.create_subscription(Int32, 'evaluator_cmd',
+                self.cmd_callback, 10) #, callback_group=self.cb_group)
 
         # For debug
         qos_profile = QoSProfile(
@@ -116,52 +111,187 @@ class InferenceServer(Node):
                 depth=10)
         self.pc_publisher = self.create_publisher(PointCloud2, 'point_cloud', qos_profile)
 
-        gc.disable()
+        cfg_from_yaml_file(args.cfg_file, cfg)
+        if args.set_cfgs is not None:
+            cfg_from_list(args.set_cfgs, cfg)
+        self.cfg = cfg
 
-    def init_model(self):
-        parser = argparse.ArgumentParser(description='arg parser')
-        parser.add_argument('--cfg_file', type=str, default=None, help='specify the config for training')
-        parser.add_argument('--ckpt', type=str, default=None, help='checkpoint to start from')
-        parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER,
-                            help='set extra config keys if needed')
+        logger, test_set = get_dataset(cfg)
 
-        args = parser.parse_args()
+        self.dataset = test_set
+        print('[SE] Num dataset elems:', len(self.dataset))
+        self.debug_points = [points_to_pc2(self.dataset.get_lidar_with_sweeps(i)[:, :-1]) \
+                for i in range(len(self.dataset))]
 
+        self.done_sampling = False
+        self.reset = False
+
+        #NOTE undeterministic delays happen here, need to find a way to avoid
+        self.spin_thread = threading.Thread(target=rclpy.spin, args=(self,))
+        self.spin_thread.start()
+
+    def publish_pc(self, idx):
+        # Following takes 5 ms
+        if idx < len(self.dataset):
+            pc2_msg = self.debug_points[idx]
+            pc2_msg.header.stamp = self.get_clock().now().to_msg()
+            pc2_msg.header.frame_id = 'base_link'
+            self.pc_publisher.publish(pc2_msg)
+
+    def tracker_callback(self, msg):
+        self.all_tracked_objects.append(msg)
+
+    def eval_loop(self, bar):
+        bar.wait()
+        init_time = time.monotonic()
+        print(f'[SE] Eval loop started at', time.time())
+        wakeup_time = init_time + self.period_sec
+        idx = 0
+        while rclpy.ok() and not self.done_sampling:
+            if self.reset:
+                self.sampled_indices.append(0) # empty one
+                self.reset = False
+            else:
+                self.sampled_indices.append(len(self.all_tracked_objects)-1)
+
+            self.publish_pc(idx)
+            idx += 1
+
+            #start = time.monotonic()
+            #rclpy.spin_once(self, timeout_sec=.0)
+            #end = time.monotonic()
+            #t = round((end-start)*1000, 3)
+            #print('tracker callback', t, 'ms')
+
+            sleep_time = wakeup_time - time.monotonic()
+            if sleep_time > .0:
+                time.sleep(sleep_time)
+            else:
+                print('[SE] Overrun', sleep_time * 1000, 'ms')
+            wakeup_time += self.period_sec
+
+        self.do_eval()
+
+    # Receive buffer reset and start timer commands
+    def cmd_callback(self, msg):
+        cmd = msg.data
+        if cmd == 1: # stop timer and evaluate
+            self.done_sampling = True
+            print('[SE] Done sampling!')
+        elif cmd == 2:
+            self.reset = True
+
+    def do_eval(self):
+        sampled_tracked_objects = [self.all_tracked_objects[i] for i in self.sampled_indices]
+        #for tracked_objs in sampled_tracked_objects:
+        #    print('[SE] Tracked objects:', len(tracked_objs.objects))
+        num_sampled = len(sampled_tracked_objects)
+        print(f'[SE] Sampled {num_sampled} tracker results')
+
+        num_ds_elems = len(self.dataset)
+        if num_sampled < num_ds_elems:
+            sampled_tracked_objects += [sampled_tracked_objects[-1]] * (num_ds_elems - num_sampled)
+        elif num_sampled > num_ds_elems:
+            sampled_tracked_objects = sampled_tracked_objects[:num_ds_elems]
+
+        #Convert them to openpcdet format
+
+        inv_cls_mapping = [-1, 1, 2, 3, -1, -1, 4, 5]
+
+        det_annos = []
+        for i in range(num_ds_elems):
+            data_dict = self.dataset.get_metadata_dict(i)
+            for k, v in data_dict.items():
+                data_dict[k] = [v] # make it a batch dict
+            tracked_objs = sampled_tracked_objects[i]
+            num_objs = len(tracked_objs.objects)
+            boxes, scores, labels = torch.empty((num_objs, 9)), torch.empty(num_objs), torch.empty(num_objs, dtype=torch.long)
+
+            mask = torch.ones(num_objs, dtype=torch.bool)
+            for j, obj in enumerate(tracked_objs.objects):
+                scores[j] = obj.existence_probability
+                labels[j] = inv_cls_mapping[obj.classification[0].label]
+                boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
+                boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
+                boxes[j,2] = obj.kinematics.pose_with_covariance.pose.position.z
+                boxes[j,3] = obj.shape.dimensions.x
+                boxes[j,4] = obj.shape.dimensions.y
+                boxes[j,5] = obj.shape.dimensions.z
+                quat = obj.kinematics.pose_with_covariance.pose.orientation
+                boxes[j,6] = euler_from_quaternion((quat.x, quat.y, quat.z, quat.w))[2] # yaw
+                linear_x = obj.kinematics.twist_with_covariance.twist.linear.x
+                boxes[j,7] = linear_x * math.cos(boxes[j,6])
+                boxes[j,8] = linear_x * math.sin(boxes[j,6])
+
+                if torch.any(torch.isnan(boxes[j, :])):
+                    mask[j] = False
+                    print(f'[SE] Warning, object [{i},{j}] has nan in it, ignoring')
+
+            data_dict['final_box_dicts'] = [{
+                        'pred_boxes': boxes[mask],
+                        'pred_scores': scores[mask],
+                        'pred_labels': labels[mask]
+            }]
+
+            det_annos += self.dataset.generate_prediction_dicts(
+                data_dict, data_dict['final_box_dicts'], self.dataset.class_names, output_path=None
+            )
+         
+        nusc_annos = {} # not needed but keep it anyway
+        result_str, result_dict = self.dataset.evaluation(
+            det_annos, self.dataset.class_names,
+            eval_metric=self.cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+            output_path='./tmp_results',
+            nusc_annos_outp=nusc_annos,
+            boxes_in_global_coords=True,
+            #det_elapsed_musec=det_elapsed_musec,
+        )
+
+        print(result_str)
+        #rclpy.shutdown()
+        #self.spin_thread.join()
+
+class InferenceServer(Node):
+    def __init__(self, args, period_sec):
+        super().__init__('inference_server')
+        self.init_model(args)
+
+        self.period_sec = period_sec
+        self.det_publisher = self.create_publisher(Float32MultiArrayStamped, 'detected_objects_raw', 1)
+        self.br = tf2_ros.TransformBroadcaster(self)
+
+        self.cmd_publisher = self.create_publisher(Int32, 'evaluator_cmd', 10)
+
+        self.cur_pose = torch.zeros((14), dtype=torch.float)
+        self.cur_stamp = self.get_clock().now().to_msg()
+
+    def init_model(self, args):
         cfg_from_yaml_file(args.cfg_file, cfg)
         if args.set_cfgs is not None:
             cfg_from_list(args.set_cfgs, cfg)
 
-        log_file = ('./tmp_results/log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
-        logger = common_utils.create_logger(log_file, rank=cfg.LOCAL_RANK)
+        logger, test_set = get_dataset(cfg)
 
-        # log to file
-        logger.info('**********************Start logging**********************')
-        gpu_list = os.environ['CUDA_VISIBLE_DEVICES'] if 'CUDA_VISIBLE_DEVICES' in os.environ.keys() else 'ALL'
-        logger.info('CUDA_VISIBLE_DEVICES=%s' % gpu_list)
-        log_config_to_file(cfg, logger=logger)
+        # Load all data before execution
+        dataset = test_set 
+        num_samples = len(dataset)
+        print(f'[IS] Loading dataset to memory, num samples: {num_samples}')
 
-        test_set, test_loader, sampler = build_dataloader(
-            dataset_cfg=cfg.DATA_CONFIG, class_names=cfg.CLASS_NAMES, batch_size=1,
-            dist=False, workers=0, logger=logger, training=False
-        )
-
+        nump=6
+        self.batch_dicts_arr = []
+        splits = np.array_split(np.arange(num_samples), nump)
+        with Pool(processes=nump) as pool:
+            results = [pool.apply_async(collate_dataset, (split.tolist(), dataset)) \
+                    for split in splits]
+            for res in results:
+                self.batch_dicts_arr += res.get()
+            
         model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
         model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=False)
         model.eval()
         model.cuda()
 
-        # Load all data before execution
-        dataset = model.dataset
-        print(f'Loading dataset to memory, num samples: {len(dataset)}')
-        self.batch_dicts_arr = [dataset.collate_batch([dataset[i]]) for i in range(len(dataset))]
-
-        self.debug_pts_arr = []
-        for bd in self.batch_dicts_arr:
-            pts = bd['points'][:, 1:] # remove batch id
-            mask = (pts[:, -1] == .0)
-            self.debug_pts_arr.append(points_to_pc2(pts[mask][:, :-1]))
-
-        print('Calibrating')
+        print('[IS] Calibrating')
         torch.cuda.cudart().cudaProfilerStop()
         with torch.no_grad():
             model.calibrate()
@@ -182,107 +312,63 @@ class InferenceServer(Node):
 
         self.model = model
 
-    def tf_timer_callback(self):
-        with self.mutex:
-            pose = self.cur_pose.tolist()
-            stamp = deepcopy(self.cur_stamp)
+#    def tf_timer_callback(self):
+#        with self.pose_mutex:
+#            pose = self.cur_pose.tolist()
+#            stamp = deepcopy(self.cur_stamp)
+#
+#        tf_ep = pose_to_tf(pose[7:10], pose[10:], stamp, 'world', 'body')
+#        self.br.sendTransform(tf_ep)
+#        tf_cs = pose_to_tf(pose[:3], pose[3:7], stamp, 'body', 'base_link')
+#        self.br.sendTransform(tf_cs)
 
-        tf_ep = pose_to_tf(pose[7:10], pose[10:], stamp, 'world', 'body')
-        self.br.sendTransform(tf_ep)
-        tf_cs = pose_to_tf(pose[:3], pose[3:7], stamp, 'body', 'base_link')
-        self.br.sendTransform(tf_cs)
-
-    # Whole func takes 4-5 ms
-    def publish_dets_callback(self, msg):
-        tstart = time.time()
-        idx = int(msg.frame_id)
-        pred_dict = self.batch_dicts_arr[idx]['final_box_dicts'][0]
-        #self.publish_detections(pred_dict, msg.stamp)
-        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
-        pred_scores = pred_dict['pred_scores'].unsqueeze(-1) # (N, 1)
-        pred_labels = pred_dict['pred_labels'].float().unsqueeze(-1) # (N, 1)
-
-        all_data = torch.cat((pred_boxes, pred_scores, pred_labels), dim=1)
-
-        float_arr = Float32MultiArrayStamped()
-        float_arr.header.frame_id = 'base_link'
-        float_arr.header.stamp = msg.stamp
-
-        dim2 = MultiArrayDimension()
-        dim2.label = "obj_attributes"
-        dim2.size = all_data.shape[1]
-        dim2.stride = all_data.shape[1]
-
-        dim1 = MultiArrayDimension()
-        dim1.label = "num_objects"
-        dim1.size = all_data.shape[0]
-        dim1.stride = all_data.shape[0] * all_data.shape[1]
-
-        float_arr.array.layout.dim.append(dim1)
-        float_arr.array.layout.dim.append(dim2)
-        float_arr.array.layout.data_offset = 0
-        float_arr.array.data = all_data.flatten().tolist() # NOTE this can be slow
-
-        self.det_publisher.publish(float_arr)
-
-        # NOTE You can publish the filtered points too!
-
-        # Following takes 3 ms
-        pc2_msg = self.debug_pts_arr[idx]
-        pc2_msg.header.stamp = msg.stamp
-        self.pc_publisher.publish(pc2_msg)
-        tend = time.time()
-        print(f'Publishing took {round((tend-tstart)*1000, 2)} ms')
-
-    def tracker_callback(self, msg):
-        with self.tracker_mutex:
-            self.latest_tracked_objs = msg
-        #print(f'Received {len(msg.objects)} tracked objects at time {round(time.time(),3)}')
-
-    def eval_callback(self):
-        with self.tracker_mutex:
-            latest_tobj = deepcopy(self.latest_tracked_objs)
-        self.all_tracked_objects.append(latest_tobj)
-
-    def infer_callback(self, msg):
+    def infer_loop(self, bar):
         model = self.model
         tdiffs = [0. for i in range(len(self.batch_dicts_arr))]
-        print('Starting inference')
 
-        # streaming evaluation sampler
-        pc_period_sec= 0.100
-        self.eval_timer = self.create_timer(pc_period_sec, self.eval_callback,
-                callback_group=self.re_callback_group)
-        #time.sleep(0.1)
+        gc.disable()
 
-        rate = self.create_rate(10)  # 10 Hz rate
-        init_time = time.time()
-        #for i, batch_dict in enumerate(self.batch_dicts_arr):
+        bar.wait() # sync with timer
+
+        init_time = time.monotonic()
+        print('[IS] Starting inference at', time.time())
         last_processed_idx = -1
-        while True:
-            i = int((time.time() - init_time) / pc_period_sec)
+        wakeup_time = init_time + self.period_sec
+        while rclpy.ok():
+            i = int((time.monotonic() - init_time) / self.period_sec)
             if i >= len(self.batch_dicts_arr):
                 break
             if i == last_processed_idx:
-                print('Trying to process the same sample, skipping to next.')
+                print('[IS] Trying to process the same sample, skipping to next.')
                 i += 1
             batch_dict = self.batch_dicts_arr[i]
             last_processed_idx = i
 
             model.measure_time_start('End-to-end')
             model.measure_time_start('PreProcess')
-            start_time = time.time()
+            start_time = time.time() # dont use monotonic here
 
             latest_token = batch_dict['metadata'][0]['token']
-            with self.mutex:
-                self.cur_pose = model.token_to_pose[latest_token]
-                self.cur_stamp = self.get_clock().now().to_msg()
+            #with self.pose_mutex:
+            self.cur_pose = model.token_to_pose[latest_token]
+            self.cur_stamp = self.get_clock().now().to_msg()
+
+            # send transforms, I hope it wont take much
+            pose = self.cur_pose.tolist()
+            tf_ep = pose_to_tf(pose[7:10], pose[10:], self.cur_stamp, 'world', 'body')
+            tf_cs = pose_to_tf(pose[:3], pose[3:7], self.cur_stamp, 'body', 'base_link')
+            self.br.sendTransform(tf_ep)
+            self.br.sendTransform(tf_cs)
+
             deadline_sec_override, reset = model.initialize(latest_token)
             if reset:
+                #print('[IS] Reset')
                 #Clear buffers
                 model.latest_batch_dict = None
-                with self.tracker_mutex:
-                    self.latest_tracked_objs = TrackedObjects()
+
+                #eval_cmd = Int32()
+                #eval_cmd.data = 2 # reset buffer
+                #self.cmd_publisher.publish(eval_cmd)
 
             with torch.no_grad():
                 load_data_to_gpu(batch_dict)
@@ -306,7 +392,6 @@ class InferenceServer(Node):
             model.measure_time_end('End-to-end')
             finish_time = time.time()
 
-            #Following stuff takes 0.4 ms
             model.calc_elapsed_times() 
             model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
             model.latest_batch_dict = batch_dict
@@ -316,21 +401,27 @@ class InferenceServer(Node):
             # keep final_box_dicts
             to_keep = ('final_box_dicts', 'frame_id', 'metadata')
             batch_dict = {k:batch_dict[k] for k in to_keep}
-
             self.batch_dicts_arr[i] = batch_dict
-            req = Header()
-            req.frame_id = str(i)
-            req.stamp = deepcopy(self.cur_stamp)
-            self.publish_requester.publish(req)
 
-            rate.sleep()
-            #publish_time = time.time()
-            #pit = round((publish_time - finish_time) * 1000, 2)
-            #print(f'Post infer took {pit} ms')
+            self.publish_dets(i, self.cur_stamp)
+
+            #rclpy.spin_once(self, timeout_sec=.0)
+
+            sleep_time = wakeup_time - time.monotonic()
+            if sleep_time > .0:
+                time.sleep(sleep_time)
+            else:
+                print('[IS] Overrun', sleep_time * 1000, 'ms')
+
+            wakeup_time += self.period_sec
 
             #if i % 10 == 0:
             #    print(torch.cuda.memory_summary())
-        self.eval_timer.cancel()
+        #self.eval_timer.cancel()
+
+        eval_cmd = Int32()
+        eval_cmd.data = 1 # stop timer
+        self.cmd_publisher.publish(eval_cmd)
 
         gc.enable()
         for i, tdiff in enumerate(tdiffs):
@@ -338,20 +429,40 @@ class InferenceServer(Node):
                 print(f'Deadline {i} missed with {tdiff * 1000} ms')
         model.print_time_stats()
 
-        #for tracked_objs in self.all_tracked_objects:
-        #    print('Tracked objects:', len(tracked_objs.objects))
-        num_sampled = len(self.all_tracked_objects)
-        print(f'Sampled {num_sampled} tracker results')
+    # This func takes less than 1 ms, ~0.6 ms
+    def publish_dets(self, idx, stamp):
+        #tstart = time.monotonic()
+        pred_dict = self.batch_dicts_arr[idx]['final_box_dicts'][0]
+        #self.publish_detections(pred_dict, msg.stamp)
+        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+        pred_scores = pred_dict['pred_scores'].unsqueeze(-1) # (N, 1)
+        pred_labels = pred_dict['pred_labels'].float().unsqueeze(-1) # (N, 1)
 
-        #convert these back to batch dict format
-        
+        all_data = torch.cat((pred_boxes, pred_scores, pred_labels), dim=1)
 
-        det_annos = []
-        for bd in batch_dicts_arr:
-            det_annos += dataset.generate_prediction_dicts(
-                bd, bd['final_box_dicts'], dataset.class_names, output_path=None
-            )
+        float_arr = Float32MultiArrayStamped()
+        float_arr.header.frame_id = 'base_link'
+        float_arr.header.stamp = stamp
 
+        dim2 = MultiArrayDimension()
+        dim2.label = "obj_attributes"
+        dim2.size = all_data.shape[1]
+        dim2.stride = all_data.shape[1]
+
+        dim1 = MultiArrayDimension()
+        dim1.label = "num_objects"
+        dim1.size = all_data.shape[0]
+        dim1.stride = all_data.shape[0] * all_data.shape[1]
+
+        float_arr.array.layout.dim.append(dim1)
+        float_arr.array.layout.dim.append(dim2)
+        float_arr.array.layout.data_offset = 0
+        float_arr.array.data = all_data.flatten().tolist()
+
+        self.det_publisher.publish(float_arr)
+
+        #tend = time.monotonic()
+        #print(f'Publishing took {round((tend-tstart)*1000, 2)} ms')
 
 #        det_annos = []
 #        for bd in batch_dicts_arr:
@@ -371,26 +482,56 @@ class InferenceServer(Node):
 #
 #        print(result_str)
 
-def main(args=None):
-    rclpy.init(args=args)
+def RunInferenceServer(args, bar, period_sec):
+    rclpy.init(args=None)
+    node = InferenceServer(args, period_sec)
+    
+    node.infer_loop(bar)
 
-    node = InferenceServer()
-    executor = MultiThreadedExecutor(num_threads=8)
-    executor.add_node(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
-    s = String()
-    s.data = "Bismillahirrahmanirrahim"
-    node.inf_publisher.publish(s)
-    try:
-        executor.spin()
-    finally:
-        executor.shutdown()
-        node.destroy_node()
-        rclpy.shutdown()
+def RunStreamingEvaluator(args, bar, period_sec):
+    rclpy.init(args=None)
+    node = StreamingEvaluator(args, period_sec)
+    #executor = MultiThreadedExecutor(num_threads=4)
+    #executor = SingleThreadedExecutor()
+    #executor.add_node(node)
+
+    node.eval_loop(bar)
+    #try:
+    #    executor.spin()
+    #finally:
+    #    executor.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description='arg parser')
+    parser.add_argument('--cfg_file', type=str, default=None, help='specify the config for training')
+    parser.add_argument('--ckpt', type=str, default=None, help='checkpoint to start from')
+    parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER,
+                        help='set extra config keys if needed')
+
+    cmdline_args = parser.parse_args()
+
+    bar = Barrier(2)
+    period_sec = 0.1
+    p1 = Process(target=RunInferenceServer, args=(cmdline_args, bar, period_sec))
+    p2 = Process(target=RunStreamingEvaluator, args=(cmdline_args, bar, period_sec))
+
+    p1.start()
+    p2.start()
+
+    p1.join()
+    p2.join()
 
 if __name__ == '__main__':
     main()
 
+#rate = self.create_rate(1.0/self.period_sec, self.get_clock())
 
 ## Express the boxes in world coordinates for tracker to work correctly
 #cur_pose = model.token_to_pose[latest_token]
