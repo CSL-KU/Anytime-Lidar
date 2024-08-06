@@ -56,9 +56,6 @@ def points_to_pc2(points):
     point_cloud.data = points.tobytes()
     return point_cloud
 
-def collate_dataset(indices, dataset):
-    return [dataset.collate_batch([dataset[idx]]) for idx in indices]
-
 def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
     t = TransformStamped()
 
@@ -87,22 +84,26 @@ def get_dataset(cfg):
     )
     return logger, test_set
 
+def collate_dataset(indices, dataset):
+    return [dataset.collate_batch([dataset[idx]]) for idx in indices]
+
 class StreamingEvaluator(Node):
     def __init__(self, args, period_sec):
         super().__init__('streaming_evaluator')
 
         self.period_sec = period_sec
         # receive and update the buffer
-        self.all_tracked_objects = [TrackedObjects()]
+        self.all_tracked_objects = [] #TrackedObjects()]
         self.sampled_indices = []
 
-        #self.cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
+        self.cb_group = rclpy.callback_groups.ReentrantCallbackGroup()
         #self.cb_group = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
-        self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
-                self.tracker_callback, 1) #, callback_group=self.cb_group)
 
         self.cmd_sub = self.create_subscription(Int32, 'evaluator_cmd',
                 self.cmd_callback, 10) #, callback_group=self.cb_group)
+
+        self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
+                self.tracker_callback, 10, callback_group=self.cb_group)
 
         # For debug
         qos_profile = QoSProfile(
@@ -123,79 +124,69 @@ class StreamingEvaluator(Node):
         self.debug_points = [points_to_pc2(self.dataset.get_lidar_with_sweeps(i)[:, :-1]) \
                 for i in range(len(self.dataset))]
 
-        self.done_sampling = False
         self.reset = False
 
-        #NOTE undeterministic delays happen here, need to find a way to avoid
-        self.spin_thread = threading.Thread(target=rclpy.spin, args=(self,))
-        self.spin_thread.start()
-
-    def publish_pc(self, idx):
+    def publish_pc(self):
         # Following takes 5 ms
+        idx = self.pc_pub_idx
         if idx < len(self.dataset):
             pc2_msg = self.debug_points[idx]
             pc2_msg.header.stamp = self.get_clock().now().to_msg()
             pc2_msg.header.frame_id = 'base_link'
             self.pc_publisher.publish(pc2_msg)
+            self.pc_pub_idx = idx + 1
 
     def tracker_callback(self, msg):
+        msg.header.stamp = self.get_clock().now().to_msg() # save the time of msg arrival
         self.all_tracked_objects.append(msg)
 
-    def eval_loop(self, bar):
-        bar.wait()
-        init_time = time.monotonic()
-        print(f'[SE] Eval loop started at', time.time())
-        wakeup_time = init_time + self.period_sec
-        idx = 0
-        while rclpy.ok() and not self.done_sampling:
-            if self.reset:
-                self.sampled_indices.append(0) # empty one
-                self.reset = False
-            else:
-                self.sampled_indices.append(len(self.all_tracked_objects)-1)
-
-            self.publish_pc(idx)
-            idx += 1
-
-            #start = time.monotonic()
-            #rclpy.spin_once(self, timeout_sec=.0)
-            #end = time.monotonic()
-            #t = round((end-start)*1000, 3)
-            #print('tracker callback', t, 'ms')
-
-            sleep_time = wakeup_time - time.monotonic()
-            if sleep_time > .0:
-                time.sleep(sleep_time)
-            else:
-                print('[SE] Overrun', sleep_time * 1000, 'ms')
-            wakeup_time += self.period_sec
-
-        self.do_eval()
+    def start_sampling(self, bar):
+        self.bar = bar
+        self.bar.wait()
+        self.init_time = self.get_clock().now().to_msg()
+        self.pc_pub_idx = 0
+        self.pc_pub_timer = self.create_timer(self.period_sec, self.publish_pc,
+                callback_group=self.cb_group, clock=self.get_clock())
 
     # Receive buffer reset and start timer commands
     def cmd_callback(self, msg):
         cmd = msg.data
         if cmd == 1: # stop timer and evaluate
-            self.done_sampling = True
             print('[SE] Done sampling!')
+            self.do_eval()
+            self.bar.wait()
         elif cmd == 2:
             self.reset = True
 
     def do_eval(self):
-        sampled_tracked_objects = [self.all_tracked_objects[i] for i in self.sampled_indices]
-        #for tracked_objs in sampled_tracked_objects:
-        #    print('[SE] Tracked objects:', len(tracked_objs.objects))
+        #Now do manual sampling base on time
+        init_sec = self.init_time.sec
+        init_ns = self.init_time.nanosec
+        times_ns = []
+        for tobjs in self.all_tracked_objects:
+            sec = tobjs.header.stamp.sec - init_sec
+            assert sec >= 0
+            times_ns.append(sec * int(1e9) + tobjs.header.stamp.nanosec)
+        times_ns = np.array(times_ns)
+
+        sampled_tracked_objects = []
+        num_ds_elems = len(self.dataset)
+        period_ns = int(self.period_sec * 1e9)
+        for i in range(num_ds_elems):
+            sample_time_ns = init_ns + i*period_ns
+            aft = times_ns > sample_time_ns
+            if aft[0] == True:
+                sampled_tracked_objects.append(TrackedObjects())
+            elif aft[-1] == False:
+                sampled_tracked_objects.append(self.all_tracked_objects[-1])
+            else:
+                sample_idx = np.argmax(aft) - 1
+                sampled_tracked_objects.append(self.all_tracked_objects[sample_idx])
+
         num_sampled = len(sampled_tracked_objects)
         print(f'[SE] Sampled {num_sampled} tracker results')
 
-        num_ds_elems = len(self.dataset)
-        if num_sampled < num_ds_elems:
-            sampled_tracked_objects += [sampled_tracked_objects[-1]] * (num_ds_elems - num_sampled)
-        elif num_sampled > num_ds_elems:
-            sampled_tracked_objects = sampled_tracked_objects[:num_ds_elems]
-
         #Convert them to openpcdet format
-
         inv_cls_mapping = [-1, 1, 2, 3, -1, -1, 4, 5]
 
         det_annos = []
@@ -211,21 +202,26 @@ class StreamingEvaluator(Node):
             for j, obj in enumerate(tracked_objs.objects):
                 scores[j] = obj.existence_probability
                 labels[j] = inv_cls_mapping[obj.classification[0].label]
-                boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
-                boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
-                boxes[j,2] = obj.kinematics.pose_with_covariance.pose.position.z
-                boxes[j,3] = obj.shape.dimensions.x
-                boxes[j,4] = obj.shape.dimensions.y
-                boxes[j,5] = obj.shape.dimensions.z
-                quat = obj.kinematics.pose_with_covariance.pose.orientation
-                boxes[j,6] = euler_from_quaternion((quat.x, quat.y, quat.z, quat.w))[2] # yaw
-                linear_x = obj.kinematics.twist_with_covariance.twist.linear.x
-                boxes[j,7] = linear_x * math.cos(boxes[j,6])
-                boxes[j,8] = linear_x * math.sin(boxes[j,6])
+                try:
+                    boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
+                    boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
+                    boxes[j,2] = obj.kinematics.pose_with_covariance.pose.position.z
+                    boxes[j,3] = obj.shape.dimensions.x
+                    boxes[j,4] = obj.shape.dimensions.y
+                    boxes[j,5] = obj.shape.dimensions.z
+                    quat = obj.kinematics.pose_with_covariance.pose.orientation
+                    boxes[j,6] = euler_from_quaternion((quat.x, quat.y, quat.z, quat.w))[2] # yaw
+                    linear_x = obj.kinematics.twist_with_covariance.twist.linear.x
+                    boxes[j,7] = linear_x * math.cos(boxes[j,6])
+                    boxes[j,8] = linear_x * math.sin(boxes[j,6])
 
-                if torch.any(torch.isnan(boxes[j, :])):
+                    if torch.any(torch.isnan(boxes[j, :])):
+                        mask[j] = False
+                        print(f'[SE] Warning, object [{i},{j}] has nan in it, ignoring')
+                except RuntimeError:
+                    # probably floating point conversion error
+                    print(f'[SE] Warning, object [{i},{j}] has some problem, ignoring')
                     mask[j] = False
-                    print(f'[SE] Warning, object [{i},{j}] has nan in it, ignoring')
 
             data_dict['final_box_dicts'] = [{
                         'pred_boxes': boxes[mask],
@@ -311,16 +307,6 @@ class InferenceServer(Node):
         del dummy_tensor
 
         self.model = model
-
-#    def tf_timer_callback(self):
-#        with self.pose_mutex:
-#            pose = self.cur_pose.tolist()
-#            stamp = deepcopy(self.cur_stamp)
-#
-#        tf_ep = pose_to_tf(pose[7:10], pose[10:], stamp, 'world', 'body')
-#        self.br.sendTransform(tf_ep)
-#        tf_cs = pose_to_tf(pose[:3], pose[3:7], stamp, 'body', 'base_link')
-#        self.br.sendTransform(tf_cs)
 
     def infer_loop(self, bar):
         model = self.model
@@ -491,22 +477,27 @@ def RunInferenceServer(args, bar, period_sec):
     node.destroy_node()
     rclpy.shutdown()
 
+    bar.wait()
+
 def RunStreamingEvaluator(args, bar, period_sec):
     rclpy.init(args=None)
     node = StreamingEvaluator(args, period_sec)
-    #executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=4)
     #executor = SingleThreadedExecutor()
-    #executor.add_node(node)
+    executor.add_node(node)
 
-    node.eval_loop(bar)
+    node.start_sampling(bar)
     #try:
-    #    executor.spin()
-    #finally:
-    #    executor.shutdown()
-    node.destroy_node()
-    rclpy.shutdown()
+    executor.spin()
 
+    # Won't reach here
 
+    #except SystemExit:
+    #    pass
+    
+    #executor.shutdown()
+    #node.destroy_node()
+    #rclpy.shutdown()
 
 def main():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -526,7 +517,10 @@ def main():
     p2.start()
 
     p1.join()
+    print('InferenceServer done')
+    p2.terminate()
     p2.join()
+    print('StreamingEvaluator done')
 
 if __name__ == '__main__':
     main()
