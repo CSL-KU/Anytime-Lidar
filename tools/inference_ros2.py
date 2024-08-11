@@ -36,6 +36,8 @@ import concurrent
 import threading
 
 VALO_DEBUG = False
+DO_DYN_SCHEDULING = False
+EVAL_TRACKER = True
 
 def seconds_to_TimeMsg(seconds : float):
     sec_int = int(math.floor(seconds))
@@ -85,6 +87,71 @@ def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
 
     return t
 
+def f32_multi_arr_to_detected_objs(float_arr):
+    SIGN_UNKNOWN=1
+    BOUNDING_BOX=0
+
+    # -1 car truck bus bicyle pedestrian
+    cls_mapping = [-1, 1, 2, 3, 6, 7]
+
+    all_objs = DetectedObjects()
+    all_objs.header = float_arr.header
+
+    num_objs = float_arr.array.layout.dim[0].size;
+    all_data = torch.tensor(float_arr.array.data, dtype=torch.float).view(num_objs, -1)
+
+    pred_boxes = all_data[:, :6]
+    yaws = all_data[:, 6]
+    vel_x = all_data[:, 7]
+    vel_y = all_data[:, 8]
+    pred_scores = all_data[:, 9]
+    pred_labels = all_data[:, 10].long()
+
+    linear_x = torch.sqrt(torch.pow(vel_x, 2) + torch.pow(vel_y, 2)).tolist()
+    angular_z = (2 * (torch.atan2(vel_y, vel_x) - yaws)).tolist()
+
+    for i in range(pred_labels.size(0)):
+        obj = DetectedObject()
+        obj.existence_probability = pred_scores[i].item()
+
+        oc = ObjectClassification()
+        oc.probability = 1.0;
+        oc.label = cls_mapping[pred_labels[i].item()]
+
+        obj.classification.append(oc)
+
+        if oc.label <= 3: #it is an car-like object
+            obj.kinematics.orientation_availability=SIGN_UNKNOWN
+
+        pbox = pred_boxes[i].tolist()
+
+        obj.kinematics.pose_with_covariance.pose.position.x = pbox[0]
+        obj.kinematics.pose_with_covariance.pose.position.y = pbox[1]
+        obj.kinematics.pose_with_covariance.pose.position.z = pbox[2]
+
+        q = quaternion_from_euler(0, 0, yaws[i])
+        obj.kinematics.pose_with_covariance.pose.orientation.x = q[0]
+        obj.kinematics.pose_with_covariance.pose.orientation.y = q[1]
+        obj.kinematics.pose_with_covariance.pose.orientation.z = q[2]
+        obj.kinematics.pose_with_covariance.pose.orientation.w = q[3]
+
+        obj.shape.type = BOUNDING_BOX
+        obj.shape.dimensions.x = pbox[3]
+        obj.shape.dimensions.y = pbox[4]
+        obj.shape.dimensions.z = pbox[5]
+
+        twist = Twist()
+        twist.linear.x = linear_x[i]
+        twist.angular.z = angular_z[i]
+        obj.kinematics.twist_with_covariance.twist = twist
+        obj.kinematics.has_twist = True
+
+        all_objs.objects.append(obj)
+
+    return all_objs
+    #self.det_debug_publisher.publish(all_objs)
+
+
 def get_dataset(cfg):
     log_file = ('./tmp_results/log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
     logger = common_utils.create_logger(log_file, rank=cfg.LOCAL_RANK)
@@ -132,11 +199,13 @@ class StreamingEvaluator(Node):
         self.cmd_sub = self.create_subscription(Header, 'evaluator_cmd',
                 self.cmd_callback, 10) #, callback_group=self.cb_group)
 
-        self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
-                self.tracker_callback, 10, callback_group=self.cb_group)
-        if VALO_DEBUG:
-            self.detector_sub = self.create_subscription(DetectedObjects, 'detected_objects_debug',
-                self.detector_callback, 10, callback_group=self.cb_group)
+        if EVAL_TRACKER:
+            self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
+                    self.tracker_callback, 10, callback_group=self.cb_group)
+        else:
+            self.detector_sub = self.create_subscription(Float32MultiArrayStamped, 'detected_objects_raw',
+                    self.detector_callback, 10, callback_group=self.cb_group)
+            self.det_debug_publisher = self.create_publisher(DetectedObjects, 'detected_objects_debug', 1)
 
         # For debug
         qos_profile = QoSProfile(
@@ -211,7 +280,9 @@ class StreamingEvaluator(Node):
     def detector_callback(self, msg):
         duration = (self.system_clock.now() - self.time_to_sub).to_msg()
         msg.header.stamp = TimeMsg(sec=duration.sec, nanosec=duration.nanosec)
-        self.all_detected_objects.append(msg)
+        detected_objs = f32_multi_arr_to_detected_objs(msg)
+        self.all_detected_objects.append(detected_objs)
+        self.det_debug_publisher.publish(detected_objs)
 
     def start_sampling(self, bar):
         self.bar = bar
@@ -225,14 +296,14 @@ class StreamingEvaluator(Node):
     def cmd_callback(self, msg):
         cmd = msg.frame_id
         if cmd == 'stop_sampling': # stop timer and evaluate
-            print(f'[SE] Sampled {len(self.all_detected_objects)} detected objects')
-            print(f'[SE] Sampled {len(self.all_tracked_objects)} tracked objects')
-            if VALO_DEBUG:
-                sampled_objects = self.get_eval_samples(self.all_detected_objects)
+            if EVAL_TRACKER:
+                sampled_objects, frame_id = self.get_streaming_eval_samples(self.all_tracked_objects)
+                print(f'[SE] Sampled {len(self.all_tracked_objects)} tracked objects')
             else:
-                sampled_objects = self.get_streaming_eval_samples(self.all_tracked_objects)
+                sampled_objects, frame_id = self.get_streaming_eval_samples(self.all_detected_objects)
+                print(f'[SE] Sampled {len(self.all_detected_objects)} detected objects')
 
-            self.do_eval(sampled_objects)
+            self.do_eval(sampled_objects, frame_id)
             self.bar.wait()
         elif cmd == 'time_fix':
             sec, nanosec = self.time_to_sub.seconds_nanoseconds()
@@ -276,7 +347,7 @@ class StreamingEvaluator(Node):
         print()
 
         num_sampled = len(sampled_tracked_objects)
-        return sampled_tracked_objects
+        return sampled_tracked_objects, all_objects[-1].header.frame_id
 
     def get_eval_samples(self,  all_objects):
         num_ds_elems = len(self.dataset)
@@ -284,7 +355,7 @@ class StreamingEvaluator(Node):
             all_objects.append(all_objects[-1])
         return all_objects[:num_ds_elems]
 
-    def do_eval(self, sampled_objects):
+    def do_eval(self, sampled_objects, frame_id):
         #Convert them to openpcdet format
         inv_cls_mapping = [-1, 1, 2, 3, -1, -1, 4, 5]
 
@@ -333,15 +404,13 @@ class StreamingEvaluator(Node):
                 data_dict, data_dict['final_box_dicts'], self.dataset.class_names, output_path=None
             )
 
-        fi = sampled_objects[0].header.frame_id
-         
         nusc_annos = {} # not needed but keep it anyway
         result_str, result_dict = self.dataset.evaluation(
             det_annos, self.dataset.class_names,
             eval_metric=self.cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
             output_path='./tmp_results',
             nusc_annos_outp=nusc_annos,
-            boxes_in_global_coords=(fi != 'base_link'),
+            boxes_in_global_coords=(frame_id != 'base_link'),
             #det_elapsed_musec=det_elapsed_musec,
         )
 
@@ -362,8 +431,6 @@ class InferenceServer(Node):
         self.cmd_publisher = self.create_publisher(Header, 'evaluator_cmd', 10)
 
         self.pc_idx_publisher = self.create_publisher(Header, 'point_cloud_idx', 10)
-        if VALO_DEBUG:
-            self.det_debug_publisher = self.create_publisher(DetectedObjects, 'detected_objects_debug', 10)
 
     def init_model(self, args):
         cfg_from_yaml_file(args.cfg_file, cfg)
@@ -421,10 +488,9 @@ class InferenceServer(Node):
 
                 if idx > 0:
                     prev_ind = self.scene_start_indices[idx-1][1]
-                    print('Cleaning samples ', prev_ind, '...', ind-1)
                     for d in range(prev_ind, ind):
                         self.batch_dicts_arr[d] = None
-
+                print('Samples loaded')
                 return
 
     def infer_loop(self, bar):
@@ -434,7 +500,6 @@ class InferenceServer(Node):
         # Disable garbage collection to make things deterministic
         # pytorchs cuda allocator should cleanup its own memory seperately from gc
         # NOTE I hope dram won't overflow!
-        # 1G prealloc
         gc.disable()
         dummy_tensor = torch.empty(1024*1024*1024, device='cuda')
         torch.cuda.synchronize()
@@ -447,6 +512,8 @@ class InferenceServer(Node):
         print('[IS] Starting inference at', init_time)
         last_i, i, last_scene_token = -1, -1, ''
         #wakeup_time = init_time + self.period_sec
+        self.model.last_elapsed_time_musec = 100000
+        execution_timepoints=[]
         while rclpy.ok():
             if VALO_DEBUG:
                 i += 1
@@ -455,6 +522,21 @@ class InferenceServer(Node):
                 if i == last_i:
                     print(f'[IS] Trying to process the sample {i} again, skipping to {i+1}.')
                     i += 1
+
+            # Dynamic scheduling
+            # Calculate current and next tail
+            if DO_DYN_SCHEDULING:
+                sched_time = time.time()
+                cur_tail = sched_time - (init_time + i * self.period_sec)
+                exec_time_sec = model.last_elapsed_time_musec * 1e-6
+                pred_finish_time = sched_time + exec_time_sec
+                tmp = ((pred_finish_time - init_time) / self.period_sec)
+                next_tail = (tmp - math.floor(tmp)) * self.period_sec
+                if next_tail < cur_tail:
+                    # Extra 1 ms is added to make sure slept time is enough
+                    time.sleep(self.period_sec - cur_tail + 0.001)
+                    i = int((time.time() - init_time) / self.period_sec)
+
             if i >= self.num_samples:
                 break
             last_i = i
@@ -465,6 +547,7 @@ class InferenceServer(Node):
                 # Load scene to memory
                 scene_load_start_t = time.time()
                 self.load_scene(scene_token)
+
                 gc.collect()
                 #print(torch.cuda.memory_summary())
                 scene_load_time = time.time() - scene_load_start_t
@@ -479,6 +562,8 @@ class InferenceServer(Node):
                 self.cmd_publisher.publish(eval_cmd)
 
             last_scene_token = scene_token
+
+            execution_timepoints.append(time.time())
             batch_dict = self.batch_dicts_arr[i]
             self.batch_dicts_arr[i] = None
             model.measure_time_start('End-to-end')
@@ -539,6 +624,7 @@ class InferenceServer(Node):
             self.publish_dets(pred_dict, cur_stamp)
 
             finishovski_time = time.time()
+            execution_timepoints.append(finishovski_time)
             #Following prints 0.6 ms
             #print('Finishiovski took:', round((finishovski_time-finish_time)*1000, 2), 'ms')
 
@@ -562,6 +648,9 @@ class InferenceServer(Node):
             if tdiff > 0:
                 print(f'Deadline {i} missed with {tdiff * 1000} ms')
         model.print_time_stats()
+
+        #TODO Dump execution timepoints
+
 
     # This func takes less than 1 ms, ~0.6 ms
     def publish_dets(self, pred_dict, stamp):
@@ -591,76 +680,6 @@ class InferenceServer(Node):
         float_arr.array.data = all_data.flatten().tolist()
 
         self.det_publisher.publish(float_arr)
-
-        if VALO_DEBUG:
-            self.publish_debug_detections(pred_dict, stamp)
-
-    def publish_debug_detections(self, pred_dict, stamp):
-        #NOTE not sure if the values on the left are correct
-        SIGN_UNKNOWN=1
-        BOUNDING_BOX=0
-
-        # -1 car truck bus bicyle pedestrian
-        cls_mapping = [-1, 1, 2, 3, 6, 7]
-
-        all_objs = DetectedObjects()
-        all_objs.header = Header()
-        all_objs.header.stamp = stamp
-        all_objs.header.frame_id = 'base_link'
-
-        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
-        pred_labels = pred_dict['pred_labels'] # (N)
-        pred_scores = pred_dict['pred_scores'] # (N)
-
-        yaws = pred_boxes[:, 6]
-        vel_x = pred_boxes[:, 7]
-        vel_y = pred_boxes[:, 8]
-
-        #yaws = -yaws -math.pi / 2 # to ros2 format, not sure if I need it
-        quaterns = [quaternion_from_euler(0, 0, yaw) for yaw in yaws]
-
-        linear_x = torch.sqrt(torch.pow(vel_x, 2) + torch.pow(vel_y, 2)).tolist()
-        angular_z = (2 * (torch.atan2(vel_y, vel_x) - yaws)).tolist()
-
-        for i in range(pred_labels.size(0)):
-            obj = DetectedObject()
-            obj.existence_probability = pred_scores[i].item()
-
-            oc = ObjectClassification()
-            oc.probability = 1.0;
-            oc.label = cls_mapping[pred_labels[i].item()]
-
-            obj.classification.append(oc)
-
-            if oc.label <= 3: #it is an car-like object
-                obj.kinematics.orientation_availability=SIGN_UNKNOWN
-
-            pbox = pred_boxes[i].tolist()
-
-            obj.kinematics.pose_with_covariance.pose.position.x = pbox[0]
-            obj.kinematics.pose_with_covariance.pose.position.y = pbox[1]
-            obj.kinematics.pose_with_covariance.pose.position.z = pbox[2]
-
-            q = quaterns[i]
-            obj.kinematics.pose_with_covariance.pose.orientation.x = q[0]
-            obj.kinematics.pose_with_covariance.pose.orientation.y = q[1]
-            obj.kinematics.pose_with_covariance.pose.orientation.z = q[2]
-            obj.kinematics.pose_with_covariance.pose.orientation.w = q[3]
-
-            obj.shape.type = BOUNDING_BOX
-            obj.shape.dimensions.x = pbox[3]
-            obj.shape.dimensions.y = pbox[4]
-            obj.shape.dimensions.z = pbox[5]
-
-            twist = Twist()
-            twist.linear.x = linear_x[i]
-            twist.angular.z = angular_z[i]
-            obj.kinematics.twist_with_covariance.twist = twist
-            obj.kinematics.has_twist = True
-
-            all_objs.objects.append(obj)
-
-        self.det_debug_publisher.publish(all_objs)
 
 def RunInferenceServer(args, bar, period_sec):
     rclpy.init(args=None)
@@ -713,12 +732,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-#rate = self.create_rate(1.0/self.period_sec, self.get_clock())
-## Express the boxes in world coordinates for tracker to work correctly
-#cur_pose = model.token_to_pose[latest_token]
-#pred_boxes = batch_dict['final_box_dicts'][0]['pred_boxes']
-#pred_boxes = cuda_projection.move_to_world_coords(pred_boxes, cur_pose)
-#batch_dict['final_box_dicts'][0]['pred_boxes'] = pred_boxes
-
 

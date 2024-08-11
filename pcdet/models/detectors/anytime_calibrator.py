@@ -270,7 +270,7 @@ class AnytimeCalibrator():
 
         if not self.model.use_voxelnext:
             bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
-            self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 99, method='lower') \
+            self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 75, method='lower') \
                     for arr in bb2d_time_data])
 
             assert self.bb2d_times_ms[-1] != 0.
