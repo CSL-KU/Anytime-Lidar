@@ -21,9 +21,10 @@ class OptimizedFwdPipeline2(torch.nn.Module):
 
     def forward(self, spatial_features : torch.Tensor) -> torch.Tensor:
         spatial_features_2d = self.backbone_2d(spatial_features)
-        hm, center, center_z, dim, rot, vel, iou = \
+        #hm, center, center_z, dim, rot, vel, iou = \
+        hm, center, center_z, dim, rot, vel = \
                 self.dense_head.forward_up_to_topk(spatial_features_2d)
-        return hm, center, center_z, dim, rot, vel, iou
+        return hm, center, center_z, dim, rot, vel
 
 # Optimized with tensorrt
 class DSVT_CenterHead_VALO(AnytimeTemplateV2):
@@ -61,8 +62,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         self.optimization1_done = False
         self.optimization2_done = False
 
-        # Force projection to be disabled
-        self.keep_projection_disabled = True
+        # Force forecasting to be disabled
+        self.keep_forecasting_disabled = False
 
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
@@ -107,7 +108,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                     'set_voxel_masks_tensor_shift_1': vinfo[4],
                     'pos_embed_tensor' : vinfo[5],
             }
-            if self.backbone_3d_trt != None:
+            if self.backbone_3d_trt is not None:
                 output = self.backbone_3d_trt(inputs_dict, vinfo[0].size())['output']
             else:
                 vinfo_ = vinfo[:-1]
@@ -126,18 +127,35 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 
             self.measure_time_start('Sched2')
             batch_dict = self.schedule2(batch_dict)
+
+            lbd = self.latest_batch_dict
+            fcdets_fut = None
+            if self.enable_forecasting and lbd is not None:
+                # Takes 1.2 ms, fully on cpu
+                last_pred_dict = lbd['final_box_dicts'][0]
+                last_ctc = torch.from_numpy(lbd['chosen_tile_coords']).long()
+                last_token = lbd['metadata'][0]['token']
+                last_pose = self.token_to_pose[last_token]
+                last_ts = self.token_to_ts[last_token] - self.scene_init_ts
+                cur_token = batch_dict['metadata'][0]['token']
+                cur_pose = self.token_to_pose[cur_token]
+                cur_ts = self.token_to_ts[cur_token] - self.scene_init_ts
+
+                fcdets_fut = self.forecaster.fork_forward(last_pred_dict, last_ctc,
+                        last_pose, last_ts, cur_pose, cur_ts, batch_dict['scene_reset'])
+                #if fcdets[0]['pred_boxes'].size(0) > 0:
+
             batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
             self.measure_time_end('Sched2')
 
             self.measure_time_start('FusedOps2')
             sf = batch_dict['spatial_features']
 
-            if self.fused_ops2_trt != None:
+            if self.fused_ops2_trt is not None:
                 outputs = self.fused_ops2_trt({'spatial_features': sf})
                 outputs = [outputs[nm] for nm in self.dense_head.ordered_outp_names()]
             else:
                 outputs = self.opt_fwd2(sf)
-            batch_dict = self.do_projection(batch_dict)
 
             outputs = scatter_sliced_tensors(batch_dict['chosen_tile_coords'], outputs,
                     self.sched_algo, self.tcount)
@@ -155,6 +173,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             batch_dict = self.dense_head.forward_topk(batch_dict)
             self.measure_time_end('CenterHead-Topk')
             self.measure_time_start('CenterHead-GenBox')
+            if fcdets_fut is not None:
+                batch_dict['forecasted_dets'] = torch.jit.wait(fcdets_fut) # this is a fut obj!
             batch_dict = self.dense_head.forward_genbox(batch_dict)
             self.measure_time_end('CenterHead-GenBox')
 
@@ -173,6 +193,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 #            return ret_dict, tb_dict, disp_dict
 #        else:
                 # let the hooks of parent class handle this
+
             return batch_dict
 
     def optimize1(self, fwd_data):

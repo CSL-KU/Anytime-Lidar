@@ -81,7 +81,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.sched_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoSchedNoProj)
 
-        self.keep_projection_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoProj or \
+        self.keep_forecasting_disabled = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoProj or \
                 self.model_cfg.METHOD == SchedAlgo.RoundRobin_NoSchedNoProj)
 
         self.use_voxelnext = (self.model_cfg.METHOD == SchedAlgo.RoundRobin_VN or \
@@ -386,9 +386,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
         super().calibrate(1)
         self.dense_head.model_cfg.POST_PROCESSING.SCORE_THRESH = score_threshold
 
-        self.enable_projection = (not self.keep_projection_disabled)
-        print('Projection ', 'enabled' if self.enable_projection else 'disabled')
-        self.projection_reset()
+        self.enable_forecasting = (not self.keep_forecasting_disabled)
+        print('Forecasting', 'enabled' if self.enable_forecasting else 'disabled')
         self.last_tile_coord = self.init_tile_coord
         self.sched_reset()
         if self.training:

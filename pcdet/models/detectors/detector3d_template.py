@@ -18,7 +18,9 @@ from .. import backbones_2d, backbones_3d, dense_heads, roi_heads, load_data_to_
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
-from ...ops.cuda_projection import cuda_projection
+from .forecaster import Forecaster
+
+from typing import Dict, Final
 
 # NOTES
 # Post processing is split into two functions, pre and post.
@@ -62,6 +64,7 @@ def pre_forward_hook(module, inp_args):
     load_data_to_gpu(batch_dict)
 
     # if deadline is set in the init to override, use that, otherwise, use the regular one
+    batch_dict['scene_reset'] = reset
     batch_dict['deadline_sec'] = deadline_sec_override if deadline_sec_override != 0. else deadline_sec
     batch_dict['start_time_sec'] = start_time
     batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
@@ -198,7 +201,7 @@ class Detector3DTemplate(nn.Module):
                 # convert time stamps to seconds
                 # 3 4 3 4
                 self.token_to_pose[k] = torch.tensor((*cst, *csr, *ept, *epr), dtype=torch.float)
-                self.token_to_ts[k] = torch.tensor((v['timestamp'],), dtype=torch.long)
+                self.token_to_ts[k] = int(v['timestamp'])
                 self.token_to_scene[k] = v['scene']
                 self.token_to_scene_name[k] = v['scene_name']
         except:
@@ -227,29 +230,17 @@ class Detector3DTemplate(nn.Module):
         self.prev_scene_token = ''
         self.data_period_ms = int(os.getenv('DATASET_PERIOD', 500))
 
-        ########################
-        ###### PROJECTION ######
-        ########################
-        self.enable_projection = False
-        self.enable_splitting_projections = True
-        self.cur_pose, self.cur_ts = None, None
-        self.past_detections = {}  #{'num_dets': []}
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
-        self.past_poses = torch.zeros([0, 14], dtype=torch.float)
-        self.past_ts = torch.zeros([0], dtype=torch.long)
-
         self.pc_range = torch.tensor(self.dataset.point_cloud_range)
-        ##self.pc_range = self.vfe.point_cloud_range.cpu() # what if vfe does not exist?
-        self.projection_stream = torch.cuda.Stream()
 
-        self.projection_coeff = float(self.model_cfg.get('PROJECTION_COEFF', 1.0))
-        #print('Projection coefficient is', self.projection_coeff)
+        #self.forecasting_coeff = float(self.model_cfg.get('PROJECTION_COEFF', 1.0))
+        self.forecasting_coeff = float(self.model_cfg.get('FORECASTING_COEFF', 2.0))
+        #print('Projection coefficient is', self.forecasting_coeff)
 
         # tile count
         self.tcount = self.model_cfg.get('TILE_COUNT', 18)
         if self.tcount is not None:
             self.tcount_cuda = torch.tensor(self.tcount).long().cuda()
-        self.num_dets_per_tile = torch.zeros([self.tcount], dtype=torch.long)
 
         # Now, the problem is, we don't have dense head
 
@@ -259,6 +250,13 @@ class Detector3DTemplate(nn.Module):
         else:
             self.score_thresh = dh_cfg.POST_PROCESSING.SCORE_THRESH
 
+        #TODO add support for multihead
+        self.enable_forecasting = False
+        self.forecaster = torch.jit.script(Forecaster(tuple(self.dataset.point_cloud_range.tolist()), 
+                self.tcount, self.score_thresh, self.forecasting_coeff)) #, self.det_head.num_det_heads, self.det_head.cls_id_to_det_head_idx_map))
+
+        #num_det_heads : int = 1,
+        #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
 
     def initialize(self, latest_token : str) -> (float, bool):
         scene_token = self.token_to_scene[latest_token]
@@ -268,224 +266,9 @@ class Detector3DTemplate(nn.Module):
             deadline_sec_override, reset = 0., False
         self.prev_scene_token = scene_token
 
-        if reset and self.enable_projection:
-            self.projection_reset()
+        self.scene_init_ts = self.token_to_ts[latest_token]
 
         return deadline_sec_override, reset 
-
-    def projection_reset(self):
-        # Poses include [cst(3) csr(4) ept(3) epr(4)]
-        self.cur_pose, self.cur_ts = None, None
-        self.past_detections = self.get_empty_det_dict()
-        self.past_detections['pose_idx'] = torch.zeros([0], dtype=torch.long)
-#                device=self.past_detections["pred_labels"].device)
-        self.past_poses = torch.zeros([0, 14], dtype=torch.float)
-        self.past_ts = torch.zeros([0], dtype=torch.long)
-        self.num_dets_per_tile = torch.zeros([self.tcount], dtype=torch.long)
-
-    # This method adds the latests detections to the queue
-    def add_past_proj_to_queue(self, proj_all=False):
-        batch_dict = self.latest_batch_dict
-        if batch_dict is None or self.cur_pose is None:
-            return batch_dict
-
-        pred_dict = batch_dict['final_box_dicts'][0]
-
-        # Before appending the dets, extract the projected ones
-        if self.score_thresh == 0:
-            for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
-                pred_dict[k] = pred_dict['orig_'+k]
-        else:
-            proj_mask = pred_dict['pred_scores'] > self.score_thresh
-            for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
-                pred_dict[k] = pred_dict[k][proj_mask]
-
-        new_dets_dict = {}
-        score_inds = torch.argsort(pred_dict['pred_scores'])
-        for k in ('pred_boxes', 'pred_labels'):
-            new_dets_dict[k] = pred_dict[k][score_inds]
-        if self.score_thresh == 0:
-            new_dets_dict['pred_scores'] = pred_dict['pred_scores'][score_inds]
-
-        # update num dets per tile
-        W, W_start = self.pc_range[3] - self.pc_range[0], self.pc_range[0]
-        div = W / self.tcount
-        tile_inds = torch.div((new_dets_dict['pred_boxes'][:, 0] - W_start), div, \
-                rounding_mode='trunc').short()
-        tile_bins = torch.bincount(tile_inds, minlength=self.tcount)
-        if 'chosen_tile_coords' in batch_dict:
-            ctc = torch.from_numpy(batch_dict['chosen_tile_coords']).long()
-            self.num_dets_per_tile[ctc] = tile_bins[ctc]
-        else:
-            self.num_dets_per_tile = tile_bins
-
-        # NOTE The cur_pose and cur_ts here actually belongs to previous sample
-        self.past_poses = torch.cat((self.past_poses, self.cur_pose.unsqueeze(0)))
-        self.past_ts = torch.cat((self.past_ts, self.target_ts if proj_all else self.cur_ts))
-        # Append the pose idx for the detection that will be added
-        num_dets = new_dets_dict['pred_boxes'].size(0)
-        past_poi = self.past_detections['pose_idx']
-        poi = torch.full((num_dets,), self.past_poses.size(0)-1, dtype=past_poi.dtype)
-        self.past_detections['pose_idx'] = torch.cat((past_poi, poi))
-
-        for k in ('pred_boxes', 'pred_labels'):
-            self.past_detections[k] = torch.cat((self.past_detections[k], new_dets_dict[k]))
-        if self.score_thresh == 0:
-            self.past_detections['pred_scores'] = torch.cat((self.past_detections['pred_scores'],
-                    new_dets_dict['pred_scores']))
-
-        return batch_dict
-
-    # Projection
-    def do_projection(self, batch_dict):
-        if not self.enable_projection or self.training:
-            return batch_dict
-
-        # Add the detection results of previous sample
-        proj_all = ('final_box_dicts' in batch_dict)
-        self.add_past_proj_to_queue(proj_all)
-        latest_token = batch_dict['metadata'][0]['token']
-        scene_token = self.token_to_scene[latest_token]
-        self.cur_pose = self.token_to_pose[latest_token]
-        self.cur_ts = self.token_to_ts[latest_token]
-
-        # Remove detections which are no more needed
-        active_num_dets = torch.sum(self.num_dets_per_tile)
-        max_num_proj = int(active_num_dets * self.projection_coeff)
-        if self.past_detections['pred_boxes'].size(0) > max_num_proj:
-            # Remove oldest dets
-            for k in ['pose_idx', 'pred_boxes', 'pred_labels']:
-                self.past_detections[k] = self.past_detections[k][-max_num_proj:]
-            if self.score_thresh == 0:
-                self.past_detections['pred_scores'] = self.past_detections['pred_scores'][-max_num_proj:]
-
-        # Weed out using the pose_idx of first det
-        if self.past_detections['pose_idx'].size(0) > 0:
-            pose_idx_0 = self.past_detections['pose_idx'][0]
-            self.past_poses = self.past_poses[pose_idx_0:]
-            self.past_ts = self.past_ts[pose_idx_0:]
-            self.past_detections['pose_idx'] = self.past_detections['pose_idx'] - pose_idx_0
-
-        proj_dict = {}
-        if proj_all:
-            # NMS will happen right after projection
-            # project the available det results as well for streaming eval
-            det_pred_dict = batch_dict['final_box_dicts'][0]
-            num_boxes = det_pred_dict['pred_boxes'].size(0)
-
-            if self.past_detections['pred_boxes'].size(0) == 0:
-                proj_dict['pred_scores'] = det_pred_dict['pred_scores'].cpu()
-                proj_dict['pred_labels'] = det_pred_dict['pred_labels'].cpu() - 1
-                boxes_to_forecast = det_pred_dict['pred_boxes']
-                proj_dict['pose_idx'] = torch.tensor([0] * num_boxes,
-                        dtype=self.past_detections['pose_idx'].dtype, device='cuda')
-                proj_dict['past_poses'] = self.cur_pose.unsqueeze(0).cuda()
-                proj_dict['past_ts'] = self.cur_ts.cuda()
-            else:
-                # MOVE TO CPU
-                proj_pred_scores = self.score_thresh - \
-                        (self.score_thresh / (self.past_detections['pose_idx'] + 2))
-                proj_dict['pred_scores'] = torch.cat((proj_pred_scores,
-                    det_pred_dict['pred_scores'].cpu()), dim=0)
-
-                # MOVE TO CPU
-                proj_pred_labels = (self.past_detections['pred_labels'] - 1)
-                proj_dict['pred_labels'] = torch.cat((proj_pred_labels,
-                    det_pred_dict['pred_labels'].cpu() - 1), dim=0)
-
-                # MOVE TO GPU
-                boxes_to_forecast = torch.cat((self.past_detections['pred_boxes'].cuda(),
-                    det_pred_dict['pred_boxes']), dim=0)
-
-                # MOVE TO GPU
-                det_pose_idx = (self.past_detections['pose_idx'][-1] + 1).repeat(num_boxes)
-                proj_dict['pose_idx'] = torch.cat((self.past_detections['pose_idx'],
-                    det_pose_idx), dim=0).cuda()
-
-                # MOVE TO GPU
-                proj_dict['past_poses'] = torch.cat((self.past_poses,
-                    self.cur_pose.unsqueeze(0)), dim=0).cuda()
-
-                # MOVE TO GPU
-                proj_dict['past_ts'] = torch.cat((self.past_ts, self.cur_ts), dim=0).cuda()
-
-            # Calculate the exact current timestamp, for now, ignore the timing of
-            # projection and nms
-            torch.cuda.synchronize()
-            elapsed_musec = (time.time() - batch_dict['start_time_sec']) * 1000000
-            self.target_ts = self.cur_ts
-            while self.target_ts < self.cur_ts + elapsed_musec:
-                self.target_ts += 50000 # keep adding 50 ms
-
-            proj_dict['pred_boxes']= cuda_projection.project_past_detections(
-                    boxes_to_forecast,
-                    proj_dict['pose_idx'],
-                    proj_dict['past_poses'],
-                    self.cur_pose.cuda(),
-                    proj_dict['past_ts'],
-                    self.target_ts.item()).cpu()
-        else:
-            # Do projection in the GPU
-            if self.past_detections['pred_boxes'].size(0) > 0:
-                if self.score_thresh == 0:
-                    proj_dict['pred_scores'] = self.past_detections['pred_scores']
-                else:
-                    proj_dict['pred_scores'] = self.score_thresh - \
-                            (self.score_thresh / (self.past_detections['pose_idx'] + 2))
-                proj_dict['pred_labels'] = (self.past_detections['pred_labels'] - 1)
-                with torch.cuda.stream(self.projection_stream):
-                    proj_dict['pred_boxes'] = cuda_projection.project_past_detections(
-                            self.past_detections['pred_boxes'].cuda(),
-                            self.past_detections['pose_idx'].cuda(),
-                            self.past_poses.cuda(),
-                            self.cur_pose.cuda(),
-                            self.past_ts.cuda(),
-                            self.cur_ts.item())
-                    self.projection_stream.synchronize() # maybe not needed?
-                    proj_dict['pred_boxes'] = proj_dict['pred_boxes'].cpu()
-
-        if 'pred_boxes' in proj_dict:
-            # clear up detections which fall under the chosen tiles and also the overtimed ones
-            projb = proj_dict['pred_boxes']
-            box_x, box_y = projb[:,0], projb[:,1]
-            range_mask = box_x >= self.pc_range[0]
-            range_mask = torch.logical_and(range_mask, box_x <= self.pc_range[3])
-            range_mask = torch.logical_and(range_mask, box_y >= self.pc_range[1])
-            range_mask = torch.logical_and(range_mask, box_y <= self.pc_range[4])
-
-            proj_dict['pred_boxes'] = proj_dict['pred_boxes'][range_mask]
-            proj_dict['pred_scores'] = proj_dict['pred_scores'][range_mask]
-            proj_dict['pred_labels'] = proj_dict['pred_labels'][range_mask]
-
-            # This op can make nms faster
-            target_key = 'projections_nms'
-            with torch.cuda.stream(self.projection_stream):
-                if self.enable_splitting_projections:
-                    batch_dict[target_key] = cuda_projection.split_projections(
-                            proj_dict['pred_boxes'],
-                            proj_dict['pred_scores'],
-                            proj_dict['pred_labels'],
-                            self.dense_head.cls_id_to_det_head_idx_map,
-                            self.dense_head.num_det_heads,
-                            True) # moves results to gpu if true
-                else:
-                    proj_dict['pred_boxes'] = proj_dict['pred_boxes'].cuda()
-                    proj_dict['pred_scores'] = proj_dict['pred_scores'].cuda()
-                    proj_dict['pred_labels'] = proj_dict['pred_labels'].cuda()
-                    batch_dict[target_key] = proj_dict
-
-            # hmm, might be necessary
-            if proj_all:
-                range_mask = range_mask[:-num_boxes]
-            for k in ('pred_boxes', 'pred_labels', 'pose_idx'):
-                self.past_detections[k] = self.past_detections[k][range_mask]
-            if self.score_thresh == 0:
-                self.past_detections['pred_scores'] = self.past_detections['pred_scores'][range_mask]
-
-            self.projection_stream.synchronize()
-
-        return batch_dict
-
 
 
     def train(self, mode=True):
@@ -1064,12 +847,12 @@ class Detector3DTemplate(nn.Module):
         training = self.training
         self.eval()
 
-        enable_proj = self.enable_projection
-        self.enable_projection = False
+        enable_forc = self.enable_forecasting
+        self.enable_forecasting = False
         self._eval_dict['deadline_sec'] = 10.0
         for j in range(5):
             pred_dicts, recall_dict = self([j*batch_size+i for i in range(batch_size)])
-        self.enable_projection = enable_proj
+        self.enable_forecasting = enable_forc
         self._eval_dict['deadline_sec'] = self._default_deadline_sec
         self.prev_scene_token = '' 
 

@@ -276,7 +276,7 @@ class CenterHead(nn.Module):
         return loss, tb_dict
 
     # NEW
-    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs=None, projections=None):
+    def generate_predicted_boxes(self, batch_size, pred_dicts, topk_outputs=None, forecasted_dets=None):
         post_process_cfg = self.model_cfg.POST_PROCESSING
         post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
 
@@ -318,10 +318,10 @@ class CenterHead(nn.Module):
                     final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - IOU_RECTIFIER[final_dict['pred_labels']]) * torch.pow(pred_iou, IOU_RECTIFIER[final_dict['pred_labels']])
 
                 if post_process_cfg.NMS_CONFIG.NMS_TYPE not in  ['circle_nms', 'multi_class_nms']:
-                    if projections is not None:
-                        # get the projections that match and cat them for NMS
-                        for j in projections[idx].keys():
-                            final_dict[j] = torch.cat((final_dict[j], projections[idx][j]), dim=0)
+                    if forecasted_dets is not None:
+                        # get the forecasted_dets that match and cat them for NMS
+                        for j in forecasted_dets[idx].keys():
+                            final_dict[j] = torch.cat((final_dict[j], forecasted_dets[idx][j].cuda()), dim=0)
 
                     selected, selected_scores = model_nms_utils.class_agnostic_nms(
                         box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
@@ -330,10 +330,10 @@ class CenterHead(nn.Module):
                     )
 
                 elif post_process_cfg.NMS_CONFIG.NMS_TYPE == 'multi_class_nms':
-                    if projections is not None:
-                        # get the projections that match and cat them for NMS
-                        for j in projections[idx].keys():
-                            final_dict[j] = torch.cat((final_dict[j], projections[idx][j]), dim=0)
+                    if forecasted_dets is not None:
+                        # get the forecasted_dets that match and cat them for NMS
+                        for j in forecasted_dets[idx].keys():
+                            final_dict[j] = torch.cat((final_dict[j], forecasted_dets[idx][j].cuda()), dim=0)
 
                     selected, selected_scores = model_nms_utils.multi_classes_nms_mmdet(
                         box_scores=final_dict['pred_scores'], box_preds=final_dict['pred_boxes'],
@@ -449,7 +449,7 @@ class CenterHead(nn.Module):
             pred_dicts = data_dict['pred_dicts']
             pred_dicts = self.generate_predicted_boxes( \
                     data_dict['batch_size'], pred_dicts, data_dict.get('topk_outputs', None), \
-                    data_dict.get('projections_nms', None))
+                    data_dict.get('forecasted_dets', None))
 
             if self.predict_boxes_when_training:
                 rois, roi_scores, roi_labels = self.reorder_rois_for_refining(data_dict['batch_size'], pred_dicts)

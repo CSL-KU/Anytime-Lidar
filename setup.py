@@ -14,11 +14,19 @@ def get_git_commit_number():
     return git_commit_number
 
 
-def make_cuda_ext(name, module, sources):
-    cuda_ext = CUDAExtension(
-        name='%s.%s' % (module, name),
-        sources=[os.path.join(*module.split('.'), src) for src in sources]
-    )
+def make_cuda_ext(name, module, sources, extra_link_flags=None):
+    if extra_link_flags is None:
+        cuda_ext = CUDAExtension(
+            name='%s.%s' % (module, name),
+            sources=[os.path.join(*module.split('.'), src) for src in sources]
+        )
+    else:
+        cuda_ext = CUDAExtension(
+            name='%s.%s' % (module, name),
+            sources=[os.path.join(*module.split('.'), src) for src in sources],
+            extra_link_flags=extra_link_flags
+        )
+
     return cuda_ext
 
 
@@ -57,6 +65,29 @@ if __name__ == '__main__':
         },
         ext_modules=[
             make_cuda_ext(
+                name='iou3d_nms_cuda',
+                module='pcdet.ops.iou3d_nms',
+                sources=[
+                    'src/iou3d_cpu.cpp',
+                    'src/iou3d_nms_api.cpp',
+                    'src/iou3d_nms.cpp',
+                    'src/iou3d_nms_kernel.cu',
+                ]
+            ),
+            CUDAExtension(
+                name="pcdet.ops.forecasting.forecasting",
+                sources=[
+                    'pcdet/ops/forecasting/src/forecasting.cpp',
+                    'pcdet/ops/forecasting/src/forecasting_impl.cu',
+                    'pcdet/ops/iou3d_nms/src/iou3d_cpu.cpp'
+                ],
+                #extra_compile_args={'nvcc' : ['-Ipcdet/ops/iou3d_nms/src']},
+                include_dirs=[os.path.realpath('pcdet/ops/iou3d_nms/src')],
+                             #extra_link_flags=["-Lpcdet/ops/iou3d_nms",
+                #     "-liou3d_nms_cuda.cpython-310-aarch64-linux-gnu"],
+                #runtime_library_dirs=["pcdet/ops/iou3d_nm"]
+            ),
+            make_cuda_ext(
                 name='dsvt_ops',
                 module='pcdet.ops.dsvt_ops',
                 sources=[
@@ -70,16 +101,6 @@ if __name__ == '__main__':
                 sources=[
                     'src/iou3d.cpp',
                     'src/iou3d_kernel.cu',
-                ]
-            ),
-            make_cuda_ext(
-                name='iou3d_nms_cuda',
-                module='pcdet.ops.iou3d_nms',
-                sources=[
-                    'src/iou3d_cpu.cpp',
-                    'src/iou3d_nms_api.cpp',
-                    'src/iou3d_nms.cpp',
-                    'src/iou3d_nms_kernel.cu',
                 ]
             ),
             make_cuda_ext(
@@ -150,14 +171,7 @@ if __name__ == '__main__':
                     'src/point_tile_mask_cuda.cu',
                 ],
             ),
-            make_cuda_ext(
-                name='cuda_projection',
-                module='pcdet.ops.cuda_projection',
-                sources=[
-                    'src/projection.cpp',
-                    'src/projection_cuda.cu',
-                ],
-            ),
+
             make_cuda_ext(
                 name='ingroup_inds_cuda',
                 module='pcdet.ops.ingroup_inds',
