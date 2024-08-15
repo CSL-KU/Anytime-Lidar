@@ -25,19 +25,22 @@ from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from geometry_msgs.msg import TransformStamped, Quaternion, Twist
 from autoware_auto_perception_msgs.msg import TrackedObjects, DetectedObjects, DetectedObject, ObjectClassification
 from valo_msgs.msg import Float32MultiArrayStamped
+from callback_profile.msg import CallbackProfile
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import PointCloud2, PointField
 import tf2_ros
 import math
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 import numpy as np
-from multiprocessing import Process, Barrier, Pool
+from multiprocessing import Process, Barrier, Pool, Value
 import concurrent
 import threading
 
 VALO_DEBUG = False
-DO_DYN_SCHEDULING = False
+DO_DYN_SCHEDULING = True
 EVAL_TRACKER = True
+ANYTIME_CAPABLE = False 
+ENABLE_TILE_DROP = False
 
 def seconds_to_TimeMsg(seconds : float):
     sec_int = int(math.floor(seconds))
@@ -149,8 +152,6 @@ def f32_multi_arr_to_detected_objs(float_arr):
         all_objs.objects.append(obj)
 
     return all_objs
-    #self.det_debug_publisher.publish(all_objs)
-
 
 def get_dataset(cfg):
     log_file = ('./tmp_results/log_eval_%s.txt' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
@@ -181,12 +182,12 @@ def get_debug_pts(indices, dataset):
                 for i in indices]
 
 class StreamingEvaluator(Node):
-    def __init__(self, args, period_sec):
+    def __init__(self, args, period_sec, shr_tracker_time_sec):
         super().__init__('streaming_evaluator')
 
         self.system_clock = Clock(clock_type=ClockType.SYSTEM_TIME)
-
         self.period_sec = period_sec
+        self.shr_tracker_time_sec = shr_tracker_time_sec
 
         # receive objects and update the buffer
         self.all_tracked_objects = [] #TrackedObjects()]
@@ -202,6 +203,9 @@ class StreamingEvaluator(Node):
         if EVAL_TRACKER:
             self.tracker_sub = self.create_subscription(TrackedObjects, 'tracked_objects',
                     self.tracker_callback, 10, callback_group=self.cb_group)
+            self.tracker_exec_time_sub = self.create_subscription(CallbackProfile,
+                    '/multi_object_tracker/assoc_cb_profile', self.tracker_exectime_callback,
+                    1, callback_group=self.cb_group)
         else:
             self.detector_sub = self.create_subscription(Float32MultiArrayStamped, 'detected_objects_raw',
                     self.detector_callback, 10, callback_group=self.cb_group)
@@ -277,12 +281,20 @@ class StreamingEvaluator(Node):
         msg.header.stamp = TimeMsg(sec=duration.sec, nanosec=duration.nanosec)
         self.all_tracked_objects.append(msg)
 
+    def tracker_exectime_callback(self, msg):
+        start, end = Time.from_msg(msg.start_stamp), Time.from_msg(msg.end_stamp)
+        dur = (end-start).to_msg()
+        self.shr_tracker_time_sec.value = dur.sec + (dur.nanosec * 1e-9)
+
     def detector_callback(self, msg):
         duration = (self.system_clock.now() - self.time_to_sub).to_msg()
         msg.header.stamp = TimeMsg(sec=duration.sec, nanosec=duration.nanosec)
-        detected_objs = f32_multi_arr_to_detected_objs(msg)
-        self.all_detected_objects.append(detected_objs)
-        self.det_debug_publisher.publish(detected_objs)
+
+        num_obj = msg.array.layout.dim[0].size
+        if num_obj > 0:
+            detected_objs = f32_multi_arr_to_detected_objs(msg)
+            self.all_detected_objects.append(detected_objs)
+            self.det_debug_publisher.publish(detected_objs)
 
     def start_sampling(self, bar):
         self.bar = bar
@@ -443,6 +455,8 @@ class InferenceServer(Node):
         model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=False)
         model.eval()
         model.cuda()
+        model.enable_tile_drop = ENABLE_TILE_DROP
+        self.model_cfg = cfg
 
         self.dataset = model.dataset
         self.num_samples = len(self.dataset)
@@ -493,7 +507,37 @@ class InferenceServer(Node):
                 print('Samples loaded')
                 return
 
-    def infer_loop(self, bar):
+    def get_dyn_deadline_sec(self, sample_idx):
+        if not ANYTIME_CAPABLE:
+            return 10.0 # ignore deadline
+
+        calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
+        if calib_dl != 0.:
+            return calib_dl / 1000.
+
+        max_vel_n = 15 # meters per second
+        max_deadline = 0.125
+        min_deadline = 0.075
+        if sample_idx > 0 and sample_idx < self.num_samples:
+            prev_tkn = self.dataset.infos[sample_idx-1]['token']
+            cur_tkn = self.dataset.infos[sample_idx]['token']
+
+            prev_coord = self.model.token_to_pose[prev_tkn][7:10]
+            cur_coord = self.model.token_to_pose[cur_tkn][7:10]
+
+            prev_ts = self.model.token_to_ts[prev_tkn]
+            cur_ts = self.model.token_to_ts[cur_tkn]
+
+            vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
+            vel_n = np.linalg.norm(vel)
+            return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
+        else:
+            return max_deadline
+
+        #print('vel x', vel[0], 'vel y', vel[1], 'vel norm', np.linalg.norm(vel))
+
+
+    def infer_loop(self, bar, shr_tracker_time_sec):
         model = self.model
         tdiffs = [0. for i in range(len(self.dataset))]
 
@@ -523,12 +567,19 @@ class InferenceServer(Node):
                     print(f'[IS] Trying to process the sample {i} again, skipping to {i+1}.')
                     i += 1
 
+            dyn_deadline_sec = self.get_dyn_deadline_sec(i)
+
             # Dynamic scheduling
             # Calculate current and next tail
             if DO_DYN_SCHEDULING:
                 sched_time = time.time()
                 cur_tail = sched_time - (init_time + i * self.period_sec)
-                exec_time_sec = model.last_elapsed_time_musec * 1e-6
+                if ANYTIME_CAPABLE:
+                    exec_time_sec = dyn_deadline_sec
+                else:
+                    exec_time_sec = model.last_elapsed_time_musec * 1e-6
+                if EVAL_TRACKER:
+                    exec_time_sec += shr_tracker_time_sec.value
                 pred_finish_time = sched_time + exec_time_sec
                 tmp = ((pred_finish_time - init_time) / self.period_sec)
                 next_tail = (tmp - math.floor(tmp)) * self.period_sec
@@ -536,6 +587,7 @@ class InferenceServer(Node):
                     # Extra 1 ms is added to make sure slept time is enough
                     time.sleep(self.period_sec - cur_tail + 0.001)
                     i = int((time.time() - init_time) / self.period_sec)
+                    #dyn_deadline_sec = self.get_dyn_deadline_sec(i) # not a big deal
 
             if i >= self.num_samples:
                 break
@@ -588,7 +640,7 @@ class InferenceServer(Node):
 
                 batch_dict['scene_reset'] = reset
                 batch_dict['start_time_sec'] = start_time
-                batch_dict['deadline_sec'] = float(cfg.MODEL.DEADLINE_SEC)
+                batch_dict['deadline_sec'] = dyn_deadline_sec #float(self.model_cfg.MODEL.DEADLINE_SEC)
                 batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
                 model.measure_time_end('PreProcess')
 
@@ -602,7 +654,10 @@ class InferenceServer(Node):
                         batch_dict['final_box_dicts'][0][k] = v.cpu()
 
             model.latest_batch_dict = {k: batch_dict[k] for k in \
-                    ['final_box_dicts', 'metadata', 'chosen_tile_coords']}
+                    ['final_box_dicts', 'metadata']}
+
+            if 'chosen_tile_coords' in batch_dict:
+                model.latest_batch_dict['chosen_tile_coords'] = batch_dict['chosen_tile_coords']
 
             torch.cuda.synchronize()
             model.measure_time_end('PostProcess')
@@ -681,20 +736,20 @@ class InferenceServer(Node):
 
         self.det_publisher.publish(float_arr)
 
-def RunInferenceServer(args, bar, period_sec):
+def RunInferenceServer(args, bar, period_sec, shr_tracker_time_sec):
     rclpy.init(args=None)
     node = InferenceServer(args, period_sec)
     
-    node.infer_loop(bar)
+    node.infer_loop(bar, shr_tracker_time_sec)
 
     node.destroy_node()
     rclpy.shutdown()
 
     bar.wait()
 
-def RunStreamingEvaluator(args, bar, period_sec):
+def RunStreamingEvaluator(args, bar, period_sec, shr_tracker_time_sec):
     rclpy.init(args=None)
-    node = StreamingEvaluator(args, period_sec)
+    node = StreamingEvaluator(args, period_sec, shr_tracker_time_sec)
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
 
@@ -716,10 +771,11 @@ def main():
 
     cmdline_args = parser.parse_args()
 
+    shr_tracker_time_sec = Value('d', 0.) # double
     bar = Barrier(2)
     period_sec = 0.05
-    p1 = Process(target=RunInferenceServer, args=(cmdline_args, bar, period_sec))
-    p2 = Process(target=RunStreamingEvaluator, args=(cmdline_args, bar, period_sec))
+    p1 = Process(target=RunInferenceServer, args=(cmdline_args, bar, period_sec, shr_tracker_time_sec))
+    p2 = Process(target=RunStreamingEvaluator, args=(cmdline_args, bar, period_sec, shr_tracker_time_sec))
 
     p1.start()
     p2.start()
