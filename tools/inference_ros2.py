@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 import gc
+import sys
 
 from eval_utils import eval_utils
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
@@ -34,13 +35,20 @@ from tf_transformations import euler_from_quaternion, quaternion_from_euler
 import numpy as np
 from multiprocessing import Process, Barrier, Pool, Value
 import concurrent
-import threading
+from torch.profiler import profile, record_function, ProfilerActivity
+
+# export FINE_GRAINED_EVAL=1 for fine grained evaluation results saved to json
 
 VALO_DEBUG = False
-DO_DYN_SCHEDULING = True
-EVAL_TRACKER = True
-ANYTIME_CAPABLE = False 
+DO_DYN_SCHED = True
+ALWAYS_BLOCK_SCHED = False
+EVAL_TRACKER = False
+ANYTIME_CAPABLE = False
 ENABLE_TILE_DROP = False
+VISUALIZE = True
+PROFILE = False
+
+assert (DO_DYN_SCHED != ALWAYS_BLOCK_SCHED)
 
 def seconds_to_TimeMsg(seconds : float):
     sec_int = int(math.floor(seconds))
@@ -89,6 +97,34 @@ def pose_to_tf(translation, rotation_q, stamp, frame_id, child_frame_id):
     t.transform.rotation.z = rotation_q[3]
 
     return t
+
+def pred_dict_to_f32_multi_arr(pred_dict, stamp):
+    pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+    pred_scores = pred_dict['pred_scores'].unsqueeze(-1) # (N, 1)
+    pred_labels = pred_dict['pred_labels'].float().unsqueeze(-1) # (N, 1)
+
+    all_data = torch.cat((pred_boxes, pred_scores, pred_labels), dim=1)
+
+    float_arr = Float32MultiArrayStamped()
+    float_arr.header.frame_id = 'base_link'
+    float_arr.header.stamp = stamp
+
+    dim2 = MultiArrayDimension()
+    dim2.label = "obj_attributes"
+    dim2.size = all_data.shape[1]
+    dim2.stride = all_data.shape[1]
+
+    dim1 = MultiArrayDimension()
+    dim1.label = "num_objects"
+    dim1.size = all_data.shape[0]
+    dim1.stride = all_data.shape[0] * all_data.shape[1]
+
+    float_arr.array.layout.dim.append(dim1)
+    float_arr.array.layout.dim.append(dim2)
+    float_arr.array.layout.data_offset = 0
+    float_arr.array.data = all_data.flatten().tolist()
+
+    return float_arr
 
 def f32_multi_arr_to_detected_objs(float_arr):
     SIGN_UNKNOWN=1
@@ -165,14 +201,13 @@ def get_dataset(cfg):
 
 def collate_dataset(indices, dataset):
     #return [dataset.collate_batch([dataset[idx]]) for idx in indices]
-    dicts = []
-    for i in indices:
-        data_dict = dataset.get_metadata_dict(i)
-        data_dict['points'] = dataset.get_lidar_with_sweeps(i,
+    dicts = [None] * len(indices)
+    for idx, ind in enumerate(indices):
+        data_dict = dataset.get_metadata_dict(ind)
+        data_dict['points'] = dataset.get_lidar_with_sweeps(ind,
                 max_sweeps=dataset.dataset_cfg.MAX_SWEEPS)
-        dicts.append(dataset.collate_batch([data_dict]))
+        dicts[idx] = dataset.collate_batch([data_dict])
     return dicts
-
 
 def load_dataset_metadata(indices, dataset):
     return [dataset.get_metadata_dict(idx) for idx in indices]
@@ -180,6 +215,20 @@ def load_dataset_metadata(indices, dataset):
 def get_debug_pts(indices, dataset):
     return [points_to_pc2(dataset.get_lidar_with_sweeps(i)[:, :-1]) \
                 for i in indices]
+
+def get_gt_objects(indices, dataset):
+    objs = [None] * len(indices)
+    dummy_stamp = TimeMsg() # will be overwritten later
+    for idx, ind in enumerate(indices):
+        gt_dict = dataset.get_gt_as_pred_dict(ind)
+        float_arr = pred_dict_to_f32_multi_arr(gt_dict, dummy_stamp)
+        objs[idx] = f32_multi_arr_to_detected_objs(float_arr)
+    return objs
+
+def get_debug_pts_and_gt_objects(indices, dataset):
+    debug_pts = get_debug_pts(indices, dataset)
+    gt_objects = get_gt_objects(indices, dataset)
+    return debug_pts, gt_objects
 
 class StreamingEvaluator(Node):
     def __init__(self, args, period_sec, shr_tracker_time_sec):
@@ -209,17 +258,20 @@ class StreamingEvaluator(Node):
         else:
             self.detector_sub = self.create_subscription(Float32MultiArrayStamped, 'detected_objects_raw',
                     self.detector_callback, 10, callback_group=self.cb_group)
+
+        if VISUALIZE:
             self.det_debug_publisher = self.create_publisher(DetectedObjects, 'detected_objects_debug', 1)
+            self.ground_truth_publisher = self.create_publisher(DetectedObjects, 'ground_truth_objects', 1)
 
-        # For debug
-        qos_profile = QoSProfile(
-                reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                history=QoSHistoryPolicy.KEEP_LAST,
-                depth=10)
-        self.pc_publisher = self.create_publisher(PointCloud2, 'point_cloud', qos_profile)
+            # For debug
+            qos_profile = QoSProfile(
+                    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=10)
+            self.pc_publisher = self.create_publisher(PointCloud2, 'point_cloud', qos_profile)
 
-        self.pc_sub = self.create_subscription(Header, 'point_cloud_idx',
-                self.publish_pc, 10, callback_group=self.cb_group)
+            self.pc_sub = self.create_subscription(Header, 'point_cloud_idx',
+                    self.publish_pc, 10, callback_group=self.cb_group)
 
         cfg_from_yaml_file(args.cfg_file, cfg)
         if args.set_cfgs is not None:
@@ -232,17 +284,25 @@ class StreamingEvaluator(Node):
         num_samples = len(self.dataset)
         print('[SE] Num dataset elems:', num_samples)
 
-        nump=6
-        self.debug_points = []
-        metadata_arr = []
-        splits = np.array_split(np.arange(num_samples), nump)
-        with Pool(processes=nump) as pool:
-            results = [pool.apply_async(get_debug_pts, (split.tolist(), self.dataset)) \
-                    for split in splits]
-            for res in results:
-                self.debug_points += res.get()
+        if VISUALIZE:
+            numproc=8
+            self.debug_points = [None] * num_samples
+            self.gt_objects= [None] * num_samples
+            splits = np.array_split(np.arange(num_samples), numproc)
 
-        print('[SE] Loaded debug points')
+            print('[SE] Loading debug points and ground truth')
+            load_start_time = time.time()
+            with concurrent.futures.ProcessPoolExecutor(max_workers=numproc) as executor:
+                futures = [executor.submit(get_debug_pts_and_gt_objects, split.tolist(), self.dataset) \
+                        for split in splits]
+                for fut, split in zip(futures, splits):
+                    debug_pts, gt_objects = fut.result()
+                    for c_i, s_i in enumerate(split):
+                        self.debug_points[s_i] = debug_pts[c_i]
+                        self.gt_objects[s_i] = gt_objects[c_i]
+            load_end_time = time.time()
+            print('[SE] Loaded debug points and ground truth, it took', \
+                    load_end_time-load_start_time, 'seconds')
 
         with open('token_to_pos.json', 'r') as file:
             self.token_to_pos = json.load(file)
@@ -275,6 +335,11 @@ class StreamingEvaluator(Node):
             self.debug_points[idx] = None # clear mem
             self.pc_pub_idx = idx + 1
 
+            #publish ground truth as well
+            gt_objs = self.gt_objects[idx]
+            gt_objs.header.stamp = msg.stamp
+            self.ground_truth_publisher.publish(gt_objs)
+
     def tracker_callback(self, msg):
          # save the time of msg arrival for streaming eval
         duration = (self.system_clock.now() - self.time_to_sub).to_msg()
@@ -294,12 +359,14 @@ class StreamingEvaluator(Node):
         if num_obj > 0:
             detected_objs = f32_multi_arr_to_detected_objs(msg)
             self.all_detected_objects.append(detected_objs)
-            self.det_debug_publisher.publish(detected_objs)
+            if VISUALIZE:
+                self.det_debug_publisher.publish(detected_objs)
 
     def start_sampling(self, bar):
         self.bar = bar
         self.bar.wait()
         self.init_time = time.time()
+        print('[SE] Started sampling at', self.init_time)
 
         self.pose_timer = self.create_timer(self.period_sec/2, self.pose_pub_timer_callback,
                 callback_group=self.cb_group, clock=self.system_clock)
@@ -308,6 +375,10 @@ class StreamingEvaluator(Node):
     def cmd_callback(self, msg):
         cmd = msg.frame_id
         if cmd == 'stop_sampling': # stop timer and evaluate
+            if PROFILE:
+                self.bar.wait()
+                return
+
             if EVAL_TRACKER:
                 sampled_objects, frame_id = self.get_streaming_eval_samples(self.all_tracked_objects)
                 print(f'[SE] Sampled {len(self.all_tracked_objects)} tracked objects')
@@ -356,6 +427,8 @@ class StreamingEvaluator(Node):
                 sample_idx = np.argmax(aft) - 1
                 sampled_tracked_objects.append(all_objects[sample_idx])
                 print(sample_idx, end=' ')
+            if i % 40 == 0:
+                print()
         print()
 
         num_sampled = len(sampled_tracked_objects)
@@ -442,7 +515,8 @@ class InferenceServer(Node):
 
         self.cmd_publisher = self.create_publisher(Header, 'evaluator_cmd', 10)
 
-        self.pc_idx_publisher = self.create_publisher(Header, 'point_cloud_idx', 10)
+        if VISUALIZE:
+            self.pc_idx_publisher = self.create_publisher(Header, 'point_cloud_idx', 10)
 
     def init_model(self, args):
         cfg_from_yaml_file(args.cfg_file, cfg)
@@ -508,12 +582,12 @@ class InferenceServer(Node):
                 return
 
     def get_dyn_deadline_sec(self, sample_idx):
-        if not ANYTIME_CAPABLE:
-            return 10.0 # ignore deadline
-
         calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
         if calib_dl != 0.:
             return calib_dl / 1000.
+
+        if not ANYTIME_CAPABLE:
+            return 10.0 # ignore deadline
 
         max_vel_n = 15 # meters per second
         max_deadline = 0.125
@@ -533,9 +607,6 @@ class InferenceServer(Node):
             return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
         else:
             return max_deadline
-
-        #print('vel x', vel[0], 'vel y', vel[1], 'vel norm', np.linalg.norm(vel))
-
 
     def infer_loop(self, bar, shr_tracker_time_sec):
         model = self.model
@@ -557,7 +628,6 @@ class InferenceServer(Node):
         last_i, i, last_scene_token = -1, -1, ''
         #wakeup_time = init_time + self.period_sec
         self.model.last_elapsed_time_musec = 100000
-        execution_timepoints=[]
         while rclpy.ok():
             if VALO_DEBUG:
                 i += 1
@@ -569,11 +639,14 @@ class InferenceServer(Node):
 
             dyn_deadline_sec = self.get_dyn_deadline_sec(i)
 
-            # Dynamic scheduling
-            # Calculate current and next tail
-            if DO_DYN_SCHEDULING:
-                sched_time = time.time()
-                cur_tail = sched_time - (init_time + i * self.period_sec)
+            sched_time = time.time()
+            cur_tail = sched_time - (init_time + i * self.period_sec)
+            if ALWAYS_BLOCK_SCHED:
+                time.sleep(self.period_sec - cur_tail + 0.001)
+                i = int((time.time() - init_time) / self.period_sec)
+            elif DO_DYN_SCHED:
+                # Dynamic scheduling
+                # Calculate current and next tail
                 if ANYTIME_CAPABLE:
                     exec_time_sec = dyn_deadline_sec
                 else:
@@ -589,7 +662,7 @@ class InferenceServer(Node):
                     i = int((time.time() - init_time) / self.period_sec)
                     #dyn_deadline_sec = self.get_dyn_deadline_sec(i) # not a big deal
 
-            if i >= self.num_samples:
+            if PROFILE and i > 200 or i >= self.num_samples:
                 break
             last_i = i
 
@@ -615,84 +688,85 @@ class InferenceServer(Node):
 
             last_scene_token = scene_token
 
-            execution_timepoints.append(time.time())
-            batch_dict = self.batch_dicts_arr[i]
-            self.batch_dicts_arr[i] = None
-            model.measure_time_start('End-to-end')
-            model.measure_time_start('PreProcess')
-            start_time = time.time()
+            with record_function("inference"):
+                batch_dict = self.batch_dicts_arr[i]
+                self.batch_dicts_arr[i] = None
+                model.measure_time_start('End-to-end')
+                model.measure_time_start('PreProcess')
+                start_time = time.time()
 
-            # Tell Evaluator to publish point cloud for debug
-            stamp_time = init_time + self.period_sec * i
-            cur_stamp = seconds_to_TimeMsg(stamp_time)
-            idx_msg = Header()
-            idx_msg.frame_id = str(i)
-            idx_msg.stamp = cur_stamp
-            self.pc_idx_publisher.publish(idx_msg)
+                # Tell Evaluator to publish point cloud for debug
+                stamp_time = init_time + self.period_sec * i
+                cur_stamp = seconds_to_TimeMsg(stamp_time)
 
-            deadline_sec_override, reset = model.initialize(sample_token)
-            if reset:
-                #Clear buffers
-                model.latest_batch_dict = None
+                if VISUALIZE:
+                    idx_msg = Header()
+                    idx_msg.frame_id = str(i)
+                    idx_msg.stamp = cur_stamp
+                    self.pc_idx_publisher.publish(idx_msg)
 
-            with torch.no_grad():
-                load_data_to_gpu(batch_dict)
+                deadline_sec_override, reset = model.initialize(sample_token)
+                if reset:
+                    #Clear buffers
+                    model.latest_batch_dict = None
 
-                batch_dict['scene_reset'] = reset
-                batch_dict['start_time_sec'] = start_time
-                batch_dict['deadline_sec'] = dyn_deadline_sec #float(self.model_cfg.MODEL.DEADLINE_SEC)
-                batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
-                model.measure_time_end('PreProcess')
+                with torch.no_grad():
+                    load_data_to_gpu(batch_dict)
 
-                batch_dict = model.forward(batch_dict)
+                    batch_dict['scene_reset'] = reset
+                    batch_dict['start_time_sec'] = start_time
+                    batch_dict['deadline_sec'] = dyn_deadline_sec #float(self.model_cfg.MODEL.DEADLINE_SEC)
+                    batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
+                    model.measure_time_end('PreProcess')
 
-                model.measure_time_start('PostProcess')
-                if 'final_box_dicts' in  batch_dict:
-                    if 'pred_ious' in batch_dict['final_box_dicts'][0]:
-                        del batch_dict['final_box_dicts'][0]['pred_ious']
-                    for k,v in batch_dict['final_box_dicts'][0].items():
-                        batch_dict['final_box_dicts'][0][k] = v.cpu()
+                    batch_dict = model.forward(batch_dict)
 
-            model.latest_batch_dict = {k: batch_dict[k] for k in \
-                    ['final_box_dicts', 'metadata']}
+                    model.measure_time_start('PostProcess')
+                    if 'final_box_dicts' in  batch_dict:
+                        if 'pred_ious' in batch_dict['final_box_dicts'][0]:
+                            del batch_dict['final_box_dicts'][0]['pred_ious']
+                        for k,v in batch_dict['final_box_dicts'][0].items():
+                            batch_dict['final_box_dicts'][0][k] = v.cpu()
 
-            if 'chosen_tile_coords' in batch_dict:
-                model.latest_batch_dict['chosen_tile_coords'] = batch_dict['chosen_tile_coords']
+                model.latest_batch_dict = {k: batch_dict[k] for k in \
+                        ['final_box_dicts', 'metadata']}
 
-            torch.cuda.synchronize()
-            model.measure_time_end('PostProcess')
-            model.measure_time_end('End-to-end')
-            finish_time = time.time()
+                if 'chosen_tile_coords' in batch_dict:
+                    model.latest_batch_dict['chosen_tile_coords'] = batch_dict['chosen_tile_coords']
 
-            model.calc_elapsed_times() 
-            model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
+                torch.cuda.synchronize()
+                model.measure_time_end('PostProcess')
+                model.measure_time_end('End-to-end')
+                finish_time = time.time()
 
-            tdiffs[i] = round(finish_time - batch_dict['abs_deadline_sec'], 3)
+                model.calc_elapsed_times() 
+                model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
 
-            if VALO_DEBUG and 'forecasted_dets' in batch_dict:
-                pred_dict = batch_dict['forecasted_dets'][0]
-                pred_dict['pred_labels'] += 1
-                print('Publishing forecasted dets')
-            else:
-                pred_dict = batch_dict['final_box_dicts'][0]
+                tdiffs[i] = round(finish_time - batch_dict['abs_deadline_sec'], 3)
 
-            self.publish_dets(pred_dict, cur_stamp)
+                if VALO_DEBUG and 'forecasted_dets' in batch_dict:
+                    pred_dict = batch_dict['forecasted_dets'][0]
+                    pred_dict['pred_labels'] += 1
+                    print('Publishing forecasted dets')
+                else:
+                    pred_dict = batch_dict['final_box_dicts'][0]
 
-            finishovski_time = time.time()
-            execution_timepoints.append(finishovski_time)
-            #Following prints 0.6 ms
-            #print('Finishiovski took:', round((finishovski_time-finish_time)*1000, 2), 'ms')
+                self.publish_dets(pred_dict, cur_stamp)
 
-            #sleep_time = wakeup_time - time.time()
-            #if sleep_time > .0:
-            #    time.sleep(sleep_time + 0.001)
-            #else:
-            #    print('[IS] Overrun', round(sleep_time * 1000, 2), 'ms')
-            #wakeup_time += self.period_sec
+                finishovski_time = time.time()
+                #Following prints 0.6 ms
+                #print('Finishiovski took:', round((finishovski_time-finish_time)*1000, 2), 'ms')
 
-            #if i % 10 == 0:
-            #    gc.collect()
-            #    print(torch.cuda.memory_summary())
+                #sleep_time = wakeup_time - time.time()
+                #if sleep_time > .0:
+                #    time.sleep(sleep_time + 0.001)
+                #else:
+                #    print('[IS] Overrun', round(sleep_time * 1000, 2), 'ms')
+                #wakeup_time += self.period_sec
+
+                #if i % 10 == 0:
+                #    gc.collect()
+                #    print(torch.cuda.memory_summary())
 
         eval_cmd = Header()
         eval_cmd.frame_id = 'stop_sampling'
@@ -704,43 +778,21 @@ class InferenceServer(Node):
                 print(f'Deadline {i} missed with {tdiff * 1000} ms')
         model.print_time_stats()
 
-        #TODO Dump execution timepoints
-
 
     # This func takes less than 1 ms, ~0.6 ms
     def publish_dets(self, pred_dict, stamp):
-        pred_boxes  = pred_dict['pred_boxes'] # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
-        pred_scores = pred_dict['pred_scores'].unsqueeze(-1) # (N, 1)
-        pred_labels = pred_dict['pred_labels'].float().unsqueeze(-1) # (N, 1)
-
-        all_data = torch.cat((pred_boxes, pred_scores, pred_labels), dim=1)
-
-        float_arr = Float32MultiArrayStamped()
-        float_arr.header.frame_id = 'base_link'
-        float_arr.header.stamp = stamp
-
-        dim2 = MultiArrayDimension()
-        dim2.label = "obj_attributes"
-        dim2.size = all_data.shape[1]
-        dim2.stride = all_data.shape[1]
-
-        dim1 = MultiArrayDimension()
-        dim1.label = "num_objects"
-        dim1.size = all_data.shape[0]
-        dim1.stride = all_data.shape[0] * all_data.shape[1]
-
-        float_arr.array.layout.dim.append(dim1)
-        float_arr.array.layout.dim.append(dim2)
-        float_arr.array.layout.data_offset = 0
-        float_arr.array.data = all_data.flatten().tolist()
-
+        float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
         self.det_publisher.publish(float_arr)
 
 def RunInferenceServer(args, bar, period_sec, shr_tracker_time_sec):
     rclpy.init(args=None)
     node = InferenceServer(args, period_sec)
-    
-    node.infer_loop(bar, shr_tracker_time_sec)
+    if PROFILE:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            node.infer_loop(bar, shr_tracker_time_sec)
+        prof.export_chrome_trace("trace.json")
+    else:
+        node.infer_loop(bar, shr_tracker_time_sec)
 
     node.destroy_node()
     rclpy.shutdown()
@@ -756,7 +808,7 @@ def RunStreamingEvaluator(args, bar, period_sec, shr_tracker_time_sec):
     node.start_sampling(bar)
     executor.spin()
 
-    # Won't reach here
+    # Wont reach here
 
     #executor.shutdown()
     #node.destroy_node()
@@ -774,13 +826,11 @@ def main():
     shr_tracker_time_sec = Value('d', 0.) # double
     bar = Barrier(2)
     period_sec = 0.05
-    p1 = Process(target=RunInferenceServer, args=(cmdline_args, bar, period_sec, shr_tracker_time_sec))
     p2 = Process(target=RunStreamingEvaluator, args=(cmdline_args, bar, period_sec, shr_tracker_time_sec))
-
-    p1.start()
     p2.start()
 
-    p1.join()
+    RunInferenceServer(cmdline_args, bar, period_sec, shr_tracker_time_sec)
+
     print('InferenceServer done')
     p2.terminate()
     p2.join()
