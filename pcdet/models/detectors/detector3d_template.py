@@ -88,7 +88,7 @@ def post_forward_hook(module, inp_args, outp_args):
     module.measure_time_end('PostProcess')
     #torch.cuda.synchronize() # the cpu calls syncs anyway
 
-    if module.is_calibrating():
+    if module.is_calibrating() and 'bb2d_time_events' in batch_dict:
         e = torch.cuda.Event(enable_timing=True)
         e.record()
         e_prev = batch_dict['bb2d_time_events'][1]
