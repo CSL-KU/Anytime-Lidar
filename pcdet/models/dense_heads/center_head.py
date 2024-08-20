@@ -7,9 +7,10 @@ from ..model_utils import model_nms_utils
 from ..model_utils import centernet_utils
 from ...utils import loss_utils
 from typing import Dict
+from functools import partial
 
 class SeparateHead(nn.Module):
-    def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False):
+    def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False, norm_func=None, enable_normalization=True):
         super().__init__()
         self.sep_head_dict = sep_head_dict
         self.conv_names = tuple(sep_head_dict.keys())
@@ -20,13 +21,14 @@ class SeparateHead(nn.Module):
 
             fc_list = []
             for k in range(num_conv - 1):
-                fc_list.append(nn.Sequential(
-                    nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=1, bias=use_bias),
-                    nn.BatchNorm2d(input_channels),
-                    nn.ReLU()
-                ))
+                inner_fc_list = [nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=1, bias=use_bias)]
+                if enable_normalization:
+                    inner_fc_list.append(nn.BatchNorm2d(input_channels) if norm_func is None else norm_func(input_channels))
+                inner_fc_list.append(nn.ReLU())
+                fc_list.append(nn.Sequential(*inner_fc_list))
             fc_list.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=1, padding=1, bias=True))
             fc = nn.Sequential(*fc_list)
+
             if 'hm' in cur_name:
                 fc[-1].bias.data.fill_(init_bias)
             else:
@@ -89,12 +91,13 @@ class CenterHead(nn.Module):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
 
+        norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
         self.shared_conv = nn.Sequential(
             nn.Conv2d(
                 input_channels, self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
                 bias=self.model_cfg.get('USE_BIAS_BEFORE_NORM', False)
             ),
-            nn.BatchNorm2d(self.model_cfg.SHARED_CONV_CHANNEL),
+            norm_func(self.model_cfg.SHARED_CONV_CHANNEL),
             nn.ReLU(),
         )
 
@@ -108,7 +111,9 @@ class CenterHead(nn.Module):
                     input_channels=self.model_cfg.SHARED_CONV_CHANNEL,
                     sep_head_dict=cur_head_dict,
                     init_bias=-2.19,
-                    use_bias=self.model_cfg.get('USE_BIAS_BEFORE_NORM', False)
+                    use_bias=self.model_cfg.get('USE_BIAS_BEFORE_NORM', False),
+                    norm_func=norm_func,
+                    enable_normalization=self.model_cfg.get('ENABLE_NORM_IN_ATTR_LAYERS', True)
                 )
             )
         self.predict_boxes_when_training = predict_boxes_when_training
