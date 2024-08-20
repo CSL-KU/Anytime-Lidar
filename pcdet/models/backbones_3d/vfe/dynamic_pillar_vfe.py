@@ -90,8 +90,14 @@ class DynamicPillarVFE(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
-    def range_filter(self, batch_dict):
+    def range_filter(self, batch_dict, filter_z=True):
         points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
+
+        if filter_z:
+            points_z = points[:, 3]
+            mask = torch.logical_and(points_z > self.point_cloud_range[2], points_z < self.point_cloud_range[5])
+            points = points[mask]
+
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
         mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
         batch_dict['points'] = points[mask]
