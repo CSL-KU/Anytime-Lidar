@@ -39,9 +39,9 @@ DATA_CONFIG:
         NOISE_TRANSLATE_STD: [0.5, 0.5, 0.5]
 
   DATA_PROCESSOR:
-    -   NAME: mask_points_and_boxes_outside_range
-        REMOVE_OUTSIDE_BOXES: True
-        MASK_Z: True
+#    -   NAME: mask_points_and_boxes_outside_range
+#        REMOVE_OUTSIDE_BOXES: True
+#        MASK_Z: True
 
     -   NAME: shuffle_points
         SHUFFLE_ENABLED: {
@@ -83,7 +83,7 @@ MODEL:
     activation: gelu
     output_shape: [360, 360]
     conv_out_channel: 128
-    trt_engine: /home/humble/shared/Anytime-Lidar/tools/deploy_files_valo/dsvt.engine
+    OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/dsvt_no_iou_valo
     # ues_checkpoint: True
 
   MAP_TO_BEV:
@@ -98,7 +98,7 @@ MODEL:
     NUM_FILTERS: [ 128, 128, 256 ]
     UPSAMPLE_STRIDES: [ 0.5, 1, 2 ]
     NUM_UPSAMPLE_FILTERS: [ 128, 128, 128 ]
-    trt_engine: /home/humble/shared/Anytime-Lidar/tools/deploy_files_valo/dsvt2.engine
+    OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/dsvt_no_iou_dense_convs_dyn
 
   DENSE_HEAD:
     NAME: CenterHead
