@@ -6,7 +6,7 @@ from torch.nn.init import kaiming_normal_
 from ..model_utils import model_nms_utils
 from ..model_utils import centernet_utils
 from ...utils import loss_utils
-from typing import Dict
+from typing import Dict, List
 from functools import partial
 
 class SeparateHead(nn.Module):
@@ -22,7 +22,7 @@ class SeparateHead(nn.Module):
             fc_list = []
             for k in range(num_conv - 1):
                 inner_fc_list = [nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=1, bias=use_bias)]
-                if enable_normalization:
+                if enable_normalization: #TODO I havent made an exception for hm, but its ok
                     inner_fc_list.append(nn.BatchNorm2d(input_channels) if norm_func is None else norm_func(input_channels))
                 inner_fc_list.append(nn.ReLU())
                 fc_list.append(nn.Sequential(*inner_fc_list))
@@ -384,8 +384,6 @@ class CenterHead(nn.Module):
             roi_labels[bs_idx, :num_boxes] = pred_dicts[bs_idx]['pred_labels']
         return rois, roi_scores, roi_labels
 
-
-
     def forward(self, data_dict):
         data_dict = self.forward_pre(data_dict)
         data_dict = self.forward_post(data_dict)
@@ -400,72 +398,75 @@ class CenterHead(nn.Module):
         return names
 
     # Alternative function for scripting
-    #NOTE assumes single detection head
-    def forward_up_to_topk(self, spatial_features_2d):
-        assert len(self.heads_list) == 1
+    def forward_up_to_topk(self, spatial_features_2d : torch.Tensor) -> List[torch.Tensor]:
         x = self.shared_conv(spatial_features_2d)
-        pred_dict = self.heads_list[0].forward(x)
-        head_order = self.ordered_outp_names()
-        out_tensors_ordered = (pred_dict[head_name] for head_name in head_order)
+        pred_dicts = [h.forward(x) for h in self.heads_list]
+        conv_order = self.ordered_outp_names()
+        out_tensors_ordered = [pd[conv_name] for pd in pred_dicts for conv_name in conv_order]
         return out_tensors_ordered
 
     def convert_out_to_batch_dict(self, out_tensors):
         head_order = self.ordered_outp_names()
-        return {name:t for name, t in zip(head_order, out_tensors)}
+        num_convs_per_head = len(out_tensors) // self.num_det_heads
+        pred_dicts = []
+        for i in range(self.num_det_heads):
+            ot = out_tensors[i*num_convs_per_head:(i+1)*num_convs_per_head]
+            pred_dicts.append({name : t for name, t in zip(head_order, ot)})
+        return pred_dicts
 
-    def forward_pre(self, data_dict):
-        spatial_features_2d = data_dict['spatial_features_2d']
+    def forward_pre(self, batch_dict):
+        spatial_features_2d = batch_dict['spatial_features_2d']
         x = self.shared_conv(spatial_features_2d)
-        data_dict['pred_dicts'] = [head.forward_hm(x) for head in self.heads_list]
-        data_dict['shared_conv_outp'] = x
-        return data_dict
+        batch_dict['pred_dicts'] = [head.forward_hm(x) for head in self.heads_list]
+        batch_dict['shared_conv_outp'] = x
+        return batch_dict
 
-    def forward_post(self, data_dict):
-        x = data_dict['shared_conv_outp']
-        for head, pd in zip(self.heads_list, data_dict['pred_dicts']):
+    def forward_post(self, batch_dict):
+        x = batch_dict['shared_conv_outp']
+        for head, pd in zip(self.heads_list, batch_dict['pred_dicts']):
             pd.update(head.forward_attr(x))
 
         if self.training:
             target_dict = self.assign_targets(
-                data_dict['gt_boxes'], feature_map_size=data_dict['spatial_features_2d'].size()[2:],
-                feature_map_stride=data_dict.get('spatial_features_2d_strides', None)
+                batch_dict['gt_boxes'], feature_map_size=data_dict['spatial_features_2d'].size()[2:],
+                feature_map_stride=batch_dict.get('spatial_features_2d_strides', None)
             )
             self.forward_ret_dict['target_dicts'] = target_dict
 
-        self.forward_ret_dict['pred_dicts'] = data_dict['pred_dicts']
-        return data_dict
+        self.forward_ret_dict['pred_dicts'] = batch_dict['pred_dicts']
+        return batch_dict
 
-    def forward_topk(self, data_dict):
+    def forward_topk(self, batch_dict):
         if not self.training or self.predict_boxes_when_training:
             topk_outputs = []
-            pred_dicts = data_dict['pred_dicts']
+            pred_dicts = batch_dict['pred_dicts']
             post_process_cfg = self.model_cfg.POST_PROCESSING
             for pd in pred_dicts:
                 scores, inds, class_ids, ys, xs = centernet_utils._topk(pd['hm'],
                         K=post_process_cfg.MAX_OBJ_PER_SAMPLE)
                 topk_outputs.append((scores, inds, class_ids, ys, xs))
-            data_dict['topk_outputs'] = topk_outputs
+            batch_dict['topk_outputs'] = topk_outputs
 
-        return data_dict
+        return batch_dict
 
 
-    def forward_genbox(self, data_dict):
+    def forward_genbox(self, batch_dict):
         if not self.training or self.predict_boxes_when_training:
-            pred_dicts = data_dict['pred_dicts']
+            pred_dicts = batch_dict['pred_dicts']
             pred_dicts = self.generate_predicted_boxes( \
-                    data_dict['batch_size'], pred_dicts, data_dict.get('topk_outputs', None), \
-                    data_dict.get('forecasted_dets', None))
+                    batch_dict['batch_size'], pred_dicts, batch_dict.get('topk_outputs', None), \
+                    batch_dict.get('forecasted_dets', None))
 
             if self.predict_boxes_when_training:
-                rois, roi_scores, roi_labels = self.reorder_rois_for_refining(data_dict['batch_size'], pred_dicts)
-                data_dict['rois'] = rois
-                data_dict['roi_scores'] = roi_scores
-                data_dict['roi_labels'] = roi_labels
-                data_dict['has_class_labels'] = True
+                rois, roi_scores, roi_labels = self.reorder_rois_for_refining(batch_dict['batch_size'], pred_dicts)
+                batch_dict['rois'] = rois
+                batch_dict['roi_scores'] = roi_scores
+                batch_dict['roi_labels'] = roi_labels
+                batch_dict['has_class_labels'] = True
             else:
-                data_dict['final_box_dicts'] = pred_dicts
+                batch_dict['final_box_dicts'] = pred_dicts
 
-        return data_dict
+        return batch_dict
 
     def get_empty_det_dict(self):
         det_dict = {}

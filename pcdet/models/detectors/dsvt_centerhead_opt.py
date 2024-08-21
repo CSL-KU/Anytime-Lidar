@@ -9,6 +9,7 @@ import onnx_graphsurgeon as gs
 import os
 import struct
 import sys
+from typing import List
 #import torch_tensorrt
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 
@@ -18,13 +19,10 @@ class OptimizedFwdPipeline2(torch.nn.Module):
         self.backbone_2d = backbone_2d
         self.dense_head = dense_head
 
-    def forward(self, spatial_features : torch.Tensor) -> torch.Tensor:
+    def forward(self, spatial_features : torch.Tensor) -> List[torch.Tensor]:
         spatial_features_2d = self.backbone_2d(spatial_features)
         #hm, center, center_z, dim, rot, vel, iou = \
-        hm, center, center_z, dim, rot, vel = \
-                self.dense_head.forward_up_to_topk(spatial_features_2d)
-        return hm, center, center_z, dim, rot, vel
-
+        return self.dense_head.forward_up_to_topk(spatial_features_2d)
 
 class DSVT_CenterHead_Opt(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -100,11 +98,10 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
 
             if self.fused_ops2_trt is not None:
                 outputs = self.fused_ops2_trt({'spatial_features': sf})
-                outputs = [outputs[nm] for nm in self.dense_head.ordered_outp_names()]
+                outputs = [outputs[nm] for nm in self.opt_fwd2_output_names]
             else:
                 outputs = self.opt_fwd2(sf)
-            out_dict = self.dense_head.convert_out_to_batch_dict(outputs)
-            batch_dict["pred_dicts"] = [out_dict]
+            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
             self.measure_time_end('FusedOps2')
 
             #TODO , use the optimized cuda code for the rest available in autoware
@@ -180,6 +177,7 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
         try:
             self.backbone_3d_trt = TRTWrapper(trt_path, input_names, output_names)
         except:
+            print('TensorRT wrapper for backbone3d throwed exception, using eager mode')
             self.backbone_3d_trt = None
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
@@ -190,12 +188,12 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
 
         input_names = ['spatial_features']
 
-        output_names = self.dense_head.ordered_outp_names()
-        print('Fused operations output names:', output_names)
+        self.opt_fwd2_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                for name in self.dense_head.ordered_outp_names()]
+        print('Fused operations output names:', self.opt_fwd2_output_names)
 
         self.opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
         self.opt_fwd2.eval()
-        eager_outputs = self.opt_fwd2(fwd_data)
 
         generated_onnx=False
         onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
@@ -204,7 +202,7 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
                     self.opt_fwd2,
                     fwd_data,
                     onnx_path, input_names=input_names,
-                    output_names=output_names,
+                    output_names=self.opt_fwd2_output_names,
                     opset_version=17,
                     #custom_opsets={"kucsl": 17}
             )
@@ -213,8 +211,10 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
         sf = fwd_data 
         trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
         try:
-            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, output_names)
+            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd2_output_names)
         except:
+            print('TensorRT wrapper for fused_ops2 throwed exception, using eager mode')
+            eager_outputs = self.opt_fwd2(fwd_data) # for calibration
             self.fused_ops2_trt = None
 
         optimize_end = time.time()
