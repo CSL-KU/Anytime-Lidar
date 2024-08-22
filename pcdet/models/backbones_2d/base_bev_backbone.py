@@ -78,22 +78,18 @@ class BaseBEVBackbone(nn.Module):
 
         self.num_bev_features = c_in
 
-    def forward(self, data_dict):
+    def forward(self, spatial_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
             data_dict:
                 spatial_features
         Returns:
         """
-        spatial_features = data_dict['spatial_features']
         ups = []
-        ret_dict = {}
         x = spatial_features
         for i in range(len(self.blocks)):
             x = self.blocks[i](x)
 
-            stride = int(spatial_features.shape[2] / x.shape[2])
-            ret_dict['spatial_features_%dx' % stride] = x
             if len(self.deblocks) > 0:
                 ups.append(self.deblocks[i](x))
             else:
@@ -107,10 +103,7 @@ class BaseBEVBackbone(nn.Module):
         if len(self.deblocks) > len(self.blocks):
             x = self.deblocks[-1](x)
 
-        data_dict['spatial_features_2d'] = x
-
-        return data_dict
-
+        return x
 
 class BaseBEVBackboneV1(nn.Module):
     def __init__(self, model_cfg, **kwargs):

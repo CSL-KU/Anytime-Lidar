@@ -51,9 +51,11 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
             'CenterHead-GenBox': [],
         })
 
+        self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
         self.optimization2_done = False
+
 
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
@@ -71,7 +73,6 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
 
             if not self.optimization1_done:
                 self.optimize1(vinfo[:-1])
-                self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
 
             self.measure_time_start('Backbone3D-Fwd')
             inputs_dict = {'voxel_feat': vinfo[0],

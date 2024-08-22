@@ -3,23 +3,29 @@ import torch.nn as nn
 from typing import Dict, List, Tuple, Final
 
 class PointPillarScatter(nn.Module):
+    num_bev_features : Final[int]
+    nz : Final[int]
+    ny : Final[int]
+    nx : Final[int]
+    channels_first : Final[bool]
+
     def __init__(self, model_cfg, grid_size, **kwargs):
         super().__init__()
 
         self.model_cfg = model_cfg
         self.num_bev_features = self.model_cfg.NUM_BEV_FEATURES
-        self.nx, self.ny, self.nz = grid_size
+        self.nx, self.ny, self.nz = grid_size.tolist()
         assert self.nz == 1
 
-        print('WARNING!!!! This implementation of PointPillarScatter might be wrong!!!!')
+        self.channels_first = kwargs.get('channels_first', True)
 
-    def forward(self, batch_dict, **kwargs):
-        pillar_features, coords = batch_dict['pillar_features'], batch_dict['voxel_coords']
+    def forward(self, pillar_features : torch.Tensor, coords : torch.Tensor, 
+            batch_size : int = 1) -> torch.Tensor:
         batch_spatial_features = []
-        batch_size = coords[:, 0].max().int().item() + 1
-        channels_first = 'chosen_tile_coords' not in batch_dict
-        dim1 = self.num_bev_features if channels_first else self.nz * self.nx * self.ny
-        dim2 = self.nz * self.nx * self.ny if channels_first else self.num_bev_features
+        #batch_size = coords[:, 0].max().int().item() + 1
+        #channels_first = 'chosen_tile_coords' not in batch_dict
+        dim1 = self.num_bev_features if self.channels_first else self.nz * self.nx * self.ny
+        dim2 = self.nz * self.nx * self.ny if self.channels_first else self.num_bev_features
         for batch_idx in range(batch_size):
             spatial_feature = torch.zeros(dim1, dim2, dtype=pillar_features.dtype,
                 device=pillar_features.device)
@@ -29,7 +35,7 @@ class PointPillarScatter(nn.Module):
             indices = this_coords[:, 1] + this_coords[:, 2] * self.nx + this_coords[:, 3]
             indices = indices.type(torch.long)
             pillars = pillar_features[batch_mask, :]
-            if channels_first:
+            if self.channels_first:
                 pillars = pillars.t()
                 spatial_feature[:, indices] = pillars
             else:
@@ -38,15 +44,13 @@ class PointPillarScatter(nn.Module):
             batch_spatial_features.append(spatial_feature)
 
         batch_spatial_features = torch.stack(batch_spatial_features, 0)
-        if channels_first:
+        if self.channels_first:
             batch_spatial_features = batch_spatial_features.view(\
                     batch_size, self.num_bev_features * self.nz, self.ny, self.nx)
         else:
             batch_spatial_features = batch_spatial_features.view(\
                     batch_size, self.ny, self.nx, self.num_bev_features * self.nz)
-        batch_dict['spatial_features'] = batch_spatial_features
-        return batch_dict
-
+        return batch_spatial_features
 
 class PointPillarScatter3d(nn.Module):
     num_bev_features_before_compression: Final[int]

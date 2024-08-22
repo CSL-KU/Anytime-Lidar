@@ -8,8 +8,7 @@ except Exception as e:
     # Incase someone doesn't want to use dynamic pillar vfe and hasn't installed torch_scatter
     pass
 
-from .vfe_template import VFETemplate
-
+from typing import Tuple
 
 class DynamicMeanVFE(VFETemplate):
     def __init__(self, model_cfg, num_point_features, voxel_size, grid_size, point_cloud_range, **kwargs):
@@ -35,25 +34,24 @@ class DynamicMeanVFE(VFETemplate):
         return self.num_point_features
 
     @torch.no_grad()
-    def forward(self, batch_dict, **kwargs):
-        """
-        Args:
-            batch_dict:
-                voxels: (num_voxels, max_points_per_voxel, C)
-                voxel_num_points: optional (num_voxels)
-            **kwargs:
-
-        Returns:
-            vfe_features: (num_voxels, C)
-        """
-        batch_size = batch_dict['batch_size']
+    def range_filter(self, batch_dict, filter_z=True):
         points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
 
-        # # debug
+        if filter_z:
+            points_z = points[:, 3]
+            mask = torch.logical_and(points_z > self.point_cloud_range[2], points_z < self.point_cloud_range[5])
+            points = points[mask]
+
         point_coords = torch.floor((points[:, 1:4] - self.point_cloud_range[0:3]) / self.voxel_size).int()
         mask = ((point_coords >= 0) & (point_coords < self.grid_size)).all(dim=1)
-        points = points[mask]
-        point_coords = point_coords[mask]
+        batch_dict['points'] = points[mask]
+        batch_dict['points_coords'] = point_coords[mask]
+        return batch_dict
+
+    @torch.no_grad()
+    def forward_gen_voxels(self, points : torch.Tensor) \
+            -> Tuple[torch.Tensor, torch.Tensor]:
+        point_coords = torch.floor((points[:, 1:4] - self.point_cloud_range[0:3]) / self.voxel_size).int()
         merge_coords = points[:, 0].int() * self.scale_xyz + \
                         point_coords[:, 0] * self.scale_yz + \
                         point_coords[:, 1] * self.scale_z + \
@@ -70,7 +68,9 @@ class DynamicMeanVFE(VFETemplate):
                                     (unq_coords % self.scale_yz) // self.scale_z,
                                     unq_coords % self.scale_z), dim=1)
         voxel_coords = voxel_coords[:, [0, 3, 2, 1]]
-        
-        batch_dict['voxel_features'] = points_mean.contiguous()
-        batch_dict['voxel_coords'] = voxel_coords.contiguous()
-        return batch_dict
+
+        return voxel_coords.contiguous(), points_mean.contiguous()
+
+    def forward(self, points : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        voxel_coords, features = self.forward_gen_voxels(points)
+        return voxel_coords, features

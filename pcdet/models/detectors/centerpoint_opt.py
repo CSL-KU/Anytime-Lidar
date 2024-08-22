@@ -1,0 +1,195 @@
+from .detector3d_template import Detector3DTemplate
+import torch
+import numpy as np
+import numba
+import time
+import onnx
+#import onnxruntime as ort
+import onnx_graphsurgeon as gs
+import os
+import struct
+import sys
+from typing import List
+#import torch_tensorrt
+from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+
+class OptimizedFwdPipeline2(torch.nn.Module):
+    def __init__(self, backbone_2d, dense_head):
+        super().__init__()
+        self.backbone_2d = backbone_2d
+        self.dense_head = dense_head
+
+    def forward(self, spatial_features : torch.Tensor) -> List[torch.Tensor]:
+        spatial_features_2d = self.backbone_2d(spatial_features)
+        return self.dense_head.forward_up_to_topk(spatial_features_2d)
+
+class CenterPointOpt(Detector3DTemplate):
+    def __init__(self, model_cfg, num_class, dataset):
+        super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+        torch.backends.cudnn.benchmark = True
+        if torch.backends.cudnn.benchmark:
+            torch.backends.cudnn.benchmark_limit = 0
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+
+        torch.cuda.manual_seed(0)
+        self.module_list = self.build_networks()
+
+        self.update_time_dict( {
+            'VFE' : [],
+            'MapToBEV' : [],
+        })
+        self.use_pillars = (self.model_cfg.get('BACKBONE_3D', None) is None)
+        if not self.use_pillars:
+            self.update_time_dict({'Backbone3D': []})
+        self.update_time_dict( {
+            'FusedOps2':[],
+            'CenterHead-Topk': [],
+            'CenterHead-GenBox': [],
+        })
+
+        if self.use_pillars:
+            self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
+            self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
+        else:
+            self.vfe, self.backbone_3d, self.map_to_bev, self.backbone_2d, \
+                    self.dense_head = self.module_list
+            self.map_to_bev_scrpt = self.map_to_bev # no need to script
+
+        self.inf_stream = torch.cuda.Stream()
+        self.optimization1_done = False
+
+    def forward(self, batch_dict):
+        with torch.cuda.stream(self.inf_stream):
+            self.measure_time_start('VFE')
+            batch_dict = self.vfe.range_filter(batch_dict)
+            points = batch_dict['points']
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            batch_dict['pillar_features'] = batch_dict['voxel_features']
+            self.measure_time_end('VFE')
+
+            if not self.use_pillars:
+                self.measure_time_start('Backbone3D')
+                batch_dict = self.backbone_3d(batch_dict)
+                self.measure_time_end('Backbone3D')
+                self.measure_time_start('MapToBEV')
+                batch_dict = self.map_to_bev(batch_dict)
+                self.measure_time_end('MapToBEV')
+            else:
+                self.measure_time_start('MapToBEV')
+                batch_dict['spatial_features'] = self.map_to_bev_scrpt(batch_dict['pillar_features'],
+                        batch_dict['voxel_coords'], batch_dict['batch_size'])
+                self.measure_time_end('MapToBEV')
+
+            if not self.optimization1_done:
+                self.optimize1(batch_dict['spatial_features'])
+
+            self.measure_time_start('FusedOps2')
+            sf = batch_dict['spatial_features']
+
+            if self.fused_ops2_trt is not None:
+                outputs = self.fused_ops2_trt({'spatial_features': sf})
+                outputs = [outputs[nm] for nm in self.opt_fwd2_output_names]
+            else:
+                outputs = self.opt_fwd2(sf)
+            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
+            self.measure_time_end('FusedOps2')
+
+            self.measure_time_start('CenterHead-Topk')
+            batch_dict = self.dense_head.forward_topk(batch_dict)
+            self.measure_time_end('CenterHead-Topk')
+            self.measure_time_start('CenterHead-GenBox')
+            batch_dict = self.dense_head.forward_genbox(batch_dict)
+            self.measure_time_end('CenterHead-GenBox')
+
+            if self.training:
+                loss, tb_dict, disp_dict = self.get_training_loss()
+
+                ret_dict = {
+                        'loss': loss
+                        }
+                return ret_dict, tb_dict, disp_dict
+            else:
+                # let the hooks of parent class handle this
+                return batch_dict
+
+    def optimize1(self, fwd_data):
+        optimize_start = time.time()
+
+        input_names = ['spatial_features']
+
+        self.opt_fwd2_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                for name in self.dense_head.ordered_outp_names()]
+        print('Fused operations output names:', self.opt_fwd2_output_names)
+
+        self.opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
+        self.opt_fwd2.eval()
+
+        generated_onnx=False
+        onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
+        if not os.path.exists(onnx_path):
+            torch.onnx.export(
+                    self.opt_fwd2,
+                    fwd_data,
+                    onnx_path, input_names=input_names,
+                    output_names=self.opt_fwd2_output_names,
+                    opset_version=17,
+                    #custom_opsets={"kucsl": 17}
+            )
+            generated_onnx=True
+
+        sf = fwd_data 
+        trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
+        try:
+            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd2_output_names)
+        except:
+            print('TensorRT wrapper for fused_ops2 throwed exception, using eager mode')
+            eager_outputs = self.opt_fwd2(fwd_data) # for calibration
+            self.fused_ops2_trt = None
+
+        optimize_end = time.time()
+        print(f'Optimization took {optimize_end-optimize_start} seconds.')
+        if generated_onnx:
+            print('ONNX files created, please run again.')
+            sys.exit(0)
+
+        self.optimization1_done = True
+
+
+    def get_training_loss(self):
+        disp_dict = {}
+
+        loss_rpn, tb_dict = self.dense_head.get_loss()
+        tb_dict = {
+                'loss_rpn': loss_rpn.item(),
+                **tb_dict
+                }
+
+        loss = loss_rpn
+        return loss, tb_dict, disp_dict
+
+    def post_processing_pre(self, batch_dict):
+        return (batch_dict,)
+
+    def post_processing_post(self, pp_args):
+        batch_dict = pp_args[0]
+        post_process_cfg = self.model_cfg.POST_PROCESSING
+        batch_size = batch_dict['batch_size']
+        final_pred_dict = batch_dict['final_box_dicts']
+        recall_dict = {}
+        for index in range(batch_size):
+            pred_boxes = final_pred_dict[index]['pred_boxes']
+
+            recall_dict = self.generate_recall_record(
+                    box_preds=pred_boxes.cuda(),
+                    recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
+                    thresh_list=post_process_cfg.RECALL_THRESH_LIST
+                    )
+
+        return final_pred_dict, recall_dict
+
+    def calibrate(self, batch_size=1):
+        return super().calibrate(1)
+

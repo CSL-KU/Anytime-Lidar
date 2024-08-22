@@ -33,8 +33,8 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
@@ -47,8 +47,6 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
 
         self.update_time_dict( {
             'Sched1': [],
-            #'VFE-gen-pillars' : [],
-            #'VFE-nn' : [],
             'VFE' : [],
             'Backbone3D-IL': [],
             'Backbone3D-Fwd':[],
@@ -93,7 +91,6 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             self.measure_time_start('Backbone3D-IL')
             vinfo = self.backbone_3d.get_voxel_info(batch_dict['voxel_features'],
                     batch_dict['voxel_coords'])
-
             self.measure_time_end('Backbone3D-IL')
 
             if not self.optimization1_done:
@@ -214,8 +211,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         opt_fwd.eval()
 
         generated_onnx=False
-        base_dir = "./deploy_files_valo"
-        onnx_path = f"{base_dir}/dsvt1.onnx"
+        onnx_path = self.model_cfg.BACKBONE_3D.OPT_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "voxel_feat": {
@@ -247,7 +243,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                     custom_opsets={"kucsl": 17}
             )
 
-        trt_path = self.model_cfg.BACKBONE_3D.trt_engine
+        trt_path = self.model_cfg.BACKBONE_3D.OPT_PATH + '.engine'
         try:
             self.backbone_3d_trt = TRTWrapper(trt_path, input_names, output_names)
         except:
@@ -269,8 +265,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         eager_outputs = self.opt_fwd2(fwd_data)
 
         generated_onnx=False
-        base_dir = "./deploy_files_valo"
-        onnx_path = f"{base_dir}/dsvt2.onnx"
+        onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "spatial_features": {
@@ -291,7 +286,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             generated_onnx=True
 
         sf = fwd_data 
-        trt_path = self.model_cfg.BACKBONE_2D.trt_engine
+        trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
         try:
             self.fused_ops2_trt = TRTWrapper(trt_path, input_names, output_names)
         except:
@@ -301,7 +296,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
         self.optimization2_done = True
         if generated_onnx:
-            print('ONNX files created, please run again.')
+            print('ONNX files created, please run again after building TensorRt engines.')
             sys.exit(0)
 
     def get_iobinding(self, ort_session, inp_tensors, outp_tensors):
@@ -371,7 +366,7 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
             print('torch', name, t.shape, t.dtype)
             data = t.cpu().contiguous().numpy() # t is a pytorch tensor
             print('numpy', name, data.shape, data.dtype)
-            with open(f"deploy_files_valo/{name}.bin", "wb") as f:
+            with open(f"deploy_files/{name}.bin", "wb") as f:
                 data = np.ravel(data)
                 if data.dtype == np.float32:
                     for d in data:
