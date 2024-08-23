@@ -7,7 +7,13 @@ import torch
 
 from ...utils import common_utils
 from . import iou3d_nms_cuda
+from typing import Optional
+from os import listdir
 
+for file_name in listdir("../pcdet/ops/iou3d_nms"):
+    if file_name.endswith('.so'):
+        torch.ops.load_library("../pcdet/ops/iou3d_nms/" + file_name)
+        break
 
 def boxes_bev_iou_cpu(boxes_a, boxes_b):
     """
@@ -117,7 +123,7 @@ def boxes_aligned_iou3d_gpu(boxes_a, boxes_b):
     return iou3d
 
 
-def nms_gpu(boxes, scores, thresh, pre_maxsize=None, **kwargs):
+def nms_gpu(boxes : torch.Tensor, scores : torch.Tensor, thresh : float, pre_maxsize : Optional[int]):
     """
     :param boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
     :param scores: (N)
@@ -130,12 +136,12 @@ def nms_gpu(boxes, scores, thresh, pre_maxsize=None, **kwargs):
         order = order[:pre_maxsize]
 
     boxes = boxes[order].contiguous()
-    keep = torch.LongTensor(boxes.size(0))
-    num_out = iou3d_nms_cuda.nms_gpu(boxes, keep, thresh)
-    return order[keep[:num_out].cuda()].contiguous(), None
+    keep = torch.empty(boxes.size(0), dtype=torch.long)
+    num_out = torch.ops.iou3d_nms_cuda.nms_gpu(boxes, keep, thresh)
+    return order[keep[:num_out].cuda()].contiguous()
 
 
-def nms_normal_gpu(boxes, scores, thresh, **kwargs):
+def nms_normal_gpu(boxes : torch.Tensor, scores: torch.Tensor, thresh : float):
     """
     :param boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
     :param scores: (N)
@@ -147,6 +153,6 @@ def nms_normal_gpu(boxes, scores, thresh, **kwargs):
 
     boxes = boxes[order].contiguous()
 
-    keep = torch.LongTensor(boxes.size(0))
-    num_out = iou3d_nms_cuda.nms_normal_gpu(boxes, keep, thresh)
-    return order[keep[:num_out].cuda()].contiguous(), None
+    keep = torch.empty(boxes.size(0), dtype=torch.long)
+    num_out = torch.ops.iou3d_nms_cuda.nms_normal_gpu(boxes, keep, thresh)
+    return order[keep[:num_out].cuda()].contiguous()

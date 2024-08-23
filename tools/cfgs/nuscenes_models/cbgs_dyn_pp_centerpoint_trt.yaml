@@ -44,7 +44,7 @@ MODEL:
         OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_pp_cp_dense_convs
 
     DENSE_HEAD:
-        NAME: CenterHead
+        NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
 
         CLASS_NAMES_EACH_HEAD: [

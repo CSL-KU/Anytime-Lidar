@@ -92,14 +92,14 @@ int boxes_iou_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b,
   return 1;
 }
 
-int nms_gpu(at::Tensor boxes, at::Tensor keep,
-	    float nms_overlap_thresh, int device_id) {
+int64_t nms_gpu(at::Tensor boxes, at::Tensor keep,
+	    double nms_overlap_thresh){ //, int64_t device_id) {
   // params boxes: (N, 5) [x1, y1, x2, y2, ry]
   // params keep: (N)
 
   CHECK_INPUT(boxes);
   CHECK_CONTIGUOUS(keep);
-  cudaSetDevice(device_id);
+  //cudaSetDevice(device_id);
 
   int boxes_num = boxes.size(0);
   const float *boxes_data = boxes.data_ptr<float>();
@@ -146,8 +146,8 @@ int nms_gpu(at::Tensor boxes, at::Tensor keep,
   return num_to_keep;
 }
 
-int nms_normal_gpu(at::Tensor boxes, at::Tensor keep,
-                   float nms_overlap_thresh, int device_id) {
+int64_t nms_normal_gpu(at::Tensor boxes, at::Tensor keep,
+                   double nms_overlap_thresh, int64_t device_id) {
   // params boxes: (N, 5) [x1, y1, x2, y2, ry]
   // params keep: (N)
 
@@ -204,6 +204,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("boxes_overlap_bev_gpu", &boxes_overlap_bev_gpu,
         "oriented boxes overlap");
   m.def("boxes_iou_bev_gpu", &boxes_iou_bev_gpu, "oriented boxes iou");
-  m.def("nms_gpu", &nms_gpu, "oriented nms gpu");
   m.def("nms_normal_gpu", &nms_normal_gpu, "nms gpu");
+}
+
+TORCH_LIBRARY(ioubev_nms_cuda, m) {
+  m.def("nms_gpu", &nms_gpu); //, "oriented nms gpu");
 }

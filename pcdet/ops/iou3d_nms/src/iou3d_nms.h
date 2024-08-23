@@ -7,10 +7,10 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
-int boxes_aligned_overlap_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_overlap);
-int boxes_overlap_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_overlap);
-int boxes_iou_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_iou);
-int nms_gpu(at::Tensor boxes, at::Tensor keep, float nms_overlap_thresh);
-int nms_normal_gpu(at::Tensor boxes, at::Tensor keep, float nms_overlap_thresh);
+int64_t boxes_aligned_overlap_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_overlap);
+int64_t boxes_overlap_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_overlap);
+int64_t boxes_iou_bev_gpu(at::Tensor boxes_a, at::Tensor boxes_b, at::Tensor ans_iou);
+int64_t nms_gpu(at::Tensor boxes, at::Tensor keep, double nms_overlap_thresh);
+int64_t nms_normal_gpu(at::Tensor boxes, at::Tensor keep, double nms_overlap_thresh);
 
 #endif

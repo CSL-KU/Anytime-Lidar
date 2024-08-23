@@ -85,6 +85,7 @@ class CenterPointOpt(Detector3DTemplate):
 
             if not self.optimization1_done:
                 self.optimize1(batch_dict['spatial_features'])
+                self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
             self.measure_time_start('FusedOps2')
             sf = batch_dict['spatial_features']
@@ -98,10 +99,11 @@ class CenterPointOpt(Detector3DTemplate):
             self.measure_time_end('FusedOps2')
 
             self.measure_time_start('CenterHead-Topk')
-            batch_dict = self.dense_head.forward_topk(batch_dict)
+            topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])
             self.measure_time_end('CenterHead-Topk')
             self.measure_time_start('CenterHead-GenBox')
-            batch_dict = self.dense_head.forward_genbox(batch_dict)
+            batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(batch_dict['batch_size'], batch_dict["pred_dicts"],
+                    topk_outputs, None)
             self.measure_time_end('CenterHead-GenBox')
 
             if self.training:

@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import numba
+from typing import List, Dict, Optional
 
 def gaussian_radius(height, width, min_overlap=0.5):
     """
@@ -156,7 +157,7 @@ def _transpose_and_gather_feat(feat : torch.Tensor, ind : torch.Tensor):
     return feat
 
 @torch.jit.script
-def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False):
+def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> List[torch.Tensor]:
     batch, num_class, height, width = scores.size()
 
     topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)
@@ -168,8 +169,8 @@ def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False):
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
     topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
     topk_classes = topk_classes.int() if not using_slicing else topk_classes.float()
-    topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K) \
-            if not using_slicing else None
+    if not using_slicing: # NOTE, this wont be None anymore
+        topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
     return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
@@ -223,24 +224,24 @@ def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z,
     })
     return ret_pred_dicts
 
-def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim,
-                             point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, iou=None, K=100,
-                             circle_nms=False, score_thresh=None, post_center_limit_range=None, topk_outp=None):
-    batch_size, num_class, _, _ = heatmap.size()
+def decode_bbox_from_heatmap(heatmap : torch.Tensor, rot_cos : torch.Tensor,
+                             rot_sin : torch.Tensor, center : torch.Tensor,
+                             center_z : torch.Tensor, dim : torch.Tensor,
+                             point_cloud_range: List[float], voxel_size : List[float],
+                             feature_map_stride : int, K : int,
+                             post_center_limit_range : torch.Tensor,
+                             topk_outp : List[torch.Tensor],
+                             vel : Optional[torch.Tensor],
+                             iou : Optional[torch.Tensor],
+                             score_thresh : Optional[float]) -> List[Dict[str,torch.Tensor]]:
 
-    if circle_nms:
-        # TODO: not checked yet
-        assert False, 'not checked yet'
-        heatmap = _nms(heatmap)
+    batch_size, num_class = heatmap.size()[:2]
 
-    if topk_outp is None:
-        scores, inds, class_ids, ys, xs = _topk(heatmap, K=K)
-    else:
-        scores, inds, class_ids, ys, xs = topk_outp
+    scores, inds, class_ids, ys, xs = topk_outp
 
-    center = _transpose_and_gather_feat(center, inds).view(batch_size, K, 2)
-    rot_sin = _transpose_and_gather_feat(rot_sin, inds).view(batch_size, K, 1)
     rot_cos = _transpose_and_gather_feat(rot_cos, inds).view(batch_size, K, 1)
+    rot_sin = _transpose_and_gather_feat(rot_sin, inds).view(batch_size, K, 1)
+    center = _transpose_and_gather_feat(center, inds).view(batch_size, K, 2)
     center_z = _transpose_and_gather_feat(center_z, inds).view(batch_size, K, 1)
     dim = _transpose_and_gather_feat(dim, inds).view(batch_size, K, 3)
 
@@ -263,29 +264,18 @@ def decode_bbox_from_heatmap(heatmap, rot_cos, rot_sin, center, center_z, dim,
     final_scores = scores.view(batch_size, K)
     final_class_ids = class_ids.view(batch_size, K)
 
-    assert post_center_limit_range is not None
     mask = (final_box_preds[..., :3] >= post_center_limit_range[:3]).all(2)
     mask &= (final_box_preds[..., :3] <= post_center_limit_range[3:]).all(2)
 
     if score_thresh is not None:
         mask &= (final_scores > score_thresh)
 
-    ret_pred_dicts = []
+    ret_pred_dicts : List[Dict[str,torch.Tensor]] = []
     for k in range(batch_size):
         cur_mask = mask[k]
         cur_boxes = final_box_preds[k, cur_mask]
         cur_scores = final_scores[k, cur_mask]
         cur_labels = final_class_ids[k, cur_mask]
-
-        if circle_nms:
-            assert False, 'not checked yet'
-            centers = cur_boxes[:, [0, 1]]
-            boxes = torch.cat((centers, scores.view(-1, 1)), dim=1)
-            keep = _circle_nms(boxes, min_radius=min_radius, post_max_size=nms_post_max_size)
-
-            cur_boxes = cur_boxes[keep]
-            cur_scores = cur_scores[keep]
-            cur_labels = cur_labels[keep]
 
         ret_pred_dicts.append({
             'pred_boxes': cur_boxes,

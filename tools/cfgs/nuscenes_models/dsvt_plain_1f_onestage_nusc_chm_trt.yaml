@@ -110,7 +110,7 @@ MODEL:
     EVAL_METRIC: kitti      
 
   DENSE_HEAD:
-    NAME: CenterHead
+    NAME: CenterHeadInf
     CLASS_AGNOSTIC: False
     CLASS_NAMES_EACH_HEAD: [
         ['car'], 
