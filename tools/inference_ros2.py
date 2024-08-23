@@ -45,7 +45,7 @@ ALWAYS_BLOCK_SCHED = False
 EVAL_TRACKER = False
 ANYTIME_CAPABLE = False
 ENABLE_TILE_DROP = False
-VISUALIZE = True
+VISUALIZE = False
 PROFILE = False
 
 assert (DO_DYN_SCHED != ALWAYS_BLOCK_SCHED)
@@ -126,12 +126,12 @@ def pred_dict_to_f32_multi_arr(pred_dict, stamp):
 
     return float_arr
 
-def f32_multi_arr_to_detected_objs(float_arr):
+
+def f32_multi_arr_to_detected_objs(float_arr, cls_mapping):
     SIGN_UNKNOWN=1
     BOUNDING_BOX=0
 
     # -1 car truck bus bicyle pedestrian
-    cls_mapping = [-1, 1, 2, 3, 6, 7]
 
     all_objs = DetectedObjects()
     all_objs.header = float_arr.header
@@ -197,6 +197,7 @@ def get_dataset(cfg):
         dataset_cfg=cfg.DATA_CONFIG, class_names=cfg.CLASS_NAMES, batch_size=1,
         dist=False, workers=0, logger=logger, training=False
     )
+
     return logger, test_set
 
 def collate_dataset(indices, dataset):
@@ -216,18 +217,18 @@ def get_debug_pts(indices, dataset):
     return [points_to_pc2(dataset.get_lidar_with_sweeps(i)[:, :-1]) \
                 for i in indices]
 
-def get_gt_objects(indices, dataset):
+def get_gt_objects(indices, dataset, cls_mapping):
     objs = [None] * len(indices)
     dummy_stamp = TimeMsg() # will be overwritten later
     for idx, ind in enumerate(indices):
         gt_dict = dataset.get_gt_as_pred_dict(ind)
         float_arr = pred_dict_to_f32_multi_arr(gt_dict, dummy_stamp)
-        objs[idx] = f32_multi_arr_to_detected_objs(float_arr)
+        objs[idx] = f32_multi_arr_to_detected_objs(float_arr, cls_mapping)
     return objs
 
-def get_debug_pts_and_gt_objects(indices, dataset):
+def get_debug_pts_and_gt_objects(indices, dataset, cls_mapping):
     debug_pts = get_debug_pts(indices, dataset)
-    gt_objects = get_gt_objects(indices, dataset)
+    gt_objects = get_gt_objects(indices, dataset, cls_mapping)
     return debug_pts, gt_objects
 
 class StreamingEvaluator(Node):
@@ -279,6 +280,11 @@ class StreamingEvaluator(Node):
         self.cfg = cfg
 
         logger, test_set = get_dataset(cfg)
+        oc = ObjectClassification()
+        cls_names = cfg.CLASS_NAMES
+        self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
+                for name in cls_names }
+        self.inv_cls_mapping = {v:k for k,v in self.cls_mapping.items()}
 
         self.dataset = test_set
         num_samples = len(self.dataset)
@@ -293,8 +299,8 @@ class StreamingEvaluator(Node):
             print('[SE] Loading debug points and ground truth')
             load_start_time = time.time()
             with concurrent.futures.ProcessPoolExecutor(max_workers=numproc) as executor:
-                futures = [executor.submit(get_debug_pts_and_gt_objects, split.tolist(), self.dataset) \
-                        for split in splits]
+                futures = [executor.submit(get_debug_pts_and_gt_objects, split.tolist(), \
+                        self.dataset, self.cls_mapping) for split in splits]
                 for fut, split in zip(futures, splits):
                     debug_pts, gt_objects = fut.result()
                     for c_i, s_i in enumerate(split):
@@ -357,7 +363,7 @@ class StreamingEvaluator(Node):
 
         num_obj = msg.array.layout.dim[0].size
         if num_obj > 0:
-            detected_objs = f32_multi_arr_to_detected_objs(msg)
+            detected_objs = f32_multi_arr_to_detected_objs(msg, self.cls_mapping)
             self.all_detected_objects.append(detected_objs)
             if VISUALIZE:
                 self.det_debug_publisher.publish(detected_objs)
@@ -442,7 +448,6 @@ class StreamingEvaluator(Node):
 
     def do_eval(self, sampled_objects, frame_id):
         #Convert them to openpcdet format
-        inv_cls_mapping = [-1, 1, 2, 3, -1, -1, 4, 5]
 
         det_annos = []
         num_ds_elems = len(self.dataset)
@@ -457,7 +462,7 @@ class StreamingEvaluator(Node):
             mask = torch.ones(num_objs, dtype=torch.bool)
             for j, obj in enumerate(objs.objects):
                 scores[j] = obj.existence_probability
-                labels[j] = inv_cls_mapping[obj.classification[0].label]
+                labels[j] = self.inv_cls_mapping[obj.classification[0].label]
                 try:
                     boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
                     boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
@@ -536,6 +541,11 @@ class InferenceServer(Node):
         self.num_samples = len(self.dataset)
         self.batch_dicts_arr = [None] * self.num_samples
 
+        oc = ObjectClassification()
+        cls_names = cfg.CLASS_NAMES
+        self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
+                for name in cls_names }
+
         tkn = model.token_to_scene[self.dataset.infos[0]['token']]
         self.scene_start_indices = [(tkn, 0)]
         for i in range(1, self.num_samples):
@@ -545,6 +555,8 @@ class InferenceServer(Node):
             tkn = new_tkn
         self.scene_start_indices.append(('', self.num_samples))
         print('[IS] Scene start indices:', self.scene_start_indices)
+
+        self.calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
 
         print('[IS] Calibrating...')
         torch.cuda.cudart().cudaProfilerStop()
@@ -557,6 +569,7 @@ class InferenceServer(Node):
         model.post_hook_handle.remove()
 
         self.model = model
+
 
     def load_scene(self, scene_token):
         for idx, (s_tkn, ind) in enumerate(self.scene_start_indices):
@@ -582,9 +595,8 @@ class InferenceServer(Node):
                 return
 
     def get_dyn_deadline_sec(self, sample_idx):
-        calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
-        if calib_dl != 0.:
-            return calib_dl / 1000.
+        if self.calib_dl != 0.:
+            return self.calib_dl / 1000.
 
         if not ANYTIME_CAPABLE:
             return 10.0 # ignore deadline
@@ -625,46 +637,60 @@ class InferenceServer(Node):
 
         init_time = time.time()
         print('[IS] Starting inference at', init_time)
-        last_i, i, last_scene_token = -1, -1, ''
+        i, last_scene_token = -1, ''
         #wakeup_time = init_time + self.period_sec
         self.model.last_elapsed_time_musec = 100000
+        processed_inds = set()
+
+        #if self.calib_dl > 0. and self.calib_dl < self.period_sec*1000:
+        #    DO_DYN_SCHED = False
+        #    ALWAYS_BLOCK_SCHED = True
+
         while rclpy.ok():
             if VALO_DEBUG:
                 i += 1
             else:
-                i = int((time.time() - init_time) / self.period_sec)
-                if i == last_i:
-                    print(f'[IS] Trying to process the sample {i} again, skipping to {i+1}.')
-                    i += 1
+                sched_time = time.time()
+                diff = sched_time - init_time
+                cur_tail = diff - math.floor(diff / self.period_sec) * self.period_sec
 
-            dyn_deadline_sec = self.get_dyn_deadline_sec(i)
-
-            sched_time = time.time()
-            cur_tail = sched_time - (init_time + i * self.period_sec)
-            if ALWAYS_BLOCK_SCHED:
-                time.sleep(self.period_sec - cur_tail + 0.001)
-                i = int((time.time() - init_time) / self.period_sec)
-            elif DO_DYN_SCHED:
-                # Dynamic scheduling
-                # Calculate current and next tail
-                if ANYTIME_CAPABLE:
-                    exec_time_sec = dyn_deadline_sec
-                else:
-                    exec_time_sec = model.last_elapsed_time_musec * 1e-6
-                if EVAL_TRACKER:
-                    exec_time_sec += shr_tracker_time_sec.value
-                pred_finish_time = sched_time + exec_time_sec
-                tmp = ((pred_finish_time - init_time) / self.period_sec)
-                next_tail = (tmp - math.floor(tmp)) * self.period_sec
-                if next_tail < cur_tail:
-                    # Extra 1 ms is added to make sure slept time is enough
+                if ALWAYS_BLOCK_SCHED and cur_tail > 0.001: # tolerate 1 ms error
                     time.sleep(self.period_sec - cur_tail + 0.001)
-                    i = int((time.time() - init_time) / self.period_sec)
-                    #dyn_deadline_sec = self.get_dyn_deadline_sec(i) # not a big deal
+                elif DO_DYN_SCHED:
+                    # Dynamic scheduling
+                    # Calculate current and next tail
+                    #if ANYTIME_CAPABLE:
+                    #    exec_time_sec = dyn_deadline_sec
+                    #else:
+                    exec_time_sec = model.last_elapsed_time_musec * 1e-6
+
+                    if EVAL_TRACKER:
+                        exec_time_sec += shr_tracker_time_sec.value
+                    pred_finish_time = sched_time + exec_time_sec
+                    diff = pred_finish_time - init_time
+                    next_tail = diff - math.floor(diff / self.period_sec) * self.period_sec
+                    if next_tail < cur_tail:
+                        # Extra 1 ms is added to make sure slept time is enough
+                        time.sleep(self.period_sec - cur_tail + 0.001)
+                cur_time = time.time()
+                i = int((cur_time- init_time) / self.period_sec)
+
+                if i in processed_inds:
+                    i_ = i
+                    while i in processed_inds:
+                        i += 1
+                    target_time = init_time + i * self.period_sec
+                    sleep_time = target_time - cur_time + 0.001
+                    print(f"[IS] Trying to process the sample {i_} again, skipping to"
+                            f" {i} by sleeping {sleep_time} seconds.")
+                    time.sleep(sleep_time)
+
+                processed_inds.add(i)
 
             if PROFILE and i > 200 or i >= self.num_samples:
                 break
-            last_i = i
+
+            dyn_deadline_sec = self.get_dyn_deadline_sec(i)
 
             sample_token = self.dataset.infos[i]['token']
             scene_token = self.model.token_to_scene[sample_token]
