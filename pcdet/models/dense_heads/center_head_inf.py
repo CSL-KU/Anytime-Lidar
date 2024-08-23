@@ -166,74 +166,94 @@ class CenterHeadInf(nn.Module):
         self.head_order = self.separate_head_cfg.HEAD_ORDER
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
+    def generate_predicted_boxes_single_head(self, cls_mapping : torch.Tensor, \
+            pred_dict: Dict[str,torch.Tensor], topk_output : List[torch.Tensor], \
+            forecasted_dets : Optional[Dict[str,torch.Tensor]]) \
+            -> Dict[str,torch.Tensor]:
+        batch_hm = pred_dict['hm'] #.sigmoid()
+        batch_center = pred_dict['center']
+        batch_center_z = pred_dict['center_z']
+        batch_dim = pred_dict['dim'].exp()
+        batch_rot_cos = pred_dict['rot'][:, 0].unsqueeze(dim=1)
+        batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
+        batch_vel = pred_dict['vel'] if 'vel' in self.head_order else None
+        batch_iou = (pred_dict['iou'] + 1) * 0.5 if 'iou' in pred_dict else None
+
+        final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
+            batch_hm, batch_rot_cos, batch_rot_sin,
+            batch_center, batch_center_z, batch_dim,
+            self.point_cloud_range, self.voxel_size,
+            self.feature_map_stride, self.max_obj_per_sample,
+            self.post_center_limit_range, topk_output,
+            batch_vel, batch_iou, self.score_thresh
+        )
+
+        #for k, final_dict in enumerate(final_pred_dicts): # for all batches
+        final_dict = final_pred_dicts[0]
+        final_dict['pred_labels'] = cls_mapping[final_dict['pred_labels'].long()]
+
+        if self.use_iou_to_rectify_score and 'pred_iou' in final_dict:
+            pred_iou = torch.clamp(final_dict['pred_iou'], min=0, max=1.0)
+            iou_rec = final_dict['pred_scores'].new_tensor(self.iou_rectifier)
+            final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - iou_rec[final_dict['pred_labels']]) * \
+                    torch.pow(pred_iou, iou_rec[final_dict['pred_labels']])
+
+        if self.nms_type not in ['circle_nms', 'multi_class_nms']:
+            if forecasted_dets is not None:
+                # get the forecasted_dets that match and cat them for NMS
+                for j in forecasted_dets.keys():
+                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j].cuda()), dim=0)
+
+            selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                final_dict['pred_scores'], final_dict['pred_boxes'], self.nms_type, self.nms_thresh[0],
+                self.nms_post_maxsize[0], self.nms_pre_maxsize[0])
+                #score_thresh=None
+        elif self.nms_type == 'multi_class_nms':
+            if forecasted_dets is not None:
+                # get the forecasted_dets that match and cat them for NMS
+                for j in forecasted_dets.keys():
+                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j].cuda()), dim=0)
+
+            selected, selected_scores = model_nms_utils.multi_classes_nms_mmdet(
+                final_dict['pred_scores'], final_dict['pred_boxes'], final_dict['pred_labels'],
+                self.nms_thresh, self.nms_post_maxsize, self.nms_pre_maxsize, None
+            )
+        else:
+            selected = torch.ones(final_dict['pred_boxes'].size(0), dtype=torch.long, device=final_dict['pred_boxes'].device)
+            selected_scores = final_dict['pred_scores']
+
+        final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
+        final_dict['pred_scores'] = selected_scores
+        final_dict['pred_labels'] = final_dict['pred_labels'][selected]
+
+        return final_dict
+
     def generate_predicted_boxes(self, batch_size: int, pred_dicts: List[Dict[str,torch.Tensor]],\
             topk_outputs : List[List[torch.Tensor]], forecasted_dets : Optional[List[Dict[str,torch.Tensor]]]) \
             -> List[Dict[str,torch.Tensor]]:
+
+        assert batch_size == 1
 
         ret_dict : List[Dict[str,List[torch.Tensor]]] = [{
             'pred_boxes': [],
             'pred_scores': [],
             'pred_labels': [],
         } for k in range(batch_size)]
-        for idx, pred_dict in enumerate(pred_dicts):
-            batch_hm = pred_dict['hm'] #.sigmoid()
-            batch_center = pred_dict['center']
-            batch_center_z = pred_dict['center_z']
-            batch_dim = pred_dict['dim'].exp()
-            batch_rot_cos = pred_dict['rot'][:, 0].unsqueeze(dim=1)
-            batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
-            batch_vel = pred_dict['vel'] if 'vel' in self.head_order else None
-            batch_iou = (pred_dict['iou'] + 1) * 0.5 if 'iou' in pred_dict else None
 
-            final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
-                batch_hm, batch_rot_cos, batch_rot_sin,
-                batch_center, batch_center_z, batch_dim,
-                self.point_cloud_range, self.voxel_size,
-                self.feature_map_stride, self.max_obj_per_sample,
-                self.post_center_limit_range, topk_outputs[idx],
-                batch_vel, batch_iou, self.score_thresh
-            )
+        futs : List[torch.jit.Future[Dict[str,torch.Tensor]]] = []
+        torch.cuda.synchronize()
+        for idx, pred_dict in enumerate(pred_dicts):  # num det heads
+            cls_mapping = self.class_id_mapping_each_head[idx]
+            final_dict_fut = torch.jit.fork(self.generate_predicted_boxes_single_head,
+                    cls_mapping, pred_dict, topk_outputs[idx],
+                    forecasted_dets[idx] if forecasted_dets is not None else None)
+            futs.append(final_dict_fut)
 
-            for k, final_dict in enumerate(final_pred_dicts):
-                final_dict['pred_labels'] = self.class_id_mapping_each_head[idx][final_dict['pred_labels'].long()]
-
-                if self.use_iou_to_rectify_score and 'pred_iou' in final_dict:
-                    pred_iou = torch.clamp(final_dict['pred_iou'], min=0, max=1.0)
-                    iou_rec = final_dict['pred_scores'].new_tensor(self.iou_rectifier)
-                    final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - iou_rec[final_dict['pred_labels']]) * \
-                            torch.pow(pred_iou, iou_rec[final_dict['pred_labels']])
-
-                if self.nms_type not in ['circle_nms', 'multi_class_nms']:
-                    if forecasted_dets is not None:
-                        # get the forecasted_dets that match and cat them for NMS
-                        for j in forecasted_dets[idx].keys():
-                            final_dict[j] = torch.cat((final_dict[j], forecasted_dets[idx][j].cuda()), dim=0)
-
-                    selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                        final_dict['pred_scores'], final_dict['pred_boxes'], self.nms_type, self.nms_thresh[0],
-                        self.nms_post_maxsize[0], self.nms_pre_maxsize[0])
-                        #score_thresh=None
-                elif self.nms_type == 'multi_class_nms':
-                    if forecasted_dets is not None:
-                        # get the forecasted_dets that match and cat them for NMS
-                        for j in forecasted_dets[idx].keys():
-                            final_dict[j] = torch.cat((final_dict[j], forecasted_dets[idx][j].cuda()), dim=0)
-
-                    selected, selected_scores = model_nms_utils.multi_classes_nms_mmdet(
-                        final_dict['pred_scores'], final_dict['pred_boxes'], final_dict['pred_labels'],
-                        self.nms_thresh, self.nms_post_maxsize, self.nms_pre_maxsize, None
-                    )
-                else:
-                    selected = torch.ones(final_dict['pred_boxes'].size(0), dtype=torch.long, device=final_dict['pred_boxes'].device)
-                    selected_scores = final_dict['pred_scores']
-
-                final_dict['pred_boxes'] = final_dict['pred_boxes'][selected]
-                final_dict['pred_scores'] = selected_scores
-                final_dict['pred_labels'] = final_dict['pred_labels'][selected]
-
-                ret_dict[k]['pred_boxes'].append(final_dict['pred_boxes'])
-                ret_dict[k]['pred_scores'].append(final_dict['pred_scores'])
-                ret_dict[k]['pred_labels'].append(final_dict['pred_labels'])
+        for final_dict_fut in futs:
+            final_dict = torch.jit.wait(final_dict_fut)
+            ret_dict[0]['pred_boxes'].append(final_dict['pred_boxes'])
+            ret_dict[0]['pred_scores'].append(final_dict['pred_scores'])
+            ret_dict[0]['pred_labels'].append(final_dict['pred_labels'])
 
         final_ret_dict : List[Dict[str,torch.Tensor]] = []
         for k in range(batch_size):
