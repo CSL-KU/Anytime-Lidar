@@ -126,6 +126,20 @@ def pred_dict_to_f32_multi_arr(pred_dict, stamp):
 
     return float_arr
 
+def f32_multi_arr_to_pred_dict(float_arr):
+    if len(float_arr.array.layout.dim) == 0: # empty det
+        boxes, scores, labels = torch.empty((0, 9)), torch.empty(0), \
+            torch.empty(0, dtype=torch.int)
+    else:
+        num_objs = float_arr.array.layout.dim[0].size;
+        all_data = torch.tensor(float_arr.array.data, dtype=torch.float).view(num_objs, -1)
+        boxes, scores, labels = all_data[:, :9], all_data[:, 9], all_data[:, 10].long()
+
+    return {
+        'pred_boxes': boxes,
+        'pred_scores': scores,
+        'pred_labels': labels
+    }
 
 def f32_multi_arr_to_detected_objs(float_arr, cls_mapping):
     SIGN_UNKNOWN=1
@@ -363,9 +377,9 @@ class StreamingEvaluator(Node):
 
         num_obj = msg.array.layout.dim[0].size
         if num_obj > 0:
-            detected_objs = f32_multi_arr_to_detected_objs(msg, self.cls_mapping)
-            self.all_detected_objects.append(detected_objs)
+            self.all_detected_objects.append(msg)
             if VISUALIZE:
+                detected_objs = f32_multi_arr_to_detected_objs(msg, self.cls_mapping)
                 self.det_debug_publisher.publish(detected_objs)
 
     def start_sampling(self, bar):
@@ -417,28 +431,30 @@ class StreamingEvaluator(Node):
             times_ns.append(sec * int(1e9) + tobjs.header.stamp.nanosec)
         times_ns = np.array(times_ns)
 
-        sampled_tracked_objects = []
+        obj_cls = type(all_objects[0])
+
+        sampled_objects = []
         num_ds_elems = len(self.dataset)
         period_ns = int(self.period_sec * 1e9)
         for i in range(num_ds_elems):
             sample_time_ns = init_ns + i*period_ns
             aft = times_ns > sample_time_ns
             if aft[0] == True:
-                sampled_tracked_objects.append(TrackedObjects())
-                print('0', end=' ')
+                sampled_objects.append(obj_cls())
+                #print('0', end=' ')
             elif aft[-1] == False:
-                sampled_tracked_objects.append(all_objects[-1])
-                print('-1', end=' ')
+                sampled_objects.append(all_objects[-1])
+                #print('-1', end=' ')
             else:
                 sample_idx = np.argmax(aft) - 1
-                sampled_tracked_objects.append(all_objects[sample_idx])
-                print(sample_idx, end=' ')
-            if i % 40 == 0:
-                print()
+                sampled_objects.append(all_objects[sample_idx])
+                #print(sample_idx, end=' ')
+            #if i % 40 == 0:
+                #print()
         print()
 
-        num_sampled = len(sampled_tracked_objects)
-        return sampled_tracked_objects, all_objects[-1].header.frame_id
+        num_sampled = len(sampled_objects)
+        return sampled_objects, all_objects[-1].header.frame_id
 
     def get_eval_samples(self,  all_objects):
         num_ds_elems = len(self.dataset)
@@ -456,39 +472,42 @@ class StreamingEvaluator(Node):
             for k, v in data_dict.items():
                 data_dict[k] = [v] # make it a batch dict
             objs = sampled_objects[i]
-            num_objs = len(objs.objects)
-            boxes, scores, labels = torch.empty((num_objs, 9)), torch.empty(num_objs), torch.empty(num_objs, dtype=torch.long)
 
-            mask = torch.ones(num_objs, dtype=torch.bool)
-            for j, obj in enumerate(objs.objects):
-                scores[j] = obj.existence_probability
-                labels[j] = self.inv_cls_mapping[obj.classification[0].label]
-                try:
-                    boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
-                    boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
-                    boxes[j,2] = obj.kinematics.pose_with_covariance.pose.position.z
-                    boxes[j,3] = obj.shape.dimensions.x
-                    boxes[j,4] = obj.shape.dimensions.y
-                    boxes[j,5] = obj.shape.dimensions.z
-                    quat = obj.kinematics.pose_with_covariance.pose.orientation
-                    boxes[j,6] = euler_from_quaternion((quat.x, quat.y, quat.z, quat.w))[2] # yaw
-                    linear_x = obj.kinematics.twist_with_covariance.twist.linear.x
-                    boxes[j,7] = linear_x * math.cos(boxes[j,6])
-                    boxes[j,8] = linear_x * math.sin(boxes[j,6])
+            if isinstance(objs, DetectedObjects) or isinstance(objs, TrackedObjects):
+                num_objs = len(objs.objects)
+                boxes, scores, labels = torch.empty((num_objs, 9)), torch.empty(num_objs), torch.empty(num_objs, dtype=torch.long)
 
-                    if torch.any(torch.isnan(boxes[j, :])):
+                mask = torch.ones(num_objs, dtype=torch.bool)
+                for j, obj in enumerate(objs.objects):
+                    scores[j] = obj.existence_probability
+                    labels[j] = self.inv_cls_mapping[obj.classification[0].label]
+                    try:
+                        boxes[j,0] = obj.kinematics.pose_with_covariance.pose.position.x
+                        boxes[j,1] = obj.kinematics.pose_with_covariance.pose.position.y
+                        boxes[j,2] = obj.kinematics.pose_with_covariance.pose.position.z
+                        boxes[j,3] = obj.shape.dimensions.x
+                        boxes[j,4] = obj.shape.dimensions.y
+                        boxes[j,5] = obj.shape.dimensions.z
+                        quat = obj.kinematics.pose_with_covariance.pose.orientation
+                        boxes[j,6] = euler_from_quaternion((quat.x, quat.y, quat.z, quat.w))[2] # yaw
+                        linear_x = obj.kinematics.twist_with_covariance.twist.linear.x
+                        boxes[j,7] = linear_x * math.cos(boxes[j,6])
+                        boxes[j,8] = linear_x * math.sin(boxes[j,6])
+
+                        if torch.any(torch.isnan(boxes[j, :])):
+                            mask[j] = False
+                            print(f'[SE] Warning, object [{i},{j}] has nan in it, ignoring')
+                    except RuntimeError:
+                        # probably floating point conversion error
+                        print(f'[SE] Warning, object [{i},{j}] has some problem, ignoring')
                         mask[j] = False
-                        print(f'[SE] Warning, object [{i},{j}] has nan in it, ignoring')
-                except RuntimeError:
-                    # probably floating point conversion error
-                    print(f'[SE] Warning, object [{i},{j}] has some problem, ignoring')
-                    mask[j] = False
-
-            data_dict['final_box_dicts'] = [{
-                        'pred_boxes': boxes[mask],
-                        'pred_scores': scores[mask],
-                        'pred_labels': labels[mask]
-            }]
+                data_dict['final_box_dicts'] = [{
+                            'pred_boxes': boxes[mask],
+                            'pred_scores': scores[mask],
+                            'pred_labels': labels[mask]
+                }]
+            else: # Float32 arr
+                data_dict['final_box_dicts'] =  [f32_multi_arr_to_pred_dict(objs)]
 
             det_annos += self.dataset.generate_prediction_dicts(
                 data_dict, data_dict['final_box_dicts'], self.dataset.class_names, output_path=None
