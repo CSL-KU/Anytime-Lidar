@@ -1,5 +1,6 @@
 import copy
 import pickle
+import torch
 from pathlib import Path
 
 import numpy as np
@@ -185,6 +186,37 @@ class NuScenesDataset(DatasetTemplate):
             })
 
         return self.prepare_data_pre(data_dict=input_dict)
+
+    def get_gt_as_pred_dict(self, index):
+        info = self.infos[index]
+        gt_dict = {}
+        if 'gt_boxes' in info:
+            if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
+                mask = (info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1)
+            else:
+                mask = None
+
+            gt_dict.update({
+                'pred_names': info['gt_names'] if mask is None else info['gt_names'][mask],
+                'pred_boxes': info['gt_boxes'] if mask is None else info['gt_boxes'][mask]
+            })
+
+            if self.dataset_cfg.get('SET_NAN_VELOCITY_TO_ZEROS', False):
+                gt_boxes = gt_dict['pred_boxes']
+                gt_boxes[np.isnan(gt_boxes)] = 0
+                gt_dict['pred_boxes'] = gt_boxes
+
+            if not self.dataset_cfg.PRED_VELOCITY:
+                gt_dict['pred_boxes'] = gt_dict['pred_boxes'][:, [0, 1, 2, 3, 4, 5, 6, -1]]
+
+            selected = common_utils.keep_arrays_by_name(gt_dict['pred_names'], self.class_names)
+            gt_dict['pred_boxes'] = torch.from_numpy(gt_dict['pred_boxes'][selected]).float()
+            gt_dict['pred_names'] = gt_dict['pred_names'][selected]
+            gt_dict['pred_labels'] = torch.tensor([self.class_names.index(n) + 1 \
+                    for n in gt_dict['pred_names']], dtype=torch.long)
+            gt_dict['pred_scores'] = torch.ones_like(gt_dict['pred_labels'], dtype=torch.float)
+
+        return gt_dict
 
 
     def getitem_post(self, data_dict):
