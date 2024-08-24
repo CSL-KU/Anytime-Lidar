@@ -162,7 +162,7 @@ class CenterHeadInf(nn.Module):
 
         self.score_thresh = post_process_cfg.SCORE_THRESH
         self.use_iou_to_rectify_score = post_process_cfg.get('USE_IOU_TO_RECTIFY_SCORE', False)
-        self.iou_rectifier = torch.tensor(post_process_cfg.IOU_RECTIFIER if self.use_iou_to_rectify_score else [0], dtype=torch.float)
+        self.iou_rectifier = torch.tensor(post_process_cfg.IOU_RECTIFIER if self.use_iou_to_rectify_score else [0], dtype=torch.float, device='cuda')
         self.head_order = self.separate_head_cfg.HEAD_ORDER
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
@@ -194,9 +194,9 @@ class CenterHeadInf(nn.Module):
 
         if self.use_iou_to_rectify_score and 'pred_iou' in final_dict:
             pred_iou = torch.clamp(final_dict['pred_iou'], min=0, max=1.0)
-            iou_rec = final_dict['pred_scores'].new_tensor(self.iou_rectifier)
-            final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - iou_rec[final_dict['pred_labels']]) * \
-                    torch.pow(pred_iou, iou_rec[final_dict['pred_labels']])
+            ps = final_dict['pred_scores']
+            final_dict['pred_scores'] = torch.pow(final_dict['pred_scores'], 1 - self.iou_rectifier[final_dict['pred_labels']]) * \
+                    torch.pow(pred_iou, self.iou_rectifier[final_dict['pred_labels']])
 
         if self.nms_type not in ['circle_nms', 'multi_class_nms']:
             if forecasted_dets is not None:
