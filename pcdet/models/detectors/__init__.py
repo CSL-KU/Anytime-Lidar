@@ -9,8 +9,7 @@ from .caddn import CaDDN
 from .voxel_rcnn import VoxelRCNN
 from .centerpoint import CenterPoint
 from .centerpoint_opt import CenterPointOpt
-from .centerpoint_anytime_v1 import CenterPointAnytimeV1
-from .centerpoint_anytime_v2 import CenterPointAnytimeV2
+from .centerpoint_valo import CenterPointVALO
 from .pv_rcnn_plusplus import PVRCNNPlusPlus
 from .mppnet import MPPNet
 from .mppnet_e2e import MPPNetE2E
@@ -34,8 +33,7 @@ __all__ = {
     'VoxelRCNN': VoxelRCNN,
     'CenterPoint': CenterPoint,
     'CenterPointOpt': CenterPointOpt,
-    'CenterPointAnytimeV1': CenterPointAnytimeV1,
-    'CenterPointAnytimeV2': CenterPointAnytimeV2,
+    'CenterPointVALO': CenterPointVALO,
     'PVRCNNPlusPlus': PVRCNNPlusPlus,
     'PillarNet': PillarNet,
     'MPPNet': MPPNet,

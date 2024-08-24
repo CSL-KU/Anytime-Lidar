@@ -3,10 +3,16 @@ from torch.onnx import register_custom_op_symbolic
 
 from ...ops.iou3d_nms.iou3d_nms_cuda import boxes_iou_bev_cpu
 from typing import Dict, Final, List, Tuple
+from os import listdir
 
 # Assume it is run at Anytime-Lidar/tools
-torch.ops.load_library("../pcdet/ops/forecasting" \
-        "/forecasting.cpython-310-aarch64-linux-gnu.so")
+
+shr_lib_dir="../pcdet/ops/forecasting/"
+for file_name in listdir(shr_lib_dir):
+    if file_name.endswith('.so'):
+        torch.ops.load_library(shr_lib_dir + file_name)
+        break
+
 def forecast_past_dets(g, pred_boxes, past_pose_indexes, past_poses, cur_pose, \
         past_timestamps, target_timestamp):
     return g.op("kucsl::forecast_past_dets", pred_boxes, past_pose_indexes, past_poses, cur_pose, \
@@ -20,9 +26,9 @@ class Forecaster(torch.nn.Module):
     score_thresh : Final[float]
     forecasting_coeff : Final[float]
     num_det_heads : Final[int]
-    cls_id_to_det_head_idx_map : Final[Tuple[int]]
     remove_considering_time : Final[bool]
 
+    cls_id_to_det_head_idx_map : torch.Tensor
     num_dets_per_tile : torch.Tensor
     past_poses : torch.Tensor
     past_ts : torch.Tensor
@@ -34,7 +40,7 @@ class Forecaster(torch.nn.Module):
             score_thresh : float,
             forecasting_coeff : float = 1.0,
             num_det_heads : int = 1,
-            cls_id_to_det_head_idx_map : Tuple[int] = (0,)):
+            cls_id_to_det_head_idx_map : torch.Tensor = torch.tensor([0])):
         super().__init__()
 
         self.pc_range = pc_range
@@ -73,8 +79,8 @@ class Forecaster(torch.nn.Module):
             last_pred_dict[k] = last_pred_dict[k][forc_mask]
 
         # Now, apply nms and remove duplicates
-        #NOTE seems like not working as expected
         if self.remove_considering_time:
+            #NOTE seems like not working as expected
             moved_past_pboxes = torch.ops.kucsl.move_to_world_coords(
                     self.past_detections['pred_boxes'],
                     self.past_poses,
@@ -123,18 +129,19 @@ class Forecaster(torch.nn.Module):
     # Needed for multihead detection heads
     def split_dets(self, pred_boxes : torch.Tensor, pred_scores : torch.Tensor,
             pred_labels: torch.Tensor, move_to_gpu : bool) -> List[Dict[str,torch.Tensor]]:
-        mapping = torch.tensor(self.cls_id_to_det_head_idx_map, dtype=torch.long)
-        det_head_mappings = mapping[pred_labels]
+        det_head_mappings = self.cls_id_to_det_head_idx_map[pred_labels]
 
-        forc_dicts = [dict() for h in range(self.num_det_heads)]
+        forc_dicts : List[Dict[str,torch.Tensor]] = []
         pred_merged = torch.cat((pred_boxes, pred_scores.unsqueeze(-1),
                 pred_labels.float().unsqueeze(-1)), -1)
         for i in range(self.num_det_heads):
             pred_masked = pred_merged[det_head_mappings == i]
             pred_masked = pred_masked.cuda() if move_to_gpu else pred_masked
-            forc_dicts[i]['pred_boxes'] = pred_masked[:, :-2]
-            forc_dicts[i]['pred_scores'] = pred_masked[:, -2]
-            forc_dicts[i]['pred_labels'] = pred_masked[:, -1].long()
+            forc_dicts.append({
+                    'pred_boxes': pred_masked[:, :-2],
+                    'pred_scores': pred_masked[:, -2],
+                    'pred_labels': pred_masked[:, -1].long()
+            })
 
         return forc_dicts
 

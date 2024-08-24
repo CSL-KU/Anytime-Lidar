@@ -1,16 +1,10 @@
 from .detector3d_template import Detector3DTemplate
 import torch
-import numpy as np
-import numba
 import time
 import onnx
-#import onnxruntime as ort
-import onnx_graphsurgeon as gs
 import os
-import struct
 import sys
 from typing import List
-#import torch_tensorrt
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 
 class OptimizedFwdPipeline2(torch.nn.Module):
@@ -154,7 +148,7 @@ class CenterPointOpt(Detector3DTemplate):
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
         if generated_onnx:
-            print('ONNX files created, please run again.')
+            print('ONNX files created, please run again after creating TensorRT engines.')
             sys.exit(0)
 
         self.optimization1_done = True

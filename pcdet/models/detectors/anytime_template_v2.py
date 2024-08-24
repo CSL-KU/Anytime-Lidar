@@ -75,6 +75,16 @@ def tile_calculations(points : torch.Tensor, points_coords: torch.Tensor,
     point_tile_coords, point_counts = torch.jit.wait(fut)
     return point_tile_coords, point_counts, netc, voxel_counts
 
+
+@torch.jit.script
+def tile_calculations_with_voxels(voxel_coords : torch.Tensor, tile_size_voxels: float):
+    voxel_tile_coords = torch.div(voxel_coords[:, -1], tile_size_voxels,
+            rounding_mode='trunc').long()
+    netc, voxel_counts = torch.unique(voxel_tile_coords,
+            sorted=True, return_counts=True)
+    return voxel_tile_coords, netc, voxel_counts
+
+
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
@@ -151,7 +161,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.dividers.append(float(self.tile_size_voxels / 8))
         self.dividers.insert(0, 1.) # this will be ignored
         print('dividers', self.dividers, 'ng', ng)
-        self.move_indscalc_to_init = True
+        #self.move_indscalc_to_init = True
         ##########################################
 
     def clear_add_dict(self):
@@ -190,23 +200,29 @@ class AnytimeTemplateV2(Detector3DTemplate):
             batch_dict['chosen_tile_coords'] = torch.unique(voxel_tile_coords, sorted=True)
             return batch_dict
 
-        if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
+        if self.latest_batch_dict is not None and \
                 'bb3d_intermediary_vinds' in self.latest_batch_dict:
             self.fut = do_inds_calc_wrapper(
                     self.latest_batch_dict['bb3d_intermediary_vinds'],
                     self.latest_batch_dict['vcount_area'],
                     self.tcount, torch.tensor(self.dividers))
 
-        points, points_coords = batch_dict['points'], batch_dict['points_coords']
-        point_tile_coords, pcounts, netc, netc_vcounts = tile_calculations(points,
-                points_coords, self.tile_size_voxels, self.vfe.scale_xy, self.vfe.scale_y, self.tcount)
+        if self.vfe_time_pred:
+            points, points_coords = batch_dict['points'], batch_dict['points_coords']
+            point_tile_coords, pcounts, netc, netc_vcounts = tile_calculations(points,
+                    points_coords, self.tile_size_voxels, self.vfe.scale_xy, self.vfe.scale_y, self.tcount)
+            pcount_area = pcounts.cpu().unsqueeze(0).numpy()
+        else:
+            point_tile_coords, netc, netc_vcounts = tile_calculations_with_voxels(
+                    batch_dict['voxel_coords'], self.tile_size_voxels)
+            pcount_area = None
 
         netc = netc.cpu().numpy()
-        pcount_area = pcounts.cpu().unsqueeze(0).numpy()
         netc_vcounts = netc_vcounts.cpu().unsqueeze(0).numpy()
         vcount_area = np.zeros((1,self.tcount), dtype=netc_vcounts.dtype)
         vcount_area[:, netc] = netc_vcounts
-
+        if not self.vfe_time_pred:
+            batch_dict['vcount_area'] = torch.from_numpy(vcount_area).int().cuda()
         batch_dict['nonempty_tile_coords'] = netc
 
         num_tiles, tiles_queue = round_robin_sched_helper(
@@ -214,7 +230,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         batch_dict['tiles_queue'] = tiles_queue
         self.add_dict['nonempty_tiles'].append(netc.tolist())
 
-        if self.move_indscalc_to_init and self.latest_batch_dict is not None and \
+        if self.latest_batch_dict is not None and \
                 'bb3d_intermediary_vinds' in self.latest_batch_dict:
             voxel_dists = torch.jit.wait(self.fut)
             self.calibrator.commit_bb3d_updates(self.latest_batch_dict['chosen_tile_coords'], \
@@ -277,7 +293,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
             # Filter the points, let the voxel be generated from filtered points
             tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
                     torch.from_numpy(chosen_tile_coords).cuda())
-            batch_dict['points'] = batch_dict['points'][tile_filter]
+            if self.vfe_time_pred:
+                batch_dict['points'] = batch_dict['points'][tile_filter]
+            else:
+                batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
+                batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
         self.last_tile_coord = chosen_tile_coords[-1].item()
 
         if self.vfe_time_pred:
@@ -291,12 +311,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.vfe_time_pred:
             self.add_dict['vfe_point_nums'].append([batch_dict['points'].size(0)])
 
-        batch_dict['record_int_vcoords'] = not self.sched_disabled and \
-                not self.use_baseline_bb3d_predictor and \
-                not self.move_indscalc_to_init
+        batch_dict['record_int_vcoords'] = False
         batch_dict['record_int_indices'] = not self.sched_disabled and \
-                not self.use_baseline_bb3d_predictor and \
-                self.move_indscalc_to_init
+                not self.use_baseline_bb3d_predictor
         batch_dict['record_time'] = True
         batch_dict['tile_size_voxels'] = self.tile_size_voxels
         batch_dict['num_tiles'] = self.tcount
@@ -308,7 +325,17 @@ class AnytimeTemplateV2(Detector3DTemplate):
             return batch_dict
 
         # bb3d time predictor commit
-        self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
+        if not self.use_baseline_bb3d_predictor:
+            if self.use_voxelnext:
+                out = batch_dict['encoded_spconv_tensor']
+                batch_dict['bb3d_intermediary_vinds'].append(out.indices)
+            #print('\nactual voxels:')
+            num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
+                    [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
+            #print(num_voxels_actual)
+            self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
+        else:
+            self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
 
         # Tile dropping
         if self.enable_tile_drop:
@@ -504,7 +531,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.calibrator.time_reg_intercepts
             coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
                     layer_times_actual)
-            calib_voxels, calib_times = self.calibrator.get_calib_data_arranged()
+            calib_voxels, calib_times, _, _ = self.calibrator.get_calib_data_arranged()
             fig, axes = plt.subplots(len(coeffs_calib)//2+1, 2, \
                     figsize=(6, (len(coeffs_calib)-1)*2), 
                     sharex=True,

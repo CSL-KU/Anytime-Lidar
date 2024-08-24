@@ -118,7 +118,7 @@ class AnytimeCalibrator():
                   self.vfe_time_reg_coeffs, self.vfe_time_reg_intercepts,
                   self.num_points_normalizer)
         else:
-            vfe_time_preds = np.zeros((tiles_queue.shape[0], 1), dtype=float)
+            vfe_time_preds = np.zeros(tiles_queue.shape[0], dtype=float)
 
         if self.use_baseline_bb3d_predictor:
             bb3d_time_preds, num_voxels = self.make_pred_baseline(vcount_area, tiles_queue,
@@ -173,14 +173,14 @@ class AnytimeCalibrator():
     def get_calib_data_arranged(self):
         all_voxels = self.calib_data_dict['bb3d_voxels']
         all_times = self.calib_data_dict['bb3d_time_ms']
-        all_points = self.calib_data_dict.get('vfe_points', None)
-        all_vfe_times = self.calib_data_dict.get('vfe_time_ms', None)
+        all_points = self.calib_data_dict.get('vfe_points', list())
+        all_vfe_times = self.calib_data_dict.get('vfe_time_ms', list())
 
         all_voxels=np.array(all_voxels, dtype=float)
         all_times=np.array(all_times, dtype=float)
-        if all_points is not None and all_vfe_times is not None:
-          all_points=np.array(all_points, dtype=float)
-          all_vfe_times=np.array(all_vfe_times, dtype=float)
+        if len(all_points)>0 and len(all_vfe_times)>0:
+            all_points=np.array(all_points, dtype=float)
+            all_vfe_times=np.array(all_vfe_times, dtype=float)
         return all_voxels, all_times, all_points, all_vfe_times
 
     def read_calib_data(self, fname='calib_data.json'):
@@ -191,25 +191,26 @@ class AnytimeCalibrator():
         # Fit the linear model for bb3
         all_voxels, all_times, all_points, all_vfe_times = self.get_calib_data_arranged()
 
-        #Remove noisy 1% of the data due to cudnn benchmark overhead
         def remove_noise(times, voxels):
             max_times = np.max(times, axis=1)
             perc99 = np.percentile(max_times, 99)
             mask = (times < perc99)
             return np.expand_dims(times[mask], -1), np.expand_dims(voxels[mask], -1)
 
-        all_times, all_voxels = remove_noise(all_times, all_voxels)
-        all_vfe_times, all_points = remove_noise(all_vfe_times, all_points)
+        #all_times, all_voxels = remove_noise(all_times, all_voxels) # corrupts data
+        if len(all_vfe_times) > 0:
+            all_vfe_times, all_points = remove_noise(all_vfe_times, all_points)
 
         # plot voxel to time graph
+        fig, axes = plt.subplots(2, 1, figsize=(6, 6), constrained_layout=True)
+        if len(all_vfe_times) > 0:
+            vfe_times  = np.sum(all_vfe_times, axis=-1, keepdims=True)
+            vfe_points = all_points[:, :1]
+            axes[0].scatter(vfe_points, vfe_times, label='data') #, label='data')
+            axes[0].set_xlabel('Number of input points', fontsize='x-large')
+            axes[0].set_ylabel('VFE execution time (msec)', fontsize='x-large')
         bb3d_times  = np.sum(all_times, axis=-1, keepdims=True)
         bb3d_voxels = all_voxels[:, :1]
-        vfe_times  = np.sum(all_vfe_times, axis=-1, keepdims=True)
-        vfe_points = all_points[:, :1]
-        fig, axes = plt.subplots(2, 1, figsize=(6, 6), constrained_layout=True)
-        axes[0].scatter(vfe_points, vfe_times, label='data') #, label='data')
-        axes[0].set_xlabel('Number of input points', fontsize='x-large')
-        axes[0].set_ylabel('VFE execution time (msec)', fontsize='x-large')
         axes[1].scatter(bb3d_voxels, bb3d_times, label='data') #, label='data')
         axes[1].set_xlabel('Number of input voxels', fontsize='x-large')
         axes[1].set_ylabel('3D backbone\nexecution time (msec)', fontsize='x-large')
@@ -278,7 +279,7 @@ class AnytimeCalibrator():
                 if self.bb2d_times_ms[i] == 0.:
                     self.bb2d_times_ms[i] = self.bb2d_times_ms[i+1]
 
-            print('bb2d_times_ms')
+            print('Fused dense convolutions times:')
             print(self.bb2d_times_ms)
 
         if 'exec_times' in self.calib_data_dict:

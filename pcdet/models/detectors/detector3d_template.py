@@ -18,7 +18,6 @@ from .. import backbones_2d, backbones_3d, dense_heads, roi_heads, load_data_to_
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
-from .forecaster import Forecaster
 
 from typing import Dict, Final
 
@@ -242,18 +241,13 @@ class Detector3DTemplate(nn.Module):
         if self.tcount is not None:
             self.tcount_cuda = torch.tensor(self.tcount).long().cuda()
 
-        # Now, the problem is, we don't have dense head
+        self.enable_forecasting = False
 
         dh_cfg = self.model_cfg.get('DENSE_HEAD', None)
         if dh_cfg is None:
             self.score_thresh = 0.1
         else:
             self.score_thresh = dh_cfg.POST_PROCESSING.SCORE_THRESH
-
-        #TODO add support for multihead
-        self.enable_forecasting = False
-        self.forecaster = torch.jit.script(Forecaster(tuple(self.dataset.point_cloud_range.tolist()), 
-                self.tcount, self.score_thresh, self.forecasting_coeff)) #, self.det_head.num_det_heads, self.det_head.cls_id_to_det_head_idx_map))
 
         #num_det_heads : int = 1,
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
