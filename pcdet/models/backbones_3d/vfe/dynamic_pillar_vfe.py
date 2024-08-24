@@ -206,14 +206,24 @@ class DynamicPillarVFESimple2D(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
-    def forward(self, batch_dict, **kwargs):
-        points = batch_dict['points']  # (batch_idx, x, y, z, i, e)
+    def range_filter(self, batch_dict, filter_z=True):
+        points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
 
-        points_coords = torch.floor(
-            (points[:, [1, 2]] - self.point_cloud_range[[0, 1]]) / self.voxel_size[[0, 1]]).int()
-        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0, 1]])).all(dim=1)
-        points = points[mask]
-        points_coords = points_coords[mask]
+        if filter_z:
+            points_z = points[:, 3]
+            mask = torch.logical_and(points_z > self.point_cloud_range[2], points_z < self.point_cloud_range[5])
+            points = points[mask]
+
+        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
+        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
+        batch_dict['points'] = points[mask]
+        batch_dict['points_coords'] = points_coords[mask]
+        return batch_dict
+
+    def forward_gen_pillars(self, points : torch.Tensor) \
+            -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+
+        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
         points_xyz = points[:, [1, 2, 3]].contiguous()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
@@ -243,9 +253,6 @@ class DynamicPillarVFESimple2D(VFETemplate):
             features.append(points_dist)
         features = torch.cat(features, dim=-1)
 
-        for pfn in self.pfn_layers:
-            features = pfn(features, unq_inv)
-
         # generate voxel coordinates
         unq_coords = unq_coords.int()
         pillar_coords = torch.stack((unq_coords // self.scale_xy,
@@ -254,6 +261,16 @@ class DynamicPillarVFESimple2D(VFETemplate):
                                      ), dim=1)
         pillar_coords = pillar_coords[:, [0, 2, 1]]
 
-        batch_dict['pillar_features'] = features
-        batch_dict['pillar_coords'] = pillar_coords
-        return batch_dict
+        return pillar_coords, features, unq_inv, torch.max(unq_inv) + 1
+
+    def forward_nn(self, features : torch.Tensor, unq_inv : torch.Tensor, num_out_inds : int) -> torch.Tensor:
+
+        for pfn in self.pfn_layers:
+            features = pfn(features, unq_inv, num_out_inds)
+
+        return features
+
+    def forward(self, points : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        pillar_coords, features, unq_inv, num_out_inds = self.forward_gen_pillars(points)
+        features = self.forward_nn(features, unq_inv, num_out_inds)
+        return pillar_coords, features

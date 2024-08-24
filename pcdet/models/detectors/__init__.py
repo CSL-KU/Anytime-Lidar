@@ -13,7 +13,7 @@ from .centerpoint_valo import CenterPointVALO
 from .pv_rcnn_plusplus import PVRCNNPlusPlus
 from .mppnet import MPPNet
 from .mppnet_e2e import MPPNetE2E
-from .pillarnet import PillarNet
+from .pillarnet_opt import PillarNetOpt
 from .voxelnext import VoxelNeXt
 from .voxelnext_anytime import VoxelNeXtAnytime
 from .transfusion import TransFusion
@@ -35,7 +35,7 @@ __all__ = {
     'CenterPointOpt': CenterPointOpt,
     'CenterPointVALO': CenterPointVALO,
     'PVRCNNPlusPlus': PVRCNNPlusPlus,
-    'PillarNet': PillarNet,
+    'PillarNetOpt': PillarNetOpt,
     'MPPNet': MPPNet,
     'MPPNetE2E': MPPNetE2E,
     'VoxelNeXt': VoxelNeXt,

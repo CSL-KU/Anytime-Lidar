@@ -257,7 +257,7 @@ class PillarRes18BackBone8x(nn.Module):
             'x_conv5': 256
         }
 
-    def forward(self, batch_dict):
+    def forward_up_to_dense(self, batch_dict):
         pillar_features, pillar_coords = batch_dict['pillar_features'], batch_dict['pillar_coords']
         batch_size = batch_dict['batch_size']
         input_sp_tensor = spconv.SparseConvTensor(
@@ -271,18 +271,25 @@ class PillarRes18BackBone8x(nn.Module):
         x_conv2 = self.conv2(x_conv1)
         x_conv3 = self.conv3(x_conv2)
         x_conv4 = self.conv4(x_conv3)
-        x_conv4 = x_conv4.dense()
-        x_conv5 = self.conv5(x_conv4)
+        return x_conv4.dense()
+
+    def forward_dense(self, x_conv4):
+        return self.conv5(x_conv4)
+
+    def forward(self, batch_dict):
+        x_conv4 = self.forward_sparse(batch_dict)
+        x_conv5 = self.forward_dense(x_conv4)
 
         # batch_dict.update({
         #     'encoded_spconv_tensor': out,
         #     'encoded_spconv_tensor_stride': 8
         # })
+
         batch_dict.update({
             'multi_scale_2d_features': {
-                'x_conv1': x_conv1,
-                'x_conv2': x_conv2,
-                'x_conv3': x_conv3,
+                #'x_conv1': x_conv1,
+                #'x_conv2': x_conv2,
+                #'x_conv3': x_conv3,
                 'x_conv4': x_conv4,
                 'x_conv5': x_conv5,
             }

@@ -157,6 +157,8 @@ MODEL:
 
     POST_PROCESSING:
         SCORE_THRESH: 0.1
+        USE_IOU_TO_RECTIFY_SCORE: True 
+        IOU_RECTIFIER: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
         POST_CENTER_LIMIT_RANGE: [-70.0, -70.0, -10.0, 70.0, 70.0, 10.0]
         MAX_OBJ_PER_SAMPLE: 500
         NMS_CONFIG:
