@@ -5,6 +5,7 @@ from torch.nn.init import kaiming_normal_
 from ..model_utils import model_nms_utils
 from ..model_utils import centernet_utils
 from ...utils import loss_utils
+from ...ops.cuda_slicer import cuda_slicer_utils
 from typing import Dict, List, Tuple, Optional, Final
 from functools import partial
 
@@ -12,7 +13,7 @@ class SeparateHead(nn.Module):
     vel_conv_available : Final[bool]
     iou_conv_available : Final[bool]
 
-    def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False, norm_func=None, enable_normalization=True):
+    def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False, norm_func=None, enable_normalization=True, optimize_attr_convs=False):
         super().__init__()
         self.sep_head_dict = sep_head_dict
         self.conv_names = tuple(sep_head_dict.keys())
@@ -23,12 +24,13 @@ class SeparateHead(nn.Module):
 
             fc_list = []
             for k in range(num_conv - 1):
-                inner_fc_list = [nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=1, bias=use_bias)]
+                p = 0 if optimize_attr_convs and cur_name != 'hm' else 1
+                inner_fc_list = [nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=p, bias=use_bias)]
                 if enable_normalization: #TODO I havent made an exception for hm, but its ok
                     inner_fc_list.append(nn.BatchNorm2d(input_channels) if norm_func is None else norm_func(input_channels))
                 inner_fc_list.append(nn.ReLU())
                 fc_list.append(nn.Sequential(*inner_fc_list))
-            fc_list.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=1, padding=1, bias=True))
+            fc_list.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=1, padding=p, bias=True))
             fc = nn.Sequential(*fc_list)
 
             if 'hm' in cur_name:
@@ -45,8 +47,8 @@ class SeparateHead(nn.Module):
         self.vel_conv_available = ('vel' in self.sep_head_dict)
         self.iou_conv_available = ('iou' in self.sep_head_dict)
 
-    def forward_hm(self, x) -> Dict[str, torch.Tensor]:
-        return {'hm': self.hm(x).sigmoid()}
+    def forward_hm(self, x) -> torch.Tensor:
+        return self.hm(x).sigmoid()
 
     def forward_attr(self, x) -> Dict[str, torch.Tensor]:
         ret_dict = {
@@ -63,7 +65,7 @@ class SeparateHead(nn.Module):
         return ret_dict
 
     def forward(self, x : torch.Tensor) -> Dict[str, torch.Tensor]:
-        ret_dict = self.forward_hm(x)
+        ret_dict = {'hm': self.forward_hm(x)}
         ret_dict.update(self.forward_attr(x))
         return ret_dict
 
@@ -80,6 +82,9 @@ class CenterHeadInf(nn.Module):
     use_iou_to_rectify_score : Final[bool]
     head_order : Final[List[str]]
     max_obj_per_sample : Final[int]
+    num_det_heads : Final[int]
+    tcount : Final[int]
+    optimize_attr_convs : Final[bool]
 
     class_id_mapping_each_head : List[torch.Tensor]
     det_dict_copy : Dict[str,torch.Tensor]
@@ -128,6 +133,8 @@ class CenterHeadInf(nn.Module):
             nn.ReLU(),
         )
 
+        self.optimize_attr_convs = self.model_cfg.get('OPTIMIZE_ATTR_CONVS', False)
+
         self.heads_list = nn.ModuleList()
         self.separate_head_cfg = self.model_cfg.SEPARATE_HEAD_CFG
         for idx, cur_class_names in enumerate(self.class_names_each_head):
@@ -140,7 +147,8 @@ class CenterHeadInf(nn.Module):
                     init_bias=-2.19,
                     use_bias=self.model_cfg.get('USE_BIAS_BEFORE_NORM', False),
                     norm_func=norm_func,
-                    enable_normalization=self.model_cfg.get('ENABLE_NORM_IN_ATTR_LAYERS', True)
+                    enable_normalization=self.model_cfg.get('ENABLE_NORM_IN_ATTR_LAYERS', True),
+                    optimize_attr_convs=self.optimize_attr_convs
                 )
             )
         self.det_dict_copy = {
@@ -166,27 +174,50 @@ class CenterHeadInf(nn.Module):
         self.head_order = self.separate_head_cfg.HEAD_ORDER
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
+        self.tcount = self.model_cfg.get('TILE_COUNT', 1)
+
     def generate_predicted_boxes_single_head(self, cls_mapping : torch.Tensor, \
             pred_dict: Dict[str,torch.Tensor], topk_output : List[torch.Tensor], \
             forecasted_dets : Optional[Dict[str,torch.Tensor]]) \
             -> Dict[str,torch.Tensor]:
-        batch_hm = pred_dict['hm'] #.sigmoid()
-        batch_center = pred_dict['center']
-        batch_center_z = pred_dict['center_z']
-        batch_dim = pred_dict['dim'].exp()
-        batch_rot_cos = pred_dict['rot'][:, 0].unsqueeze(dim=1)
-        batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
-        batch_vel = pred_dict['vel'] if 'vel' in self.head_order else None
-        batch_iou = (pred_dict['iou'] + 1) * 0.5 if 'iou' in pred_dict else None
 
-        final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
-            batch_hm, batch_rot_cos, batch_rot_sin,
-            batch_center, batch_center_z, batch_dim,
-            self.point_cloud_range, self.voxel_size,
-            self.feature_map_stride, self.max_obj_per_sample,
-            self.post_center_limit_range, topk_output,
-            batch_vel, batch_iou, self.score_thresh
-        )
+        batch_hm = pred_dict['hm'] #.sigmoid()
+        if self.optimize_attr_convs:
+            # Remove the HW dimentions by flattenning
+            center = pred_dict['center'].flatten(-3)
+            center_z = pred_dict['center_z'].flatten(-3)
+            dim = pred_dict['dim'].flatten(-3).exp()
+            rot = pred_dict['rot'].flatten(-3)
+            rot_cos = rot[:, :1] # (num_obj, 1)
+            rot_sin = rot[:, 1:2]
+            vel = pred_dict['vel'].flatten(-3) if 'vel' in self.head_order else None
+            iou = (pred_dict['iou'].flatten(-3) + 1) * 0.5 if 'iou' in pred_dict else None
+
+            final_pred_dicts = centernet_utils.decode_bbox_from_heatmap_sliced(
+                batch_hm, rot_cos, rot_sin,
+                center, center_z, dim,
+                self.point_cloud_range, self.voxel_size,
+                self.feature_map_stride, self.max_obj_per_sample,
+                self.post_center_limit_range, topk_output,
+                vel, iou, self.score_thresh
+            )
+        else:
+            batch_center = pred_dict['center']
+            batch_center_z = pred_dict['center_z']
+            batch_dim = pred_dict['dim'].exp()
+            batch_rot_cos = pred_dict['rot'][:, 0].unsqueeze(dim=1)
+            batch_rot_sin = pred_dict['rot'][:, 1].unsqueeze(dim=1)
+            batch_vel = pred_dict['vel'] if 'vel' in self.head_order else None
+            batch_iou = (pred_dict['iou'] + 1) * 0.5 if 'iou' in pred_dict else None
+
+            final_pred_dicts = centernet_utils.decode_bbox_from_heatmap(
+                batch_hm, batch_rot_cos, batch_rot_sin,
+                batch_center, batch_center_z, batch_dim,
+                self.point_cloud_range, self.voxel_size,
+                self.feature_map_stride, self.max_obj_per_sample,
+                self.post_center_limit_range, topk_output,
+                batch_vel, batch_iou, self.score_thresh
+            )
 
         #for k, final_dict in enumerate(final_pred_dicts): # for all batches
         final_dict = final_pred_dicts[0]
@@ -280,7 +311,7 @@ class CenterHeadInf(nn.Module):
         out_tensors_ordered = [pd[conv_name] for pd in pred_dicts for conv_name in conv_order]
         return out_tensors_ordered
 
-    def convert_out_to_batch_dict(self, out_tensors):
+    def convert_out_to_pred_dicts(self, out_tensors):
         head_order = self.ordered_outp_names()
         num_convs_per_head = len(out_tensors) // self.num_det_heads
         pred_dicts = []
@@ -289,16 +320,19 @@ class CenterHeadInf(nn.Module):
             pred_dicts.append({name : t for name, t in zip(head_order, ot)})
         return pred_dicts
 
-    def forward(self, spatial_features_2d : torch.Tensor, forecasted_dets : Optional[List[Dict[str,torch.Tensor]]]):
+    def forward(self, spatial_features_2d : torch.Tensor,
+            forecasted_dets : Optional[List[Dict[str,torch.Tensor]]]):
         assert not self.training
-        x = self.shared_conv(spatial_features_2d)
-        pred_dicts = self.forward_pre(x)
+        tensors = self.forward_pre(spatial_features_2d)
+        x = tensors[0]
+        pred_dicts = [{'hm':t} for t in tensors[1:]]
         pred_dicts = self.forward_post(x, pred_dicts)
         topk_outputs = self.forward_topk(pred_dicts)
         return self.forward_genbox(x.size(0), pred_dicts, topk_outputs, forecasted_dets)
 
-    def forward_pre(self, x) -> List[Dict[str,torch.Tensor]]:
-        return [head.forward_hm(x) for head in self.heads_list]
+    def forward_pre(self, spatial_features_2d) -> List[torch.Tensor]:
+        x = self.shared_conv(spatial_features_2d)
+        return [x] + [head.forward_hm(x) for head in self.heads_list]
 
     def forward_post(self, x : torch.Tensor, pred_dicts : List[Dict[str,torch.Tensor]]) -> List[Dict[str,torch.Tensor]]:
         for i, head in enumerate(self.heads_list):
@@ -306,8 +340,37 @@ class CenterHeadInf(nn.Module):
         return pred_dicts
 
     @torch.jit.export
+    def slice_shr_conv_outp(self, shr_conv_outp : torch.Tensor,
+            pred_dicts : List[Dict[str,torch.Tensor]],
+            topk_outputs : List[List[torch.Tensor]]):
+
+        slice_size = 5 # two convs, each ksize=3
+        shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
+        p = slice_size // 2
+        padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
+
+        y_inds = torch.cat([topk_outp[3] for topk_outp in topk_outputs]).short().flatten()
+        x_inds = torch.cat([topk_outp[4] for topk_outp in topk_outputs]).short().flatten()
+
+        mops = self.max_obj_per_sample
+        b_id = torch.zeros(self.num_det_heads * mops,
+                dtype=torch.short, device=shr_conv_outp.device) # since batch size is 1
+        indices = torch.stack((b_id, y_inds, x_inds), dim=1)
+        all_slices = cuda_slicer_utils.slice_and_batch_nhwc(padded_x, indices, slice_size)
+
+        return [all_slices[i*mops:(i+1)*mops] for i in range(self.num_det_heads)]
+
+    @torch.jit.export # later, use TensorRT
+    def forward_sliced_inp(self, slices_per_head : List[torch.Tensor],
+            pred_dicts : List[Dict[str,torch.Tensor]]):
+        for i, head in enumerate(self.heads_list):
+            pred_dicts[i].update(head.forward_attr(slices_per_head[i]))
+        return pred_dicts
+
+    @torch.jit.export
     def forward_topk(self, pred_dicts : List[Dict[str,torch.Tensor]]) -> List[List[torch.Tensor]]:
-        return [centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample) for pd in pred_dicts]
+        return [centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample,
+                using_slicing=self.optimize_attr_convs) for pd in pred_dicts]
 
     @torch.jit.export
     def forward_genbox(self, batch_size: int, pred_dicts: List[Dict[str,torch.Tensor]],\
@@ -320,3 +383,49 @@ class CenterHeadInf(nn.Module):
         for k,v in self.det_dict_copy.items():
             det_dict[k] = v.clone().detach()
         return det_dict
+
+@torch.jit.script
+def scatter_sliced_tensors(chosen_tile_coords : List[int],
+        sliced_tensors : List[torch.Tensor],
+        tcount : int) -> List[torch.Tensor]:
+    ctc = chosen_tile_coords
+    if len(ctc) == tcount:
+        return sliced_tensors # no need to scatter
+
+    #Based on chosen_tile_coords, we need to scatter the output
+    ctc_s, ctc_e = ctc[0], ctc[-1]
+
+    chunk_r, chunk_l = [0, 0], [0, 0]
+    if ctc_s <= ctc_e:
+        # contiguous
+        num_tiles = ctc_e - ctc_s + 1
+    else:
+        # Two chunks, find the point of switching
+        i = 0
+        while ctc[i] < ctc[i+1]:
+            i += 1
+        chunk_r[0], chunk_r[1] = ctc_s, ctc[i]
+        chunk_l[0], chunk_l[1] = ctc[i+1], ctc_e
+        num_tiles = (chunk_r[1] - chunk_r[0] + 1) + (chunk_l[1] - chunk_l[0] + 1)
+
+    scattered_tensors = []
+    for tensor in sliced_tensors:
+        tile_sz = tensor.size(-1) // num_tiles
+        full_sz = tile_sz * tcount
+        scat_tensor = torch.zeros((tensor.size(0), tensor.size(1), tensor.size(2), full_sz),
+                device=tensor.device, dtype=tensor.dtype)
+
+        if ctc_s <= ctc_e:
+            # contiguous
+            scat_tensor[..., (ctc_s * tile_sz):((ctc_e + 1) * tile_sz)] = tensor
+        else:
+            # Two chunks, find the point of switching
+            c_sz_l = (chunk_l[1] - chunk_l[0] + 1) * tile_sz
+            c_sz_r = (chunk_r[1] - chunk_r[0] + 1) * tile_sz
+            #Example: 7 8 2 3 4  -> . . 2 3 4 . . 7 8
+            scat_tensor[..., (chunk_r[0]*tile_sz):((chunk_r[1]+1)*tile_sz)] = \
+                    tensor[..., :c_sz_r]
+            scat_tensor[..., (chunk_l[0]*tile_sz):((chunk_l[1]+1)*tile_sz)] = \
+                    tensor[..., -c_sz_l:]
+        scattered_tensors.append(scat_tensor)
+    return scattered_tensors

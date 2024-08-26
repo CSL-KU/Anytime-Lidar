@@ -168,61 +168,61 @@ def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> 
 
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
     topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
-    topk_classes = topk_classes.int() if not using_slicing else topk_classes.float()
+    topk_classes = topk_classes.int() #if not using_slicing else topk_classes.float()
     if not using_slicing: # NOTE, this wont be None anymore
         topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
     return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
 
-
-def decode_bbox_from_heatmap_sliced(heatmap, rot_cos, rot_sin, center, center_z, dim,
-                             point_cloud_range=None, voxel_size=None, feature_map_stride=None, vel=None, K=100,
-                             circle_nms=False, score_thresh=None, post_center_limit_range=None, topk_outp=None, average_dims=None):
+def decode_bbox_from_heatmap_sliced(heatmap : torch.Tensor, rot_cos : torch.Tensor,
+                             rot_sin : torch.Tensor, center : torch.Tensor,
+                             center_z : torch.Tensor, dim : torch.Tensor,
+                             point_cloud_range: List[float], voxel_size : List[float],
+                             feature_map_stride : int, K : int,
+                             post_center_limit_range : torch.Tensor,
+                             topk_outp : List[torch.Tensor],
+                             vel : Optional[torch.Tensor],
+                             iou : Optional[torch.Tensor],
+                             score_thresh : Optional[float]) -> List[Dict[str,torch.Tensor]]:
     #global average_dims
-    batch_size, num_class, _, _ = heatmap.size()
+    batch_size, num_class = heatmap.size()[:2]
+    #assert batch_size == 1
 
-    assert topk_outp is not None
-
-    if circle_nms:
-        # TODO: not checked yet
-        assert False, 'not checked yet'
-        heatmap = _nms(heatmap)
-
-    ret_pred_dicts = []
-    #for k in range(batch_size):
-    scores, class_ids, ys, xs = topk_outp
-
-    angle = torch.atan2(rot_sin, rot_cos)
-    # Find the average dim during per class during calibration, rest can be set to 0 for now
-
-    #print(class_ids[0], center[0][0, 0], center[0][0, 1], center_z[0][0])
-    #print(dim[0][0], angle[0][0])
-    #print('*****')
-    xs = xs + center[:, 0]
-    ys = ys + center[:, 1]
-
+    scores, inds, class_ids, ys, xs = topk_outp
+    xs = xs.flatten() + center[:, 0]
+    ys = ys.flatten() + center[:, 1]
     xs = xs * feature_map_stride * voxel_size[0] + point_cloud_range[0]
     ys = ys * feature_map_stride * voxel_size[1] + point_cloud_range[1]
+    angle = torch.atan2(rot_sin, rot_cos)
 
     box_part_list = [xs.unsqueeze(dim=-1), ys.unsqueeze(dim=-1), center_z, dim, angle]
+
     if vel is not None:
         box_part_list.append(vel)
 
-    box_preds = torch.cat((box_part_list), dim=-1)
+    if iou is not None:
+        box_part_list.append(iou)
 
-    assert post_center_limit_range is not None
-    mask = (box_preds[..., :3] >= post_center_limit_range[:3]).all(1)
-    mask &= (box_preds[..., :3] <= post_center_limit_range[3:]).all(1)
+    final_box_preds = torch.cat((box_part_list), dim=-1)
 
-    #mask &= scores > score_thresh
+    mask = (final_box_preds[..., :3] >= post_center_limit_range[:3]).all(1)
+    mask &= (final_box_preds[..., :3] <= post_center_limit_range[3:]).all(1)
 
-    ret_pred_dicts.append({
-        'pred_boxes': box_preds[mask],
+    scores = scores.flatten()
+    if score_thresh is not None:
+        mask &= (scores > score_thresh)
+
+    ret_dicts = [{
+        'pred_boxes': final_box_preds[mask],
         'pred_scores': scores[mask],
-        'pred_labels': class_ids.int()[mask]
-    })
-    return ret_pred_dicts
+        'pred_labels': class_ids.flatten().int()[mask]
+    }]
+
+    if iou is not None:
+        ret_dicts[0]['pred_iou'] = iou[mask] #TODO not sure if this is right
+
+    return ret_dicts
 
 def decode_bbox_from_heatmap(heatmap : torch.Tensor, rot_cos : torch.Tensor,
                              rot_sin : torch.Tensor, center : torch.Tensor,

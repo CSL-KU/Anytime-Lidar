@@ -10,7 +10,7 @@ from ..model_utils.transfusion_utils import PositionEmbeddingLearned, Transforme
 from .target_assigner.hungarian_assigner import HungarianAssigner3D
 from ...utils import loss_utils
 from ..model_utils import centernet_utils
-from .center_head_group_sliced import scatter_sliced_tensors
+from .center_head_inf import scatter_sliced_tensors
 
 class SeparateHead_Transfusion(nn.Module):
     def __init__(self, input_channels, head_channels, kernel_size, sep_head_dict, init_bias=-2.19, use_bias=False):

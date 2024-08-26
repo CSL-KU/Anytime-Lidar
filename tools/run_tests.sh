@@ -29,8 +29,10 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     
     # Centerpoint-voxel0075 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_valo.yaml"
     #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
+
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_valo.yaml"
+    CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6647_opt.pth"
 
     # Centerpoint-voxel01 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_trt.yaml"
@@ -41,8 +43,8 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
  
     # PillarNet
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar0075_res2d_centerpoint_trt.yaml"
-    CKPT_FILE="../models/cbgs_pillar0075_res2d_centerpoint.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar0075_res2d_centerpoint_trt.yaml"
+    #CKPT_FILE="../models/cbgs_pillar0075_res2d_centerpoint.pth"
 
     # DSVT - CenterHead
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"
@@ -205,7 +207,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
-    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
+    chrt -r 90 $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
 elif [ $1 == 'singlemt' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.TILE_COUNT" $4
 elif [ $1 == 'singlems' ]; then

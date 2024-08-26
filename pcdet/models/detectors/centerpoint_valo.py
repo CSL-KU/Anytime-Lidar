@@ -1,5 +1,5 @@
 from .anytime_template_v2 import AnytimeTemplateV2
-from ..dense_heads.center_head_group_sliced import scatter_sliced_tensors
+from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from .forecaster import Forecaster
 import torch
@@ -17,7 +17,11 @@ class OptimizedFwdPipeline2(torch.nn.Module):
 
     def forward(self, spatial_features : torch.Tensor) -> List[torch.Tensor]:
         spatial_features_2d = self.backbone_2d(spatial_features)
-        return self.dense_head.forward_up_to_topk(spatial_features_2d)
+
+        if self.dense_head.optimize_attr_convs:
+            return self.dense_head.forward_pre(spatial_features_2d)
+        else:
+            return self.dense_head.forward_up_to_topk(spatial_features_2d)
 
 class CenterPointVALO(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -45,6 +49,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         self.update_time_dict( {
             'FusedOps2':[],
             'CenterHead-Topk': [],
+            'CenterHead-AttrConvs': [],
             'CenterHead-GenBox': [],
         })
 
@@ -131,9 +136,14 @@ class CenterPointVALO(AnytimeTemplateV2):
                 outputs = [outputs[nm] for nm in self.opt_fwd2_output_names]
             else:
                 outputs = self.opt_fwd2(sf)
-            outputs = scatter_sliced_tensors(batch_dict['chosen_tile_coords'], outputs,
-                    self.sched_algo, self.tcount)
-            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
+
+            ctc = batch_dict['chosen_tile_coords'].tolist()
+            outputs = scatter_sliced_tensors(ctc, outputs, self.tcount)
+            if self.dense_head.optimize_attr_convs:
+                shr_conv_outp = outputs[0]
+                pred_dicts = [{'hm':hm} for hm in outputs[1:]]
+            else:
+                pred_dicts = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('FusedOps2')
 
             if self.is_calibrating():
@@ -142,8 +152,18 @@ class CenterPointVALO(AnytimeTemplateV2):
                 batch_dict['bb2d_time_events'] = [e1, e2]
 
             self.measure_time_start('CenterHead-Topk')
-            topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])
+            topk_outputs = self.dense_head_scrpt.forward_topk(pred_dicts)
             self.measure_time_end('CenterHead-Topk')
+
+            if self.dense_head.optimize_attr_convs:
+                self.measure_time_start('CenterHead-AttrConvs')
+                sliced_inp = self.dense_head_scrpt.slice_shr_conv_outp(shr_conv_outp, pred_dicts,
+                        topk_outputs)
+                pred_dicts = self.dense_head_scrpt.forward_sliced_inp(sliced_inp, pred_dicts)
+                self.measure_time_end('CenterHead-AttrConvs')
+
+            batch_dict["pred_dicts"] = pred_dicts
+
             self.measure_time_start('CenterHead-GenBox')
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
             if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
@@ -170,16 +190,22 @@ class CenterPointVALO(AnytimeTemplateV2):
         input_names = ['spatial_features']
         print(input_names[0], fwd_data.size())
 
-        self.opt_fwd2_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
-                for name in self.dense_head.ordered_outp_names()]
+        if self.dense_head.optimize_attr_convs:
+            self.opt_fwd2_output_names = ['shr_conv_outp'] + ['hm' + str(i) \
+                    for i in range(self.dense_head.num_det_heads)]
+        else:
+            self.opt_fwd2_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                    for name in self.dense_head.ordered_outp_names()]
         print('Fused operations output names:', self.opt_fwd2_output_names)
-
 
         self.opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
         self.opt_fwd2.eval()
 
         generated_onnx=False
-        onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
+        opt_path = self.model_cfg.BACKBONE_2D.OPT_PATH
+        if self.dense_head.optimize_attr_convs:
+            opt_path += '_dhopt'
+        onnx_path = opt_path + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "spatial_features": {
@@ -201,7 +227,7 @@ class CenterPointVALO(AnytimeTemplateV2):
             generated_onnx=True
 
         sf = fwd_data 
-        trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
+        trt_path = opt_path + '.engine'
         try:
             self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd2_output_names)
         except:
@@ -217,7 +243,6 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         self.dense_head_scrpt = torch.jit.script(self.dense_head)
         self.optimization1_done = True
-
 
     def get_training_loss(self):
         disp_dict = {}

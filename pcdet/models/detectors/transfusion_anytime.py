@@ -2,7 +2,7 @@ from .anytime_template_v2 import AnytimeTemplateV2
 import torch
 from easydict import EasyDict as edict
 from ..model_utils import model_nms_utils
-from ...ops.cuda_projection import cuda_projection
+#from ...ops.cuda_projection import cuda_projection
 import numpy as np
 import numba
 

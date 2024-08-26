@@ -21,7 +21,6 @@ class OptimizedFwdPipeline2(torch.nn.Module):
 
     def forward(self, spatial_features : torch.Tensor) -> List[torch.Tensor]:
         spatial_features_2d = self.backbone_2d(spatial_features)
-        #hm, center, center_z, dim, rot, vel, iou = \
         return self.dense_head.forward_up_to_topk(spatial_features_2d)
 
 class DSVT_CenterHead_Opt(Detector3DTemplate):
@@ -73,6 +72,7 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
 
             if not self.optimization1_done:
                 self.optimize1(vinfo[:-1])
+                self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
             self.measure_time_start('Backbone3D-Fwd')
             inputs_dict = {'voxel_feat': vinfo[0],
@@ -105,12 +105,12 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
             batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
             self.measure_time_end('FusedOps2')
 
-            #TODO , use the optimized cuda code for the rest available in autoware
             self.measure_time_start('CenterHead-Topk')
-            batch_dict = self.dense_head.forward_topk(batch_dict)
+            topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])
             self.measure_time_end('CenterHead-Topk')
             self.measure_time_start('CenterHead-GenBox')
-            batch_dict = self.dense_head.forward_genbox(batch_dict)
+            batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(batch_dict['batch_size'], batch_dict["pred_dicts"],
+                    topk_outputs, None)
             self.measure_time_end('CenterHead-GenBox')
 
             if self.training:
@@ -222,7 +222,7 @@ class DSVT_CenterHead_Opt(Detector3DTemplate):
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
         self.optimization2_done = True
         if generated_onnx:
-            print('ONNX files created, please run again.')
+            print('ONNX files created, please run again after creating TensorRT engines.')
             sys.exit(0)
 
 

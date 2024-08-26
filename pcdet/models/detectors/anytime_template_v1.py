@@ -10,7 +10,7 @@ import gc
 import copy
 
 from ..model_utils import model_nms_utils
-from ...ops.cuda_projection import cuda_projection
+#from ...ops.cuda_projection import cuda_projection
 from ...ops.cuda_point_tile_mask import cuda_point_tile_mask
 from .. import load_data_to_gpu
 

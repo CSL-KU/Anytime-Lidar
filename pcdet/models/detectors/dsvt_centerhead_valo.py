@@ -1,5 +1,5 @@
 from .anytime_template_v2 import AnytimeTemplateV2
-from ..dense_heads.center_head_group_sliced import scatter_sliced_tensors
+from ..dense_heads.center_head_inf import scatter_sliced_tensors
 import torch
 import numpy as np
 import numba
@@ -77,7 +77,6 @@ class DSVT_CenterHead_VALO(AnytimeTemplateV2):
                 e1.record()
 
             self.measure_time_start('VFE')
-
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']

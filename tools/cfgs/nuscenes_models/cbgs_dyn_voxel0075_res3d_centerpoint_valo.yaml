@@ -55,7 +55,7 @@ DATA_CONFIG:
           VOXEL_SIZE: [0.075, 0.075, 0.2]
 
 MODEL:
-    NAME: CenterPointOpt
+    NAME: CenterPointVALO
 
     VFE:
         NAME: DynMeanVFE
@@ -68,18 +68,21 @@ MODEL:
         NUM_BEV_FEATURES: 256
 
     BACKBONE_2D:
-        NAME: BaseBEVBackbone
+        NAME: BaseBEVBackboneSliced
 
+        #TILE_COUNT: 18
+        #METHOD: 4
         LAYER_NUMS: [5, 5]
         LAYER_STRIDES: [1, 2]
         NUM_FILTERS: [128, 256]
         UPSAMPLE_STRIDES: [1, 2]
         NUM_UPSAMPLE_FILTERS: [256, 256]
-        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel0075_cp_dense_convs
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel0075_cp_valo_dense_convs
 
     DENSE_HEAD:
         NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
+        OPTIMIZE_ATTR_CONVS : True
 
         CLASS_NAMES_EACH_HEAD: [
             ['car'], 
@@ -89,10 +92,11 @@ MODEL:
             ['motorcycle', 'bicycle'],
             ['pedestrian', 'traffic_cone'],
         ]
-
+        
         SHARED_CONV_CHANNEL: 64
         USE_BIAS_BEFORE_NORM: True
         NUM_HM_CONV: 2
+        ENABLE_NORM_IN_ATTR_LAYERS: False
         SEPARATE_HEAD_CFG:
             HEAD_ORDER: ['center', 'center_z', 'dim', 'rot', 'vel']
             HEAD_DICT: {
@@ -105,7 +109,7 @@ MODEL:
 
         TARGET_ASSIGNER_CONFIG:
             FEATURE_MAP_STRIDE: 8
-            NUM_MAX_OBJS: 256
+            NUM_MAX_OBJS: 500
             GAUSSIAN_OVERLAP: 0.1
             MIN_RADIUS: 2
 
@@ -119,7 +123,7 @@ MODEL:
         POST_PROCESSING:
             SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 500
+            MAX_OBJ_PER_SAMPLE: 256
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2
@@ -133,7 +137,9 @@ MODEL:
 
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
-    METHOD: 0
+    TILE_COUNT: 18
+    METHOD: 4
+    PROJECTION_COEFF: 1.0
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4

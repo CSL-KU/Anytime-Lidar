@@ -89,7 +89,7 @@ class CenterPointOpt(Detector3DTemplate):
                 outputs = [outputs[nm] for nm in self.opt_fwd2_output_names]
             else:
                 outputs = self.opt_fwd2(sf)
-            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_batch_dict(outputs)
+            batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('FusedOps2')
 
             self.measure_time_start('CenterHead-Topk')

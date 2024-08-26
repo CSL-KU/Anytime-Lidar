@@ -8,11 +8,12 @@ import torch
 from ...utils import common_utils
 from . import iou3d_nms_cuda
 from typing import Optional
-from os import listdir
+import os
 
-for file_name in listdir("../pcdet/ops/iou3d_nms"):
+script_path = '/'.join(os.path.realpath(__file__).split('/')[:-1])
+for file_name in os.listdir(script_path):
     if file_name.endswith('.so'):
-        torch.ops.load_library("../pcdet/ops/iou3d_nms/" + file_name)
+        torch.ops.load_library(script_path + os.sep + file_name)
         break
 
 def boxes_bev_iou_cpu(boxes_a, boxes_b):
