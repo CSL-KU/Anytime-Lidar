@@ -3,25 +3,23 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-
-    #POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
-    # Increased the range for a fair comparison with 0.0075
     POINT_CLOUD_RANGE: [-53.6, -53.6, -5.0, 53.6, 53.6, 3.0]
+
     DATA_PROCESSOR:
-#        -   NAME: mask_points_and_boxes_outside_range
-#            REMOVE_OUTSIDE_BOXES: True
+        #- NAME: mask_points_and_boxes_outside_range
+        #  REMOVE_OUTSIDE_BOXES: True
 
-        -   NAME: shuffle_points
-            SHUFFLE_ENABLED: {
-                'train': True,
-                'test': False
-            }
+        - NAME: shuffle_points
+          SHUFFLE_ENABLED: {
+            'train': True,
+            'test': False
+          }
 
-        -   NAME: transform_points_to_voxels_placeholder
-            VOXEL_SIZE: [0.2, 0.2, 8.0]
+        - NAME: transform_points_to_voxels_placeholder
+          VOXEL_SIZE: [0.2, 0.2, 8.0]
 
 MODEL:
-    NAME: CenterPointOpt
+    NAME: CenterPointVALO
 
     VFE:
         NAME: DynPillarVFE
@@ -35,17 +33,19 @@ MODEL:
         NUM_BEV_FEATURES: 64
 
     BACKBONE_2D:
-        NAME: BaseBEVBackbone
+        NAME: BaseBEVBackboneSliced
         LAYER_NUMS: [3, 5, 5]
         LAYER_STRIDES: [2, 2, 2]
         NUM_FILTERS: [64, 128, 256]
         UPSAMPLE_STRIDES: [0.5, 1, 2]
         NUM_UPSAMPLE_FILTERS: [128, 128, 128]
-        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_pp_cp_dense_convs
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_pp_cp_valo_dense_convs
 
     DENSE_HEAD:
         NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
+        OPTIMIZE_ATTR_CONVS : True
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_pp_cp_valo_dhsliced_convs
 
         CLASS_NAMES_EACH_HEAD: [
             ['car'], 
@@ -55,10 +55,11 @@ MODEL:
             ['motorcycle', 'bicycle'],
             ['pedestrian', 'traffic_cone'],
         ]
-
+        
         SHARED_CONV_CHANNEL: 64
         USE_BIAS_BEFORE_NORM: True
         NUM_HM_CONV: 2
+        ENABLE_NORM_IN_ATTR_LAYERS: True
         SEPARATE_HEAD_CFG:
             HEAD_ORDER: ['center', 'center_z', 'dim', 'rot', 'vel']
             HEAD_DICT: {
@@ -68,7 +69,6 @@ MODEL:
                 'rot': {'out_channels': 2, 'num_conv': 2},
                 'vel': {'out_channels': 2, 'num_conv': 2},
             }
-
 
         TARGET_ASSIGNER_CONFIG:
             FEATURE_MAP_STRIDE: 4
@@ -98,9 +98,11 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-    DEADLINE_SEC: 10.0
+    DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
-    METHOD: 6
+    TILE_COUNT: 17
+    METHOD: 4
+    PROJECTION_COEFF: 1.0
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4
