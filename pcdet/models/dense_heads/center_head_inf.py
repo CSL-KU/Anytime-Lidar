@@ -47,6 +47,15 @@ class SeparateHead(nn.Module):
         self.vel_conv_available = ('vel' in self.sep_head_dict)
         self.iou_conv_available = ('iou' in self.sep_head_dict)
 
+    def pd_to_list(self, pd : Dict[str,torch.Tensor]) -> List[torch.Tensor]:
+        lst = []
+        # TODO, get this order from CenterHeadInf
+        for nm in ['hm', 'center', 'center_z', 'dim', 'rot', 'vel', 'iou']:
+            if nm in pd:
+                lst.append(pd[nm])
+
+        return lst
+
     def forward_hm(self, x) -> torch.Tensor:
         return self.hm(x).sigmoid()
 
@@ -63,6 +72,7 @@ class SeparateHead(nn.Module):
             ret_dict['iou'] = self.iou(x)
 
         return ret_dict
+
 
     def forward(self, x : torch.Tensor) -> Dict[str, torch.Tensor]:
         ret_dict = {'hm': self.forward_hm(x)}
@@ -360,12 +370,26 @@ class CenterHeadInf(nn.Module):
 
         return [all_slices[i*mops:(i+1)*mops] for i in range(self.num_det_heads)]
 
-    @torch.jit.export # later, use TensorRT
+    @torch.jit.export
     def forward_sliced_inp(self, slices_per_head : List[torch.Tensor],
-            pred_dicts : List[Dict[str,torch.Tensor]]):
+            pred_dicts : List[Dict[str,torch.Tensor]]) -> List[Dict[str,torch.Tensor]]:
         for i, head in enumerate(self.heads_list):
             pred_dicts[i].update(head.forward_attr(slices_per_head[i]))
         return pred_dicts
+
+    def forward_sliced_inp_trt(self, slices_per_head : List[torch.Tensor]) \
+            -> List[torch.Tensor]:
+        out_tensors = []
+        for i, head in enumerate(self.heads_list):
+            pd = head.forward_attr(slices_per_head[i])
+            out_tensors += head.pd_to_list(pd)
+        return out_tensors
+
+    def get_sliced_forward_outp_names(self):
+        names = list(self.separate_head_cfg.HEAD_ORDER)
+        if 'iou' in self.separate_head_cfg.HEAD_DICT:
+            names += ['iou']
+        return names
 
     @torch.jit.export
     def forward_topk(self, pred_dicts : List[Dict[str,torch.Tensor]]) -> List[List[torch.Tensor]]:

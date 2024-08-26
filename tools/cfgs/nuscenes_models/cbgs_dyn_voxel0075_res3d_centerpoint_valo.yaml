@@ -83,6 +83,7 @@ MODEL:
         NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
         OPTIMIZE_ATTR_CONVS : True
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel0075_cp_valo_dhsliced_convs
 
         CLASS_NAMES_EACH_HEAD: [
             ['car'], 
