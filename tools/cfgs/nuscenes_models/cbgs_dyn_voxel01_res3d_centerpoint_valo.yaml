@@ -3,43 +3,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-    POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
-
-    DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['placeholder']
-        AUG_CONFIG_LIST:
-            - NAME: gt_sampling
-              DB_INFO_PATH:
-                - nuscenes_dbinfos_10sweeps_withvelo.pkl
-              PREPARE: {
-                filter_by_min_points: [
-                    'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',
-                    'barrier:5', 'motorcycle:5', 'bicycle:5', 'pedestrian:5', 'traffic_cone:5'
-                ],
-              }
-
-              SAMPLE_GROUPS: [
-                'car:2','truck:3', 'construction_vehicle:7', 'bus:4', 'trailer:6',
-                'barrier:2', 'motorcycle:6', 'bicycle:6', 'pedestrian:2', 'traffic_cone:2'
-              ]
-
-              NUM_POINT_FEATURES: 5
-              DATABASE_WITH_FAKELIDAR: False
-              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: True
-
-            - NAME: random_world_flip
-              ALONG_AXIS_LIST: ['x', 'y']
-
-            - NAME: random_world_rotation
-              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
-
-            - NAME: random_world_scaling
-              WORLD_SCALE_RANGE: [0.9, 1.1]
-            
-            - NAME: random_world_translation
-              NOISE_TRANSLATE_STD: [0.5, 0.5, 0.5]
-
+    POINT_CLOUD_RANGE: [-54.4, -54.4, -5.0, 54.4, 54.4, 3.0]
 
     DATA_PROCESSOR:
         #- NAME: mask_points_and_boxes_outside_range
@@ -52,7 +16,7 @@ DATA_CONFIG:
           }
 
         - NAME: transform_points_to_voxels_placeholder
-          VOXEL_SIZE: [0.075, 0.075, 0.2]
+          VOXEL_SIZE: [0.1, 0.1, 0.2]
 
 MODEL:
     NAME: CenterPointVALO
@@ -77,13 +41,13 @@ MODEL:
         NUM_FILTERS: [128, 256]
         UPSAMPLE_STRIDES: [1, 2]
         NUM_UPSAMPLE_FILTERS: [256, 256]
-        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel0075_cp_valo_dense_convs
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel01_cp_valo_dense_convs
 
     DENSE_HEAD:
         NAME: CenterHeadInf
         CLASS_AGNOSTIC: False
         OPTIMIZE_ATTR_CONVS : True
-        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel0075_cp_valo_dhsliced_convs
+        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel01_cp_valo_dhsliced_convs
 
         CLASS_NAMES_EACH_HEAD: [
             ['car'], 
@@ -138,7 +102,7 @@ MODEL:
 
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
-    TILE_COUNT: 18
+    TILE_COUNT: 17
     METHOD: 4
     PROJECTION_COEFF: 1.0
 

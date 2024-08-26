@@ -17,17 +17,21 @@ class SeparateHead(nn.Module):
         super().__init__()
         self.sep_head_dict = sep_head_dict
         self.conv_names = tuple(sep_head_dict.keys())
+        self.refs_to_bns = []
 
         for cur_name in self.sep_head_dict:
             output_channels = self.sep_head_dict[cur_name]['out_channels']
             num_conv = self.sep_head_dict[cur_name]['num_conv']
 
             fc_list = []
+
             for k in range(num_conv - 1):
                 p = 0 if optimize_attr_convs and cur_name != 'hm' else 1
                 inner_fc_list = [nn.Conv2d(input_channels, input_channels, kernel_size=3, stride=1, padding=p, bias=use_bias)]
                 if enable_normalization: #TODO I havent made an exception for hm, but its ok
                     inner_fc_list.append(nn.BatchNorm2d(input_channels) if norm_func is None else norm_func(input_channels))
+                    if optimize_attr_convs and cur_name != 'hm':
+                        self.refs_to_bns.append(inner_fc_list[-1])
                 inner_fc_list.append(nn.ReLU())
                 fc_list.append(nn.Sequential(*inner_fc_list))
             fc_list.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=1, padding=p, bias=True))
@@ -46,6 +50,11 @@ class SeparateHead(nn.Module):
 
         self.vel_conv_available = ('vel' in self.sep_head_dict)
         self.iou_conv_available = ('iou' in self.sep_head_dict)
+
+    def instancenorm_mode(self):
+        for bn in self.refs_to_bns:
+            bn.momentum = 0.
+            bn.track_running_stats = False
 
     def pd_to_list(self, pd : Dict[str,torch.Tensor]) -> List[torch.Tensor]:
         lst = []
@@ -185,6 +194,11 @@ class CenterHeadInf(nn.Module):
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
         self.tcount = self.model_cfg.get('TILE_COUNT', 1)
+
+
+    def instancenorm_mode(self):
+        for dh in self.heads_list:
+            dh.instancenorm_mode()
 
     def generate_predicted_boxes_single_head(self, cls_mapping : torch.Tensor, \
             pred_dict: Dict[str,torch.Tensor], topk_output : List[torch.Tensor], \

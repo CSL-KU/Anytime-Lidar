@@ -208,7 +208,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         optimize_start = time.time()
 
         input_names = ['spatial_features']
-        #print(input_names[0], fwd_data.size())
+        print(input_names[0], fwd_data.size())
 
         if self.dense_head.optimize_attr_convs:
             self.opt_dense_convs_output_names = ['shr_conv_outp'] + ['hm' + str(i) \
@@ -270,6 +270,7 @@ class CenterPointVALO(AnytimeTemplateV2):
                     for i in range(self.dense_head.num_det_heads) for nm in outp_names]
         print('Sliced convs output names:', self.sliced_output_names)
 
+        self.dense_head.instancenorm_mode()
         self.opt_sliced_convs = SlicedConvsPipeline(self.dense_head)
         self.opt_sliced_convs.eval()
 
