@@ -3,7 +3,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
 
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
-    POINT_CLOUD_RANGE: [-53.6, -53.6, -5.0, 53.6, 53.6, 3.0]
+    POINT_CLOUD_RANGE: [-57.6, -57.6, -5.0, 57.6, 57.6, 3.0]
 
     DATA_PROCESSOR:
         #- NAME: mask_points_and_boxes_outside_range
@@ -100,7 +100,7 @@ MODEL:
 
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
-    TILE_COUNT: 17
+    TILE_COUNT: 18
     METHOD: 4
     PROJECTION_COEFF: 1.0
 

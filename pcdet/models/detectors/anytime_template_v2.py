@@ -40,50 +40,29 @@ def do_inds_calc_wrapper(vinds : List[torch.Tensor], \
     return fut
 
 @torch.jit.script
-def process_points(points_coords : torch.Tensor, tile_size_voxels : float, tcount : int):
-    point_tile_coords = torch.div(points_coords[:, 0], tile_size_voxels,
-            rounding_mode='trunc').long()
-    pcounts = torch.bincount(point_tile_coords, minlength=tcount).cpu()
-    return point_tile_coords, pcounts
-
-@torch.jit.script
-def get_nonempty_tiles(voxel_x_coords : torch.Tensor, tile_size_voxels : float):
-    # Calculate where each voxel resides in which tile
-    voxel_tile_coords = torch.div(voxel_x_coords, tile_size_voxels, \
-            rounding_mode='trunc').long()
-
-    nonempty_tile_coords, voxel_counts = torch.unique(voxel_tile_coords, \
-            sorted=True, return_counts=True)
-
-    return nonempty_tile_coords, voxel_counts
-
-@torch.jit.script
-def get_voxel_x_coords_from_points(points : torch.Tensor, points_coords : torch.Tensor,
+def get_voxel_x_coords_from_points(points_coords : torch.Tensor,
         scale_xy : int, scale_y : int) -> torch.Tensor:
-    merge_coords = points[:, 0].int() * scale_xy + \
-                   points_coords[:, 0] * scale_y + \
+    #merge_coords = points[:, 0].int() * scale_xy + \ ( assume back size is 1 )
+    merge_coords = points_coords[:, 0] * scale_y + \
                    points_coords[:, 1]
-    unq_coords= torch.unique(merge_coords, sorted=False, dim=0)
+    unq_coords = torch.unique(merge_coords, sorted=False, dim=0)
     return (unq_coords % scale_xy) // scale_y
 
 @torch.jit.script
-def tile_calculations(points : torch.Tensor, points_coords: torch.Tensor,
-        tile_size_voxels : float, scale_xy : int, scale_y : int, tcount : int):
-    fut = torch.jit.fork(process_points, points_coords, tile_size_voxels, tcount)
-    voxel_x_coords = get_voxel_x_coords_from_points(points, points_coords, scale_xy, scale_y)
-    netc, voxel_counts = get_nonempty_tiles(voxel_x_coords, tile_size_voxels)
-    point_tile_coords, point_counts = torch.jit.wait(fut)
-    return point_tile_coords, point_counts, netc, voxel_counts
-
+def tile_calculations(coords_x : torch.Tensor, tile_size_voxels: float, tcount : int):
+    tile_coords = torch.div(coords_x, tile_size_voxels, rounding_mode='trunc').long()
+    counts_area = torch.bincount(tile_coords, minlength=tcount).cpu()
+    netc = torch.arange(tcount, dtype=torch.long)[counts_area > 0] # shouldn't take noticable time
+    return tile_coords, netc, counts_area
 
 @torch.jit.script
-def tile_calculations_with_voxels(voxel_coords : torch.Tensor, tile_size_voxels: float):
-    voxel_tile_coords = torch.div(voxel_coords[:, -1], tile_size_voxels,
-            rounding_mode='trunc').long()
-    netc, voxel_counts = torch.unique(voxel_tile_coords,
-            sorted=True, return_counts=True)
-    return voxel_tile_coords, netc, voxel_counts
-
+def tile_calculations_all(points_coords : torch.Tensor, tile_size_voxels : float,
+            scale_xy : int, scale_y : int, tcount : int):
+    fut = torch.jit.fork(tile_calculations, points_coords[:, 0], tile_size_voxels, tcount)
+    voxel_x_coords = get_voxel_x_coords_from_points(points_coords, scale_xy, scale_y)
+    _, netc, vcount_area = tile_calculations(voxel_x_coords, tile_size_voxels, tcount)
+    point_tile_coords, _, pcount_area = torch.jit.wait(fut)
+    return point_tile_coords, netc, pcount_area, vcount_area
 
 class AnytimeTemplateV2(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -109,7 +88,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.sched_algo = SchedAlgo.RoundRobin
 
-        self.vfe_time_pred = ('DynPillarVFE' == self.model_cfg.VFE.NAME)
+        self.sched_vfe = ('DynPillarVFE' == self.model_cfg.VFE.NAME or \
+            'DynamicPillarVFESimple2D' == self.model_cfg.VFE.NAME)
+        self.sched_bb3d = ('BACKBONE_3D' in self.model_cfg)
 
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
@@ -117,13 +98,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if 'DENSE_HEAD' in self.model_cfg:
             self.model_cfg.DENSE_HEAD.TILE_COUNT = self.model_cfg.TILE_COUNT
             self.model_cfg.DENSE_HEAD.METHOD = self.sched_algo
-        torch.backends.cudnn.benchmark = True
-        if torch.backends.cudnn.benchmark:
-            torch.backends.cudnn.benchmark_limit = 0
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
-        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
 
@@ -133,34 +107,25 @@ class AnytimeTemplateV2(Detector3DTemplate):
         # divide the tiles in X axis only
         self.tile_size_voxels = torch.tensor(\
                 self.dataset.grid_size[1] / self.tcount).float().item()
-        self.backbone_3d.tile_size_voxels = self.tile_size_voxels
+        if self.sched_bb3d:
+            self.backbone_3d.tile_size_voxels = self.tile_size_voxels
 
         ####Projection###
 
         self.clear_add_dict()
-
-        self.init_tile_coord = 0
-        if self.sched_algo == SchedAlgo.RoundRobin or self.sched_algo == SchedAlgo.AdaptiveRR:
-            self.init_tile_coord = -1
-        elif self.sched_algo == SchedAlgo.MirrorRR:
-            m2 = self.tcount//2
-            m1 = m2 - 1
-            self.mtiles = np.array([m1, m2], dtype=int)
+        self.init_tile_coord = -1
         self.last_tile_coord = self.init_tile_coord
 
-        if self.sched_algo == SchedAlgo.AdaptiveRR:
-            self.processing_time_limit_sec = 0.650 # Every x ms, reset
-            self.sched_reset()
-
         ##########################################
-        ng = self.backbone_3d.num_layer_groups
-        ng += 1 if self.use_voxelnext else 0
+        if self.sched_bb3d:
+            ng = self.backbone_3d.num_layer_groups
+            ng += 1 if self.use_voxelnext else 0
 
-        self.dividers = self.backbone_3d.get_inds_dividers(self.tile_size_voxels)
-        if self.use_voxelnext:
-            self.dividers.append(float(self.tile_size_voxels / 8))
-        self.dividers.insert(0, 1.) # this will be ignored
-        print('dividers', self.dividers, 'ng', ng)
+            self.dividers = self.backbone_3d.get_inds_dividers(self.tile_size_voxels)
+            if self.use_voxelnext:
+                self.dividers.append(float(self.tile_size_voxels / 8))
+            self.dividers.insert(0, 1.) # this will be ignored
+            print('dividers', self.dividers, 'ng', ng)
         #self.move_indscalc_to_init = True
         ##########################################
 
@@ -207,26 +172,35 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.latest_batch_dict['vcount_area'],
                     self.tcount, torch.tensor(self.dividers))
 
-        if self.vfe_time_pred:
+        pcount_area, vcount_area = None, None
+        if self.sched_vfe and self.sched_bb3d:
             points, points_coords = batch_dict['points'], batch_dict['points_coords']
-            point_tile_coords, pcounts, netc, netc_vcounts = tile_calculations(points,
-                    points_coords, self.tile_size_voxels, self.vfe.scale_xy, self.vfe.scale_y, self.tcount)
-            pcount_area = pcounts.cpu().unsqueeze(0).numpy()
-        else:
-            point_tile_coords, netc, netc_vcounts = tile_calculations_with_voxels(
-                    batch_dict['voxel_coords'], self.tile_size_voxels)
-            pcount_area = None
+            point_tile_coords, netc, pcount_area, vcount_area = tile_calculations_all(
+                    points_coords, self.tile_size_voxels, self.vfe.scale_xy,
+                    self.vfe.scale_y, self.tcount)
+        elif self.sched_bb3d:
+            point_tile_coords, netc, vcount_area = tile_calculations(
+                    batch_dict['voxel_coords'][:, -1], self.tile_size_voxels, self.tcount)
+        elif self.sched_vfe:
+            point_tile_coords, netc, pcount_area = tile_calculations(
+                    batch_dict['points_coords'][:, 0], self.tile_size_voxels, self.tcount)
 
-        netc = netc.cpu().numpy()
-        netc_vcounts = netc_vcounts.cpu().unsqueeze(0).numpy()
-        vcount_area = np.zeros((1,self.tcount), dtype=netc_vcounts.dtype)
-        vcount_area[:, netc] = netc_vcounts
-        if not self.vfe_time_pred:
+        netc = np.sort(netc.numpy())
+        if pcount_area is not None:
+            pcount_area = pcount_area.unsqueeze(0).numpy()
+        if vcount_area is not None:
+            vcount_area = vcount_area.unsqueeze(0).numpy()
+
+        #print(pcount_area)
+        #print(vcount_area)
+
+        if not self.sched_vfe:
             batch_dict['vcount_area'] = torch.from_numpy(vcount_area).int().cuda()
         batch_dict['nonempty_tile_coords'] = netc
 
         num_tiles, tiles_queue = round_robin_sched_helper(
                     netc, self.last_tile_coord, self.tcount)
+        #print('netc', tiles_queue)
         batch_dict['tiles_queue'] = tiles_queue
         self.add_dict['nonempty_tiles'].append(netc.tolist())
 
@@ -237,14 +211,20 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 voxel_dists.numpy())
 
         vfe_times, bb3d_times_layerwise, post_bb3d_times, num_voxel_preds = \
-                self.calibrator.pred_req_times_ms(pcount_area ,vcount_area, \
+                self.calibrator.pred_req_times_ms(pcount_area, vcount_area, \
                 tiles_queue, num_tiles)
-        if not self.use_baseline_bb3d_predictor:
-            bb3d_times = np.sum(bb3d_times_layerwise, axis=-1)
-        else:
-            bb3d_times = bb3d_times_layerwise
-        batch_dict['post_bb3d_times'] = post_bb3d_times
-        tpreds = vfe_times + bb3d_times + post_bb3d_times
+        batch_dict['post_bb3d_times'] = copy.deepcopy(post_bb3d_times)
+        tpreds = post_bb3d_times
+        if bb3d_times_layerwise is not None:
+            if not self.use_baseline_bb3d_predictor:
+                bb3d_times = np.sum(bb3d_times_layerwise, axis=-1)
+            else:
+                bb3d_times = bb3d_times_layerwise
+            tpreds += bb3d_times
+        if vfe_times is not None:
+            tpreds += vfe_times
+
+
         psched_start_time = time.time()
         rem_time_ms = (batch_dict['abs_deadline_sec'] - psched_start_time) * 1000
 
@@ -260,17 +240,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #####
 
         # when reset, process all ignoring deadline
-        if (not self.is_calibrating() and diffs[-1]) or \
-                (self.is_calibrating() and len(netc) <= self.calibrator.get_chosen_tile_num()):
+        choose_all = (not self.is_calibrating() and diffs[-1]) or \
+                (self.is_calibrating() and len(netc) <= self.calibrator.get_chosen_tile_num())
+        if choose_all:
             # choose all
             chosen_tile_coords = netc
-            if self.sched_algo == SchedAlgo.MirrorRR:
-                self.last_tile_coord = self.init_tile_coord
             tiles_idx=0
-            predicted_vfe_time  = float(vfe_times[-1])
-            predicted_bb3d_time = float(bb3d_times[-1])
-            predicted_bb3d_time_layerwise = bb3d_times_layerwise[-1].tolist()
-            predicted_voxels = num_voxel_preds[-1].astype(int).flatten()
         else:
             if self.is_calibrating():
                 tiles_idx = self.calibrator.get_chosen_tile_num()
@@ -281,41 +256,49 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 while tiles_idx < diffs.shape[0] and diffs[tiles_idx]:
                     tiles_idx += 1
 
-            predicted_vfe_time  = float(vfe_times[tiles_idx-1])
-            predicted_bb3d_time = float(bb3d_times[tiles_idx-1])
-            predicted_bb3d_time_layerwise = bb3d_times_layerwise[tiles_idx-1].tolist()
-            predicted_voxels = num_voxel_preds[tiles_idx-1].astype(int).flatten()
-
             # Voxel filtering is needed
             chosen_tile_coords = tiles_queue[:tiles_idx]
-            self.last_tile_coord = chosen_tile_coords[-1].item()
 
             # Filter the points, let the voxel be generated from filtered points
             tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
                     torch.from_numpy(chosen_tile_coords).cuda())
-            if self.vfe_time_pred:
+            if self.sched_vfe:
                 batch_dict['points'] = batch_dict['points'][tile_filter]
-            else:
+            elif self.sched_bb3d:
                 batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
                 batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
+
         self.last_tile_coord = chosen_tile_coords[-1].item()
 
-        if self.vfe_time_pred:
+        tidx = -1 if choose_all else tiles_idx-1
+        if self.sched_vfe:
+            predicted_vfe_time  = float(vfe_times[tidx])
+
+        if self.sched_bb3d:
+            predicted_bb3d_time = float(bb3d_times[tidx])
+            predicted_bb3d_time_layerwise = bb3d_times_layerwise[tidx]
+            predicted_voxels = num_voxel_preds[tidx].astype(int).flatten()
+
+        #print('last_tile_coords', self.last_tile_coord)
+
+        if self.sched_vfe:
             self.add_dict['vfe_preds'].append(predicted_vfe_time)
-        self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
-        self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
-        self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
+        if self.sched_bb3d:
+            self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
+            self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
+            self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
         self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
 
-        if self.vfe_time_pred:
+        if self.sched_vfe:
             self.add_dict['vfe_point_nums'].append([batch_dict['points'].size(0)])
 
-        batch_dict['record_int_vcoords'] = False
-        batch_dict['record_int_indices'] = not self.sched_disabled and \
-                not self.use_baseline_bb3d_predictor
-        batch_dict['record_time'] = True
-        batch_dict['tile_size_voxels'] = self.tile_size_voxels
+        if self.sched_bb3d:
+            batch_dict['record_int_vcoords'] = False
+            batch_dict['record_int_indices'] = not self.sched_disabled and \
+                    not self.use_baseline_bb3d_predictor
+            batch_dict['record_time'] = True
+            batch_dict['tile_size_voxels'] = self.tile_size_voxels
         batch_dict['num_tiles'] = self.tcount
 
         return batch_dict
@@ -325,17 +308,18 @@ class AnytimeTemplateV2(Detector3DTemplate):
             return batch_dict
 
         # bb3d time predictor commit
-        if not self.use_baseline_bb3d_predictor:
-            if self.use_voxelnext:
-                out = batch_dict['encoded_spconv_tensor']
-                batch_dict['bb3d_intermediary_vinds'].append(out.indices)
-            #print('\nactual voxels:')
-            num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
-                    [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
-            #print(num_voxels_actual)
-            self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
-        else:
-            self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
+        if self.sched_bb3d:
+            if not self.use_baseline_bb3d_predictor:
+                if self.use_voxelnext:
+                    out = batch_dict['encoded_spconv_tensor']
+                    batch_dict['bb3d_intermediary_vinds'].append(out.indices)
+                #print('\nactual voxels:')
+                num_voxels_actual = np.array([batch_dict['voxel_coords'].size(0)] + \
+                        [inds.size(0) for inds in batch_dict['bb3d_intermediary_vinds']], dtype=int)
+                #print(num_voxels_actual)
+                self.add_dict['bb3d_voxel_nums'].append(num_voxels_actual.tolist())
+            else:
+                self.add_dict['bb3d_voxel_nums'].append([batch_dict['voxel_coords'].size(0)])
 
         # Tile dropping
         if self.enable_tile_drop:
@@ -399,7 +383,13 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.calibrator = AnytimeCalibrator(self)
 
         self.collect_calib_data = False
-        self.calib_fname = f"calib_data_m{self.model_cfg.METHOD}_c{self.tcount}.json"
+
+        self.calib_fname = f"calib_data_m{self.model_cfg.METHOD}_r{self.tcount}"
+        if self.sched_vfe:
+            self.calib_fname += '_sv'
+        if self.sched_bb3d:
+            self.calib_fname += '_sbb3d'
+        self.calib_fname += '.json'
         try:
             self.calibrator.read_calib_data(self.calib_fname)
         except OSError:
@@ -434,8 +424,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
             # We need to put bb3d time prediction data in the calibration file
             with open(self.calib_fname, 'r') as handle:
                 calib_dict = json.load(handle)
-                calib_dict['bb3d_preds'] = self.add_dict['bb3d_preds']
-                calib_dict['vfe_preds'] = self.add_dict['vfe_preds']
+                if self.sched_bb3d:
+                    calib_dict['bb3d_preds'] = self.add_dict['bb3d_preds']
+                if self.sched_vfe:
+                    calib_dict['vfe_preds'] = self.add_dict['vfe_preds']
                 calib_dict['exec_times'] = self.get_time_dict()
             with open(self.calib_fname, 'w') as handle:
                 json.dump(calib_dict, handle, indent=4)
@@ -456,122 +448,124 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         # plot 3d backbone time pred error
         time_dict = self.get_time_dict()
-        if 'Backbone3D-IL' in  time_dict:
-            Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
-                    np.array(time_dict['Backbone3D-Fwd'])
-        else:
-            Backbone3D_times = time_dict['Backbone3D']
+
+        if self.sched_bb3d:
+            if 'Backbone3D-IL' in  time_dict:
+                Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
+                        np.array(time_dict['Backbone3D-Fwd'])
+            else:
+                Backbone3D_times = time_dict['Backbone3D']
 
 
-        if len(Backbone3D_times) == len(self.add_dict['bb3d_preds']):
-            bb3d_pred_err = np.array(Backbone3D_times) - np.array(self.add_dict['bb3d_preds'])
-            if 'VoxelHead-conv-hm' in time_dict:
-                bb3d_pred_err += np.array(time_dict['VoxelHead-conv-hm'])
+            if len(Backbone3D_times) == len(self.add_dict['bb3d_preds']):
+                bb3d_pred_err = np.array(Backbone3D_times) - np.array(self.add_dict['bb3d_preds'])
+                if 'VoxelHead-conv-hm' in time_dict:
+                    bb3d_pred_err += np.array(time_dict['VoxelHead-conv-hm'])
 
-            # plot the data
-            min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_pred_err)
-            hist, bin_edges = np.histogram(bb3d_pred_err, bins=100, density=True)
-            cdf = np.cumsum(hist * np.diff(bin_edges))
-            plt.plot(bin_edges[1:], cdf, linestyle='-')
-            plt.grid(True)
-            plt.xlim([perc1_, perc99_])
-            plt.ylim([0, 1])
-            plt.xlabel('Actual - Predicted bb3d execution time (msec)')
-            plt.ylabel('CDF')
-            plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_time_pred_err_{timedata}.pdf')
-            plt.clf()
-
-        if not self.use_baseline_bb3d_predictor and not self.sched_disabled:
-            # plot 3d backbone time pred error layerwise
-            layer_times_actual = np.array(self.add_dict['bb3d_layer_times'])
-            layer_times_pred = np.array(self.add_dict['bb3d_preds_layerwise'])
-            layer_time_err = layer_times_actual - layer_times_pred
-            for i in range(layer_time_err.shape[1]):
-                #min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_vpred_err[:, i])
-                #perc1_min = min(perc1_min, perc1_)
-                #perc99_max = max(perc99_max, perc99_)
-                hist, bin_edges = np.histogram(layer_time_err[:, i], bins=100, density=True)
+                # plot the data
+                min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_pred_err)
+                hist, bin_edges = np.histogram(bb3d_pred_err, bins=100, density=True)
                 cdf = np.cumsum(hist * np.diff(bin_edges))
-                plt.plot(bin_edges[1:], cdf, linestyle='-', label=f"layer {i}")
+                plt.plot(bin_edges[1:], cdf, linestyle='-')
+                plt.grid(True)
+                plt.xlim([perc1_, perc99_])
+                plt.ylim([0, 1])
+                plt.xlabel('Actual - Predicted bb3d execution time (msec)')
+                plt.ylabel('CDF')
+                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_time_pred_err_{timedata}.pdf')
+                plt.clf()
 
-            #plt.xlim([perc1_min, perc99_max])
-            plt.grid(True)
-            plt.legend()
-            plt.xlabel('Actual - Predicted bb3d layer times')
-            plt.ylabel('CDF')
-            plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_layer_time_err_{timedata}.pdf')
-            plt.clf()
+            if self.sched_bb3d and not self.use_baseline_bb3d_predictor and not self.sched_disabled:
+                # plot 3d backbone time pred error layerwise
+                layer_times_actual = np.array(self.add_dict['bb3d_layer_times'])
+                layer_times_pred = np.array(self.add_dict['bb3d_preds_layerwise'])
+                layer_time_err = layer_times_actual - layer_times_pred
+                for i in range(layer_time_err.shape[1]):
+                    #min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_vpred_err[:, i])
+                    #perc1_min = min(perc1_min, perc1_)
+                    #perc99_max = max(perc99_max, perc99_)
+                    hist, bin_edges = np.histogram(layer_time_err[:, i], bins=100, density=True)
+                    cdf = np.cumsum(hist * np.diff(bin_edges))
+                    plt.plot(bin_edges[1:], cdf, linestyle='-', label=f"layer {i}")
+
+                #plt.xlim([perc1_min, perc99_max])
+                plt.grid(True)
+                plt.legend()
+                plt.xlabel('Actual - Predicted bb3d layer times')
+                plt.ylabel('CDF')
+                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_layer_time_err_{timedata}.pdf')
+                plt.clf()
 
 
-            # plot 3d backbone voxel pred error layerwise
-            vactual = np.array(self.add_dict['bb3d_voxel_nums'])
-            vpreds = np.array(self.add_dict['bb3d_voxel_preds'])
-            bb3d_vpred_err = vactual - vpreds
+                # plot 3d backbone voxel pred error layerwise
+                vactual = np.array(self.add_dict['bb3d_voxel_nums'])
+                vpreds = np.array(self.add_dict['bb3d_voxel_preds'])
+                bb3d_vpred_err = vactual - vpreds
 
-            perc1_min, perc99_max = 50000, -50000
-            for i in range(bb3d_vpred_err.shape[1]):
-                min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_vpred_err[:, i])
-                perc1_min = min(perc1_min, perc1_)
-                perc99_max = max(perc99_max, perc99_)
-                hist, bin_edges = np.histogram(bb3d_vpred_err[:, i], bins=100, density=True)
-                cdf = np.cumsum(hist * np.diff(bin_edges))
-                plt.plot(bin_edges[1:], cdf, linestyle='-', label=f"layer {i}")
+                perc1_min, perc99_max = 50000, -50000
+                for i in range(bb3d_vpred_err.shape[1]):
+                    min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(bb3d_vpred_err[:, i])
+                    perc1_min = min(perc1_min, perc1_)
+                    perc99_max = max(perc99_max, perc99_)
+                    hist, bin_edges = np.histogram(bb3d_vpred_err[:, i], bins=100, density=True)
+                    cdf = np.cumsum(hist * np.diff(bin_edges))
+                    plt.plot(bin_edges[1:], cdf, linestyle='-', label=f"layer {i}")
 
-            #plt.xlim([perc1_min, perc99_max])
-            plt.grid(True)
-            plt.legend()
-            plt.xlabel('Actual - Predicted bb3d num voxels')
-            plt.ylabel('CDF')
-            plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_num_voxel_pred_err_{timedata}.pdf')
-            plt.clf()
-            print('Num voxel to exec time plot saved.')
+                #plt.xlim([perc1_min, perc99_max])
+                plt.grid(True)
+                plt.legend()
+                plt.xlabel('Actual - Predicted bb3d num voxels')
+                plt.ylabel('CDF')
+                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_num_voxel_pred_err_{timedata}.pdf')
+                plt.clf()
+                print('Num voxel to exec time plot saved.')
 
-            # plot 3d backbone fitted equations
-            coeffs_calib, intercepts_calib = self.calibrator.time_reg_coeffs, \
-                    self.calibrator.time_reg_intercepts
-            coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
-                    layer_times_actual)
-            calib_voxels, calib_times, _, _ = self.calibrator.get_calib_data_arranged()
-            fig, axes = plt.subplots(len(coeffs_calib)//2+1, 2, \
-                    figsize=(6, (len(coeffs_calib)-1)*2), 
-                    sharex=True,
-                    constrained_layout=True)
-            axes = np.ravel(axes)
-            for i in range(len(coeffs_calib)):
-                #vlayer = vactual[:, i]
-                vlayer = calib_voxels[:, i]
-                xlims = [min(vlayer), max(vlayer)]
-                x = np.arange(xlims[0], xlims[1], (xlims[1]-xlims[0])//100)
+                # plot 3d backbone fitted equations
+                coeffs_calib, intercepts_calib = self.calibrator.time_reg_coeffs, \
+                        self.calibrator.time_reg_intercepts
+                coeffs_new, intercepts_new = self.calibrator.fit_voxel_time_data(vactual, \
+                        layer_times_actual)
+                calib_voxels, calib_times, _, _ = self.calibrator.get_calib_data_arranged()
+                fig, axes = plt.subplots(len(coeffs_calib)//2+1, 2, \
+                        figsize=(6, (len(coeffs_calib)-1)*2),
+                        sharex=True,
+                        constrained_layout=True)
+                axes = np.ravel(axes)
+                for i in range(len(coeffs_calib)):
+                    #vlayer = vactual[:, i]
+                    vlayer = calib_voxels[:, i]
+                    xlims = [min(vlayer), max(vlayer)]
+                    x = np.arange(xlims[0], xlims[1], (xlims[1]-xlims[0])//100)
 
-                num_voxels_ = np.expand_dims(x, -1) / self.calibrator.num_voxels_normalizer
-                num_voxels_ = np.concatenate((num_voxels_, np.square(num_voxels_)), axis=-1)
-                bb3d_time_calib = np.sum(num_voxels_ * coeffs_calib[i], axis=-1) + \
-                        intercepts_calib[i]
-                bb3d_time_new  = np.sum(num_voxels_ * coeffs_new[i], axis=-1) + \
-                        intercepts_new[i]
+                    num_voxels_ = np.expand_dims(x, -1) / self.calibrator.num_voxels_normalizer
+                    num_voxels_ = np.concatenate((num_voxels_, np.square(num_voxels_)), axis=-1)
+                    bb3d_time_calib = np.sum(num_voxels_ * coeffs_calib[i], axis=-1) + \
+                            intercepts_calib[i]
+                    bb3d_time_new  = np.sum(num_voxels_ * coeffs_new[i], axis=-1) + \
+                            intercepts_new[i]
 
-                layer_times_ = calib_times[:, i]
-                layer_voxels_ = calib_voxels[:, i]
-                sort_indexes = np.argsort(layer_times_)
-                layer_times_ = layer_times_[sort_indexes] #[0::5]
-                layer_voxels_ = layer_voxels_[sort_indexes] #[0::5]
-                #ax.scatter(layer_voxels_, layer_times_, label="calib")
-                #ax.scatter(vlayer,layer_times_actual[:, i] , label="new")
-                #ax.plot(x, bb3d_time_calib, label="calib")
-                #ax.plot(x, bb3d_time_new, label="new")
+                    layer_times_ = calib_times[:, i]
+                    layer_voxels_ = calib_voxels[:, i]
+                    sort_indexes = np.argsort(layer_times_)
+                    layer_times_ = layer_times_[sort_indexes] #[0::5]
+                    layer_voxels_ = layer_voxels_[sort_indexes] #[0::5]
+                    #ax.scatter(layer_voxels_, layer_times_, label="calib")
+                    #ax.scatter(vlayer,layer_times_actual[:, i] , label="new")
+                    #ax.plot(x, bb3d_time_calib, label="calib")
+                    #ax.plot(x, bb3d_time_new, label="new")
 
-                #ax.grid('True', ls='--')
-                ax = axes[i]
-                ax.scatter(layer_voxels_, layer_times_, label=f"Data")
-                ax.plot(x, bb3d_time_calib, label="Model", color='orange')
-                ax.set_ylim([0, max(layer_times_)*1.1])
-                ax.set_title(f"Block {i+1}", fontsize='medium', loc='left')
-                ax.legend(fontsize='medium')
+                    #ax.grid('True', ls='--')
+                    ax = axes[i]
+                    ax.scatter(layer_voxels_, layer_times_, label=f"Data")
+                    ax.plot(x, bb3d_time_calib, label="Model", color='orange')
+                    ax.set_ylim([0, max(layer_times_)*1.1])
+                    ax.set_title(f"Block {i+1}", fontsize='medium', loc='left')
+                    ax.legend(fontsize='medium')
+                    #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
+                fig.supxlabel('Number of input voxels', fontsize='x-large')
+                fig.supylabel('Block execution time (msec)', fontsize='x-large')
                 #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
-            fig.supxlabel('Number of input voxels', fontsize='x-large')
-            fig.supylabel('Block execution time (msec)', fontsize='x-large')
-            #ax.set_ylabel(f'Layer block {i}\nexecution\ntime (msec)', fontsize='x-large')
-            #plt.subplots_adjust(wspace=0, hspace=0)
+                #plt.subplots_adjust(wspace=0, hspace=0)
 
-            plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data_all_{timedata}.pdf')
-            #ax.set_xlim([0, 70000])
+                plt.savefig(f'{root_path}/m{self.model_cfg.METHOD}_bb3d_fitted_data_all_{timedata}.pdf')
+                #ax.set_xlim([0, 70000])

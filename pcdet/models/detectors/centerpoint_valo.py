@@ -51,8 +51,7 @@ class CenterPointVALO(AnytimeTemplateV2):
             'MapToBEV' : [],
             'Sched2' : [],
         })
-        self.use_pillars = (self.model_cfg.get('BACKBONE_3D', None) is None)
-        if not self.use_pillars:
+        if self.sched_bb3d:
             self.update_time_dict({'Backbone3D': []})
         self.update_time_dict( {
             'FusedOps2':[],
@@ -61,13 +60,12 @@ class CenterPointVALO(AnytimeTemplateV2):
             'CenterHead-GenBox': [],
         })
 
-        if self.use_pillars:
-            self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
-            self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
-        else:
+        if self.sched_bb3d:
             self.vfe, self.backbone_3d, self.map_to_bev, self.backbone_2d, \
                     self.dense_head = self.module_list
-            self.map_to_bev_scrpt = self.map_to_bev # no need to script
+        else:
+            self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
+            self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
@@ -83,28 +81,43 @@ class CenterPointVALO(AnytimeTemplateV2):
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             # VFE doesn't take much of a time (5 ms), do not schedule its input
-            self.measure_time_start('VFE')
             batch_dict = self.vfe.range_filter(batch_dict)
-            points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
-            batch_dict['pillar_features'] = batch_dict['voxel_features']
-            self.measure_time_end('VFE')
-
-            self.measure_time_start('Sched1')
-            batch_dict = self.schedule1(batch_dict)
-            self.measure_time_end('Sched1')
-
-            if not self.use_pillars:
-                self.measure_time_start('Backbone3D')
-                batch_dict = self.backbone_3d(batch_dict)
-                self.measure_time_end('Backbone3D')
+            if self.sched_vfe:
+                self.measure_time_start('Sched1')
+                batch_dict = self.schedule1(batch_dict)
+                self.measure_time_end('Sched1')
 
             if self.is_calibrating():
                 e1 = torch.cuda.Event(enable_timing=True)
                 e1.record()
 
+            self.measure_time_start('VFE')
+            points = batch_dict['points']
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            batch_dict['pillar_features'] = batch_dict['voxel_features']
+            self.measure_time_end('VFE')
+
+            if self.is_calibrating():
+                e2 = torch.cuda.Event(enable_timing=True)
+                e2.record()
+                batch_dict['vfe_layer_time_events'] = [e1, e2]
+
+            if not self.sched_vfe:
+                self.measure_time_start('Sched1')
+                batch_dict = self.schedule1(batch_dict)
+                self.measure_time_end('Sched1')
+
+            if self.sched_bb3d:
+                self.measure_time_start('Backbone3D')
+                batch_dict = self.backbone_3d(batch_dict)
+                self.measure_time_end('Backbone3D')
+
+            if self.is_calibrating():
+                e3 = torch.cuda.Event(enable_timing=True)
+                e3.record()
+
             self.measure_time_start('MapToBEV')
-            if not self.use_pillars:
+            if self.sched_bb3d:
                 batch_dict = self.map_to_bev(batch_dict)
             else:
                 batch_dict['spatial_features'] = self.map_to_bev_scrpt(
@@ -132,11 +145,11 @@ class CenterPointVALO(AnytimeTemplateV2):
             else:
                 fcdets_fut = None
 
-            batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
-            self.measure_time_end('Sched2')
-
             if not self.optimization1_done:
                 self.optimize1(batch_dict['spatial_features'])
+
+            batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
+            self.measure_time_end('Sched2')
 
             self.measure_time_start('FusedOps2')
             sf = batch_dict['spatial_features']
@@ -180,9 +193,9 @@ class CenterPointVALO(AnytimeTemplateV2):
             batch_dict["pred_dicts"] = pred_dicts
 
             if self.is_calibrating():
-                e2 = torch.cuda.Event(enable_timing=True)
-                e2.record()
-                batch_dict['bb2d_time_events'] = [e1, e2]
+                e4 = torch.cuda.Event(enable_timing=True)
+                e4.record()
+                batch_dict['bb2d_time_events'] = [e3, e4]
 
             self.measure_time_start('CenterHead-GenBox')
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
