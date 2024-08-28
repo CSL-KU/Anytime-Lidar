@@ -7,6 +7,7 @@ import time
 import onnx
 import os
 import sys
+import numpy as np
 from typing import List
 
 class DenseConvsPipeline(torch.nn.Module):
@@ -159,38 +160,32 @@ class CenterPointVALO(AnytimeTemplateV2):
             else:
                 outputs = self.opt_dense_convs(sf)
 
-            ctc = batch_dict['chosen_tile_coords'].tolist()
-            outputs = scatter_sliced_tensors(ctc, outputs, self.tcount)
-            if self.dense_head.optimize_attr_convs:
-                shr_conv_outp = outputs[0]
-                pred_dicts = [{'hm':hm} for hm in outputs[1:]]
-            else:
-                pred_dicts = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('FusedOps2')
+            shr_conv_outp = outputs[0]
+            heatmaps = outputs[1:]
+            pred_dicts = [{'hm':hm} for hm in heatmaps]
 
             self.measure_time_start('CenterHead-Topk')
-            topk_outputs = self.dense_head_scrpt.forward_topk(pred_dicts)
+            topk_outputs = self.dense_head_scrpt.forward_topk_trt(heatmaps)
             self.measure_time_end('CenterHead-Topk')
 
-            if self.dense_head.optimize_attr_convs:
-                self.measure_time_start('CenterHead-AttrConvs')
-                sliced_inp = self.dense_head_scrpt.slice_shr_conv_outp(shr_conv_outp, pred_dicts,
-                        topk_outputs)
+            self.measure_time_start('CenterHead-AttrConvs')
 
-                if not self.optimization2_done:
-                    self.optimize2(sliced_inp)
+            sliced_inp = self.dense_head_scrpt.slice_shr_conv_outp(shr_conv_outp, topk_outputs)
+            if not self.optimization2_done:
+                self.optimize2(sliced_inp)
 
-                if self.sliced_convs_trt is not  None:
-                    inp = {nm:sinp for nm,sinp in zip(self.sliced_input_names, sliced_inp)}
-                    outputs = self.sliced_convs_trt(inp)
-                    for k,v in outputs.items():
-                        pd_idx = int(k[-1]) # assumes the number at the end is 1 digit
-                        pred_dicts[pd_idx][k[:-1]] = v
-                else:
-                    pred_dicts = self.dense_head_scrpt.forward_sliced_inp(sliced_inp, pred_dicts)
-                self.measure_time_end('CenterHead-AttrConvs')
+            if self.sliced_convs_trt is not None:
+                inp = {nm:sinp for nm,sinp in zip(self.sliced_input_names, sliced_inp)}
+                sliced_outputs = self.sliced_convs_trt(inp)
+                #pred_dicts = [dict() for i in range(self.dense_head.num_det_heads)]
+                for k,v in sliced_outputs.items():
+                    pd_idx = int(k[-1]) # assumes the number at the end is 1 digit
+                    pred_dicts[pd_idx][k[:-1]] = v
+            else:
+                pred_dicts = self.dense_head_scrpt.forward_sliced_inp(sliced_inp, pred_dicts)
 
-            batch_dict["pred_dicts"] = pred_dicts
+            self.measure_time_end('CenterHead-AttrConvs')
 
             if self.is_calibrating():
                 e4 = torch.cuda.Event(enable_timing=True)
@@ -198,11 +193,21 @@ class CenterPointVALO(AnytimeTemplateV2):
                 batch_dict['bb2d_time_events'] = [e3, e4]
 
             self.measure_time_start('CenterHead-GenBox')
+
+            # correct the topk xs, this can be faster if xs's are catted
+            mapping = batch_dict['tile_mapping']
+            tile_sz = shr_conv_outp.size(-1) // mapping.size(0)
+            for topk_out in topk_outputs:
+                xs = topk_out[-1].int()
+                xs_tile_inds = torch.div(xs, tile_sz, rounding_mode='trunc')
+                topk_out[-1] = xs + tile_sz * (mapping[xs_tile_inds] - xs_tile_inds)
+
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
             if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
                 forecasted_dets = None # NOTE this appears to be a bug, but dont know how to fix it
+            batch_dict["pred_dicts"] = pred_dicts
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
-                    batch_dict['batch_size'], batch_dict["pred_dicts"],
+                    batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
             self.measure_time_end('CenterHead-GenBox')
 

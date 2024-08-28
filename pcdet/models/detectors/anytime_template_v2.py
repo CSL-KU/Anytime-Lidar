@@ -299,7 +299,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     not self.use_baseline_bb3d_predictor
             batch_dict['record_time'] = True
             batch_dict['tile_size_voxels'] = self.tile_size_voxels
-        batch_dict['num_tiles'] = self.tcount
+        #batch_dict['num_tiles'] = self.tcount
 
         return batch_dict
 

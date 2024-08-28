@@ -205,7 +205,6 @@ class CenterHeadInf(nn.Module):
             forecasted_dets : Optional[Dict[str,torch.Tensor]]) \
             -> Dict[str,torch.Tensor]:
 
-        batch_hm = pred_dict['hm'] #.sigmoid()
         if self.optimize_attr_convs:
             # Remove the HW dimentions by flattenning
             center = pred_dict['center'].flatten(-3)
@@ -218,7 +217,7 @@ class CenterHeadInf(nn.Module):
             iou = (pred_dict['iou'].flatten(-3) + 1) * 0.5 if 'iou' in pred_dict else None
 
             final_pred_dicts = centernet_utils.decode_bbox_from_heatmap_sliced(
-                batch_hm, rot_cos, rot_sin,
+                rot_cos, rot_sin,
                 center, center_z, dim,
                 self.point_cloud_range, self.voxel_size,
                 self.feature_map_stride, self.max_obj_per_sample,
@@ -226,6 +225,7 @@ class CenterHeadInf(nn.Module):
                 vel, iou, self.score_thresh
             )
         else:
+            batch_hm = pred_dict['hm'] #.sigmoid()
             batch_center = pred_dict['center']
             batch_center_z = pred_dict['center_z']
             batch_dim = pred_dict['dim'].exp()
@@ -365,7 +365,6 @@ class CenterHeadInf(nn.Module):
 
     @torch.jit.export
     def slice_shr_conv_outp(self, shr_conv_outp : torch.Tensor,
-            pred_dicts : List[Dict[str,torch.Tensor]],
             topk_outputs : List[List[torch.Tensor]]):
 
         slice_size = 5 # two convs, each ksize=3
@@ -373,8 +372,8 @@ class CenterHeadInf(nn.Module):
         p = slice_size // 2
         padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
 
-        y_inds = torch.cat([topk_outp[3] for topk_outp in topk_outputs]).short().flatten()
-        x_inds = torch.cat([topk_outp[4] for topk_outp in topk_outputs]).short().flatten()
+        y_inds = torch.cat([topk_outp[2] for topk_outp in topk_outputs]).short().flatten()
+        x_inds = torch.cat([topk_outp[3] for topk_outp in topk_outputs]).short().flatten()
 
         mops = self.max_obj_per_sample
         b_id = torch.zeros(self.num_det_heads * mops,
@@ -409,6 +408,10 @@ class CenterHeadInf(nn.Module):
     def forward_topk(self, pred_dicts : List[Dict[str,torch.Tensor]]) -> List[List[torch.Tensor]]:
         return [centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample,
                 using_slicing=self.optimize_attr_convs) for pd in pred_dicts]
+
+    @torch.jit.export
+    def forward_topk_trt(self, heatmaps: List[torch.Tensor]) -> List[List[torch.Tensor]]:
+        return [centernet_utils.topk_trt(hm, K=self.max_obj_per_sample) for hm in heatmaps]
 
     @torch.jit.export
     def forward_genbox(self, batch_size: int, pred_dicts: List[Dict[str,torch.Tensor]],\

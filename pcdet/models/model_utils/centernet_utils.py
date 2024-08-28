@@ -157,6 +157,31 @@ def _transpose_and_gather_feat(feat : torch.Tensor, ind : torch.Tensor):
     return feat
 
 @torch.jit.script
+def get_ys_xs(heatmap  : torch.Tensor, K : int = 40):
+    N, C, H, W = heatmap.size()
+    #assert N == 1
+    hm = heatmap.flatten(0, 1) # C H W
+    best_cls_scores = torch.max(hm, dim=0).values.flatten()
+    inds = torch.topk(best_cls_scores, K).indices
+    ys = torch.div(inds, W, rounding_mode='trunc')
+    xs = inds % W
+    return ys.int(), xs.int()
+
+def topk_trt(scores : torch.Tensor, K : int = 40) -> List[torch.Tensor]:
+    batch, num_class, height, width = scores.size()
+    topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)
+    topk_inds = topk_inds % (height * width)
+    topk_ys = torch.div(topk_inds, width, rounding_mode='trunc').float()
+    topk_xs = (topk_inds % width).int().float()
+
+    topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
+    topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
+    topk_classes = topk_classes.int() #if not using_slicing else topk_classes.float()
+    topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
+    topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
+    return [topk_score, topk_classes, topk_ys, topk_xs]
+
+@torch.jit.script
 def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> List[torch.Tensor]:
     batch, num_class, height, width = scores.size()
 
@@ -173,9 +198,10 @@ def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> 
         topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
-    return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
+    #return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
+    return topk_score, topk_classes, topk_ys, topk_xs
 
-def decode_bbox_from_heatmap_sliced(heatmap : torch.Tensor, rot_cos : torch.Tensor,
+def decode_bbox_from_heatmap_sliced(rot_cos : torch.Tensor,
                              rot_sin : torch.Tensor, center : torch.Tensor,
                              center_z : torch.Tensor, dim : torch.Tensor,
                              point_cloud_range: List[float], voxel_size : List[float],
@@ -186,10 +212,12 @@ def decode_bbox_from_heatmap_sliced(heatmap : torch.Tensor, rot_cos : torch.Tens
                              iou : Optional[torch.Tensor],
                              score_thresh : Optional[float]) -> List[Dict[str,torch.Tensor]]:
     #global average_dims
-    batch_size, num_class = heatmap.size()[:2]
+    #batch_size, num_class = heatmap.size()[:2]
     #assert batch_size == 1
 
-    scores, inds, class_ids, ys, xs = topk_outp
+    scores, class_ids, ys, xs = topk_outp
+
+
     xs = xs.flatten() + center[:, 0]
     ys = ys.flatten() + center[:, 1]
     xs = xs * feature_map_stride * voxel_size[0] + point_cloud_range[0]
