@@ -285,7 +285,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.add_dict['vfe_preds'].append(predicted_vfe_time)
         if self.sched_bb3d:
             self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
-            self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise)
+            self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise.tolist())
             self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
         self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
