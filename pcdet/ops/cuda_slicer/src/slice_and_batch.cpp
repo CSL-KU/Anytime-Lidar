@@ -14,8 +14,8 @@ namespace py = pybind11;
 
 torch::Tensor slice_and_batch_nhwc(
         torch::Tensor inp,
-        torch::Tensor slice_indices,
-        const int64_t slice_size);
+        torch::Tensor slice_indices);
+//        const int64_t slice_size);
 
 TORCH_LIBRARY(cuda_slicer, m) {
     //m.def("slice_and_batch", &slice_and_batch, "Slice and Batch CUDA");

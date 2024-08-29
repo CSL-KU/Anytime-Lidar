@@ -176,13 +176,13 @@ def topk_trt(scores : torch.Tensor, K : int = 40) -> List[torch.Tensor]:
 
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
     topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
-    topk_classes = topk_classes.int() #if not using_slicing else topk_classes.float()
+    topk_classes = topk_classes.int()
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
     return [topk_score, topk_classes, topk_ys, topk_xs]
 
 @torch.jit.script
-def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> List[torch.Tensor]:
+def _topk(scores : torch.Tensor, K : int = 40) -> List[torch.Tensor]:
     batch, num_class, height, width = scores.size()
 
     topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)
@@ -193,13 +193,11 @@ def _topk(scores : torch.Tensor, K : int = 40, using_slicing : bool = False) -> 
 
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), K)
     topk_classes = torch.div(topk_ind, K, rounding_mode='trunc')
-    topk_classes = topk_classes.int() #if not using_slicing else topk_classes.float()
-    if not using_slicing: # NOTE, this wont be None anymore
-        topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K)
+    topk_classes = topk_classes.int()
+    topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, K)
-    #return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
-    return topk_score, topk_classes, topk_ys, topk_xs
+    return topk_score, topk_inds, topk_classes, topk_ys, topk_xs
 
 def decode_bbox_from_heatmap_sliced(rot_cos : torch.Tensor,
                              rot_sin : torch.Tensor, center : torch.Tensor,
@@ -211,12 +209,7 @@ def decode_bbox_from_heatmap_sliced(rot_cos : torch.Tensor,
                              vel : Optional[torch.Tensor],
                              iou : Optional[torch.Tensor],
                              score_thresh : Optional[float]) -> List[Dict[str,torch.Tensor]]:
-    #global average_dims
-    #batch_size, num_class = heatmap.size()[:2]
-    #assert batch_size == 1
-
     scores, class_ids, ys, xs = topk_outp
-
 
     xs = xs.flatten() + center[:, 0]
     ys = ys.flatten() + center[:, 1]

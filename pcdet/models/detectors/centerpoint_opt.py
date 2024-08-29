@@ -39,7 +39,7 @@ class CenterPointOpt(Detector3DTemplate):
         if not self.use_pillars:
             self.update_time_dict({'Backbone3D': []})
         self.update_time_dict( {
-            'FusedOps2':[],
+            'FusedOps':[],
             'CenterHead-Topk': [],
             'CenterHead-GenBox': [],
         })
@@ -57,8 +57,8 @@ class CenterPointOpt(Detector3DTemplate):
 
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
-            self.measure_time_start('VFE')
             batch_dict = self.vfe.range_filter(batch_dict)
+            self.measure_time_start('VFE')
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
@@ -81,7 +81,7 @@ class CenterPointOpt(Detector3DTemplate):
                 self.optimize1(batch_dict['spatial_features'])
                 self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
-            self.measure_time_start('FusedOps2')
+            self.measure_time_start('FusedOps')
             sf = batch_dict['spatial_features']
 
             if self.fused_ops2_trt is not None:
@@ -90,7 +90,7 @@ class CenterPointOpt(Detector3DTemplate):
             else:
                 outputs = self.opt_fwd2(sf)
             batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
-            self.measure_time_end('FusedOps2')
+            self.measure_time_end('FusedOps')
 
             self.measure_time_start('CenterHead-Topk')
             topk_outputs = self.dense_head_scrpt.forward_topk(batch_dict["pred_dicts"])

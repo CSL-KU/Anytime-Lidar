@@ -12,7 +12,7 @@
 template <typename scalar_t>
 __global__ void slice_and_batch_nhwc_kernel(
         const torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> inp,
-        const torch::PackedTensorAccessor32<int16_t,2,torch::RestrictPtrTraits> inds,
+        const torch::PackedTensorAccessor32<int32_t,2,torch::RestrictPtrTraits> inds,
         torch::PackedTensorAccessor32<scalar_t,4,torch::RestrictPtrTraits> outp){
   // blockDim.x is the number of threads in a block
 
@@ -39,9 +39,11 @@ __global__ void slice_and_batch_nhwc_kernel(
 // slice indices are the corner indices (not center)
 torch::Tensor slice_and_batch_nhwc(
         torch::Tensor inp,
-        torch::Tensor slice_indices,
-        const int64_t slice_size) 
-{
+        torch::Tensor slice_indices){
+//        const int64_t slice_size) 
+
+  const int64_t slice_size = 5;
+
   // Each block is going to read a slice and write it
   const auto max_threads_per_block = 256;
   const auto C = inp.size(3);
@@ -71,7 +73,7 @@ torch::Tensor slice_and_batch_nhwc(
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(outp.type(), "slice_and_batch_nhwc", ([&] {
     slice_and_batch_nhwc_kernel<scalar_t><<<grid_dims, block_dims, 0, stream>>>(
       inp.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
-      slice_indices.packed_accessor32<int16_t,2,torch::RestrictPtrTraits>(),
+      slice_indices.packed_accessor32<int32_t,2,torch::RestrictPtrTraits>(),
       outp.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>());
   }));
 

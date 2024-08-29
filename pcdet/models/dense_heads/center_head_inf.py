@@ -322,19 +322,13 @@ class CenterHeadInf(nn.Module):
 
         return final_ret_dict
 
-    def ordered_outp_names(self):
-        names =  ['hm'] + list(self.separate_head_cfg.HEAD_ORDER)
+    def ordered_outp_names(self, include_hm=True):
+        names =  (['hm'] if include_hm else []) + list(self.separate_head_cfg.HEAD_ORDER)
         if 'iou' in self.separate_head_cfg.HEAD_DICT:
             names += ['iou']
         return names
 
-    def forward_up_to_topk(self, spatial_features_2d : torch.Tensor) -> List[torch.Tensor]:
-        x = self.shared_conv(spatial_features_2d)
-        pred_dicts = [h.forward(x) for h in self.heads_list]
-        conv_order = self.ordered_outp_names()
-        out_tensors_ordered = [pd[conv_name] for pd in pred_dicts for conv_name in conv_order]
-        return out_tensors_ordered
-
+    # This func is for the baseline, not for valo
     def convert_out_to_pred_dicts(self, out_tensors):
         head_order = self.ordered_outp_names()
         num_convs_per_head = len(out_tensors) // self.num_det_heads
@@ -343,6 +337,13 @@ class CenterHeadInf(nn.Module):
             ot = out_tensors[i*num_convs_per_head:(i+1)*num_convs_per_head]
             pred_dicts.append({name : t for name, t in zip(head_order, ot)})
         return pred_dicts
+
+    def forward_up_to_topk(self, spatial_features_2d : torch.Tensor) -> List[torch.Tensor]:
+        x = self.shared_conv(spatial_features_2d)
+        pred_dicts = [h.forward(x) for h in self.heads_list]
+        conv_order = self.ordered_outp_names()
+        out_tensors_ordered = [pd[conv_name] for pd in pred_dicts for conv_name in conv_order]
+        return out_tensors_ordered
 
     def forward(self, spatial_features_2d : torch.Tensor,
             forecasted_dets : Optional[List[Dict[str,torch.Tensor]]]):
@@ -365,21 +366,22 @@ class CenterHeadInf(nn.Module):
 
     @torch.jit.export
     def slice_shr_conv_outp(self, shr_conv_outp : torch.Tensor,
-            topk_outputs : List[List[torch.Tensor]]):
+            ys_all : List[torch.Tensor], xs_all : List[torch.Tensor]):
+            #topk_outputs : List[List[torch.Tensor]]):
 
         slice_size = 5 # two convs, each ksize=3
         shr_conv_outp_nhwc = shr_conv_outp.permute(0,2,3,1).contiguous()
         p = slice_size // 2
         padded_x = torch.nn.functional.pad(shr_conv_outp_nhwc, (0,0,p,p,p,p))
 
-        y_inds = torch.cat([topk_outp[2] for topk_outp in topk_outputs]).short().flatten()
-        x_inds = torch.cat([topk_outp[3] for topk_outp in topk_outputs]).short().flatten()
+        y_inds = torch.cat(ys_all).int().flatten()
+        x_inds = torch.cat(xs_all).int().flatten()
 
         mops = self.max_obj_per_sample
         b_id = torch.zeros(self.num_det_heads * mops,
-                dtype=torch.short, device=shr_conv_outp.device) # since batch size is 1
+                dtype=torch.int, device=shr_conv_outp.device) # since batch size is 1
         indices = torch.stack((b_id, y_inds, x_inds), dim=1)
-        all_slices = cuda_slicer_utils.slice_and_batch_nhwc(padded_x, indices, slice_size)
+        all_slices = cuda_slicer_utils.slice_and_batch_nhwc(padded_x, indices) #, slice_size)
 
         return [all_slices[i*mops:(i+1)*mops] for i in range(self.num_det_heads)]
 
@@ -406,8 +408,7 @@ class CenterHeadInf(nn.Module):
 
     @torch.jit.export
     def forward_topk(self, pred_dicts : List[Dict[str,torch.Tensor]]) -> List[List[torch.Tensor]]:
-        return [centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample,
-                using_slicing=self.optimize_attr_convs) for pd in pred_dicts]
+        return [centernet_utils._topk(pd['hm'], K=self.max_obj_per_sample) for pd in pred_dicts]
 
     @torch.jit.export
     def forward_topk_trt(self, heatmaps: List[torch.Tensor]) -> List[List[torch.Tensor]]:

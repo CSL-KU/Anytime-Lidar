@@ -10,27 +10,54 @@ import sys
 import numpy as np
 from typing import List
 
+import ctypes
+ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so", mode=ctypes.RTLD_GLOBAL)
+
+
 class DenseConvsPipeline(torch.nn.Module):
-    def __init__(self, backbone_2d, dense_head):
+    def __init__(self, backbone_2d, dense_head, tcount):
         super().__init__()
         self.backbone_2d = backbone_2d
         self.dense_head = dense_head
+        self.tcount = tcount
 
-    def forward(self, spatial_features : torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, spatial_features : torch.Tensor, set_out_tile_sizes : bool = False) -> List[torch.Tensor]:
         spatial_features_2d = self.backbone_2d(spatial_features)
 
-        if self.dense_head.optimize_attr_convs:
-            return self.dense_head.forward_pre(spatial_features_2d)
-        else:
-            return self.dense_head.forward_up_to_topk(spatial_features_2d)
+        outputs = self.dense_head.forward_pre(spatial_features_2d)
+        shr_conv_outp = outputs[0]
+        heatmaps = outputs[1:]
 
-class SlicedConvsPipeline(torch.nn.Module):
-    def __init__(self, dense_head):
-        super().__init__()
-        self.dense_head = dense_head
+        # onnx export should ignore this while tracing
+        if set_out_tile_sizes:
+            # Assumes the spatial_features is full sized input with all tiles
+            self.out_tile_sizes= [hm.size(-1) // self.tcount for hm in heatmaps]
 
-    def forward(self, slices_per_head: List[torch.Tensor]) -> List[torch.Tensor]:
-        return self.dense_head.forward_sliced_inp_trt(slices_per_head)
+        topk_outputs = self.dense_head.forward_topk_trt(heatmaps)
+
+        ys_all = [topk_outp[2] for topk_outp in topk_outputs]
+        xs_all = [topk_outp[3] for topk_outp in topk_outputs]
+
+        sliced_inp = self.dense_head.slice_shr_conv_outp(shr_conv_outp, ys_all, xs_all)
+        outputs = self.dense_head.forward_sliced_inp_trt(sliced_inp)
+        for topk_output in topk_outputs:
+            outputs += topk_output
+
+        return outputs
+
+    def get_out_tile_sizes(self):
+        return self.out_tile_sizes
+
+# correct the topk xs, this can be faster if xs's are catted
+@torch.jit.script
+def fix_topk_outputs(tile_sizes : List[int], mapping : torch.Tensor,
+        topk_outputs : List[List[torch.Tensor]]) -> List[List[torch.Tensor]]:
+    for i, topk_out in enumerate(topk_outputs):
+        tile_sz =  tile_sizes[i] #// mapping.size(0)
+        xs = topk_out[-1].int()
+        xs_tile_inds = torch.div(xs, tile_sz, rounding_mode='trunc')
+        topk_out[-1] = xs + tile_sz * (mapping[xs_tile_inds] - xs_tile_inds)
+    return topk_outputs
 
 class CenterPointVALO(AnytimeTemplateV2):
     def __init__(self, model_cfg, num_class, dataset):
@@ -55,9 +82,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         if self.sched_bb3d:
             self.update_time_dict({'Backbone3D': []})
         self.update_time_dict( {
-            'FusedOps2':[],
-            'CenterHead-Topk': [],
-            'CenterHead-AttrConvs': [],
+            'FusedOps':[],
             'CenterHead-GenBox': [],
         })
 
@@ -70,7 +95,6 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
-        self.optimization2_done = False
 
         # Force forecasting to be disabled
         self.keep_forecasting_disabled = False
@@ -152,40 +176,14 @@ class CenterPointVALO(AnytimeTemplateV2):
             batch_dict = self.backbone_2d.prune_spatial_features(batch_dict)
             self.measure_time_end('Sched2')
 
-            self.measure_time_start('FusedOps2')
+            self.measure_time_start('FusedOps')
             sf = batch_dict['spatial_features']
             if self.fused_convs_trt is not None:
                 outputs = self.fused_convs_trt({'spatial_features': sf})
-                outputs = [outputs[nm] for nm in self.opt_dense_convs_output_names]
+                pred_dicts, topk_outputs = self.convert_trt_outputs(outputs)
             else:
                 outputs = self.opt_dense_convs(sf)
-
-            self.measure_time_end('FusedOps2')
-            shr_conv_outp = outputs[0]
-            heatmaps = outputs[1:]
-            pred_dicts = [{'hm':hm} for hm in heatmaps]
-
-            self.measure_time_start('CenterHead-Topk')
-            topk_outputs = self.dense_head_scrpt.forward_topk_trt(heatmaps)
-            self.measure_time_end('CenterHead-Topk')
-
-            self.measure_time_start('CenterHead-AttrConvs')
-
-            sliced_inp = self.dense_head_scrpt.slice_shr_conv_outp(shr_conv_outp, topk_outputs)
-            if not self.optimization2_done:
-                self.optimize2(sliced_inp)
-
-            if self.sliced_convs_trt is not None:
-                inp = {nm:sinp for nm,sinp in zip(self.sliced_input_names, sliced_inp)}
-                sliced_outputs = self.sliced_convs_trt(inp)
-                #pred_dicts = [dict() for i in range(self.dense_head.num_det_heads)]
-                for k,v in sliced_outputs.items():
-                    pd_idx = int(k[-1]) # assumes the number at the end is 1 digit
-                    pred_dicts[pd_idx][k[:-1]] = v
-            else:
-                pred_dicts = self.dense_head_scrpt.forward_sliced_inp(sliced_inp, pred_dicts)
-
-            self.measure_time_end('CenterHead-AttrConvs')
+            self.measure_time_end('FusedOps')
 
             if self.is_calibrating():
                 e4 = torch.cuda.Event(enable_timing=True)
@@ -194,18 +192,12 @@ class CenterPointVALO(AnytimeTemplateV2):
 
             self.measure_time_start('CenterHead-GenBox')
 
-            # correct the topk xs, this can be faster if xs's are catted
-            mapping = batch_dict['tile_mapping']
-            tile_sz = shr_conv_outp.size(-1) // mapping.size(0)
-            for topk_out in topk_outputs:
-                xs = topk_out[-1].int()
-                xs_tile_inds = torch.div(xs, tile_sz, rounding_mode='trunc')
-                topk_out[-1] = xs + tile_sz * (mapping[xs_tile_inds] - xs_tile_inds)
+            tile_sizes = self.opt_dense_convs.get_out_tile_sizes()
+            topk_outputs = fix_topk_outputs(tile_sizes, batch_dict['tile_mapping'], topk_outputs)
 
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
             if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
                 forecasted_dets = None # NOTE this appears to be a bug, but dont know how to fix it
-            batch_dict["pred_dicts"] = pred_dicts
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
@@ -222,22 +214,28 @@ class CenterPointVALO(AnytimeTemplateV2):
                 # let the hooks of parent class handle this
                 return batch_dict
 
+
     def optimize1(self, fwd_data):
         optimize_start = time.time()
 
         input_names = ['spatial_features']
         print(input_names[0], fwd_data.size())
+        self.opt_dense_convs_output_names_pd = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                for name in self.dense_head.ordered_outp_names(False)]
 
-        if self.dense_head.optimize_attr_convs:
-            self.opt_dense_convs_output_names = ['shr_conv_outp'] + ['hm' + str(i) \
-                    for i in range(self.dense_head.num_det_heads)]
-        else:
-            self.opt_dense_convs_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
-                    for name in self.dense_head.ordered_outp_names()]
-        print('Fused operations output names:', self.opt_dense_convs_output_names)
+        self.topk_outp_names = ('scores', 'class_ids', 'xs', 'ys')
+        self.opt_dense_convs_output_names_topk = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                for name in self.topk_outp_names]
 
-        self.opt_dense_convs = DenseConvsPipeline(self.backbone_2d, self.dense_head)
+        outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
+
+        print('Fused operations output names:', outp_names)
+
+        self.dense_head.instancenorm_mode()
+
+        self.opt_dense_convs = DenseConvsPipeline(self.backbone_2d, self.dense_head, self.tcount)
         self.opt_dense_convs.eval()
+        self.opt_dense_convs(fwd_data, True) # do this so tile sizes are determined
 
         generated_onnx=False
         opt_path = self.model_cfg.BACKBONE_2D.OPT_PATH
@@ -250,77 +248,49 @@ class CenterPointVALO(AnytimeTemplateV2):
                     3: "width",
                 },
             }
-            for nm in self.opt_dense_convs_output_names:
-                dynamic_axes[nm] = {3 : "out_width"}
+            #for nm in self.opt_dense_convs_output_names:
+            #    dynamic_axes[nm] = {3 : "out_width"}
 
             torch.onnx.export(
                     self.opt_dense_convs,
                     fwd_data,
                     onnx_path, input_names=input_names,
-                    output_names=self.opt_dense_convs_output_names,
+                    output_names=outp_names,
                     dynamic_axes=dynamic_axes,
                     opset_version=17,
-                    #custom_opsets={"kucsl": 17}
+                    custom_opsets={"cuda_slicer": 17}
             )
             generated_onnx=True
 
         trt_path = opt_path + '.engine'
         try:
-            self.fused_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
+            self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
         except:
             print('TensorRT wrapper for fused_convs throwed exception, using eager mode')
-            eager_outputs = self.opt_dense_convs(fwd_data) # for calibration
             self.fused_convs_trt = None
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
 
-        self.dense_head_scrpt = torch.jit.script(self.dense_head)
-        self.optimization1_done = True
-
-    def optimize2(self, fwd_data):
-        optimize_start = time.time()
-
-        self.sliced_input_names = [f'sliced_inp_{i}' for i in range(self.dense_head.num_det_heads)]
-        #print(input_names[0], fwd_data.size())
-        outp_names = self.dense_head.get_sliced_forward_outp_names()
-        self.sliced_output_names = [nm + str(i) \
-                    for i in range(self.dense_head.num_det_heads) for nm in outp_names]
-        print('Sliced convs output names:', self.sliced_output_names)
-
-        self.dense_head.instancenorm_mode()
-        self.opt_sliced_convs = SlicedConvsPipeline(self.dense_head)
-        self.opt_sliced_convs.eval()
-
-        generated_onnx=False
-        opt_path = self.model_cfg.DENSE_HEAD.OPT_PATH
-        onnx_path = opt_path + '.onnx'
-        if not os.path.exists(onnx_path):
-            torch.onnx.export(
-                    self.opt_sliced_convs,
-                    fwd_data,
-                    onnx_path, input_names=self.sliced_input_names,
-                    output_names=self.sliced_output_names,
-                    opset_version=17,
-                    #custom_opsets={"kucsl": 17}
-            )
-            generated_onnx=True
-
-        trt_path = opt_path + '.engine'
-        try:
-            self.sliced_convs_trt = TRTWrapper(trt_path, self.sliced_input_names, self.sliced_output_names)
-        except:
-            print('TensorRT wrapper for fused_convs throwed exception, using eager mode')
-            eager_outputs = self.opt_sliced_convs(fwd_data) # for calibration
-            self.sliced_convs_trt = None
-
-        optimize_end = time.time()
-        print(f'Optimization took {optimize_end-optimize_start} seconds.')
         if generated_onnx:
             print('ONNX files created, please run again after creating TensorRT engines.')
             sys.exit(0)
 
-        self.optimization2_done = True
+        self.dense_head_scrpt = torch.jit.script(self.dense_head)
+        self.optimization1_done = True
+
+    def convert_trt_outputs(self, out_tensors):
+        pred_dicts = [dict() for i in range(self.dense_head.num_det_heads)]
+        topk_outputs = [[None] * 4 for i in range(self.dense_head.num_det_heads)]
+        for k, v in out_tensors.items():
+            idx = int(k[-1]) # assumes the number at the end is 1 digit
+            name = k[:-1]
+            if k in self.opt_dense_convs_output_names_pd:
+                pred_dicts[idx][name] = v
+            else:
+                topk_outputs[idx][self.topk_outp_names.index(name)] = v
+
+        return pred_dicts, topk_outputs
 
     def get_training_loss(self):
         disp_dict = {}

@@ -272,12 +272,12 @@ class AnytimeCalibrator():
 
         dh_post_time_data = self.calib_data_dict['det_head_post_time_ms']
         self.det_head_post_wcet_ms = np.percentile(dh_post_time_data, \
-                75, method='lower')
+                99, method='lower')
         print('det_head_post_wcet_ms', self.det_head_post_wcet_ms)
 
         if not self.model.use_voxelnext:
             bb2d_time_data = self.calib_data_dict['bb2d_time_ms']
-            self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 75, method='lower') \
+            self.bb2d_times_ms = np.array([np.percentile(arr if arr else [0], 90, method='lower') \
                     for arr in bb2d_time_data])
 
             assert self.bb2d_times_ms[-1] != 0.
@@ -291,7 +291,7 @@ class AnytimeCalibrator():
         if 'exec_times' in self.calib_data_dict:
             # calculate the 3dbb err cdf
             time_dict = self.calib_data_dict['exec_times']
-            if self.sched_bb3d and 'VFE' in time_dict:
+            if self.sched_bb3d and 'Backbone3D' in time_dict:
                 if 'Backbone3D-IL' in time_dict:
                     Backbone3D_times = np.array(time_dict['Backbone3D-IL']) + \
                             np.array(time_dict['Backbone3D-Fwd'])
