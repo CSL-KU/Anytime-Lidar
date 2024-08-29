@@ -72,7 +72,7 @@ MODEL:
 
         TARGET_ASSIGNER_CONFIG:
             FEATURE_MAP_STRIDE: 4
-            NUM_MAX_OBJS: 256
+            NUM_MAX_OBJS: 500
             GAUSSIAN_OVERLAP: 0.1
             MIN_RADIUS: 2
 
@@ -86,7 +86,7 @@ MODEL:
         POST_PROCESSING:
             SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 256
+            MAX_OBJ_PER_SAMPLE: 196
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2
