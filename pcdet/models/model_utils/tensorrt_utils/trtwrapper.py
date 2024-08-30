@@ -56,7 +56,7 @@ class TRTWrapper(torch.nn.Module):
     def forward(
             self,
             inputs: Dict[str, torch.Tensor],
-            output_sz: tuple[int] = None
+            outputs: Optional[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
         """Run forward inference.
 
@@ -66,7 +66,6 @@ class TRTWrapper(torch.nn.Module):
         Return:
             Dict[str, torch.Tensor]: The output name and tensor pairs.
         """
-
         profile_id = 0
         for input_name, input_tensor in inputs.items():
             # check if input shape is valid
@@ -85,18 +84,16 @@ class TRTWrapper(torch.nn.Module):
 
         assert self.context.all_binding_shapes_specified
 
-
         # create output tensors
-        outputs = {}
-        for output_name in self._output_names:
-            dtype = torch_dtype_from_trt(self.engine.get_tensor_dtype(output_name))
-            shape = eval(repr(self.context.get_tensor_shape(output_name)))
+        if outputs is None:
+            outputs = {}
+            for output_name in self._output_names:
+                dtype = torch_dtype_from_trt(self.engine.get_tensor_dtype(output_name))
+                shape = eval(repr(self.context.get_tensor_shape(output_name)))
 
-            if output_sz is not None:
-                shape = output_sz
-            output = torch.empty(size=shape, dtype=dtype, device='cuda').contiguous()
-            self.context.set_tensor_address(output_name, output.data_ptr())
-            outputs[output_name] = output
+                output = torch.empty(size=shape, dtype=dtype, device='cuda').contiguous()
+                self.context.set_tensor_address(output_name, output.data_ptr())
+                outputs[output_name] = output
 
         self.__trt_execute() #bindings=bindings)
 

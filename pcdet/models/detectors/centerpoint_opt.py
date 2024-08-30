@@ -54,6 +54,7 @@ class CenterPointOpt(Detector3DTemplate):
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
+        self.trt_outputs = None # Since output size of trt is fixed, use buffered
 
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
@@ -85,10 +86,10 @@ class CenterPointOpt(Detector3DTemplate):
             sf = batch_dict['spatial_features']
 
             if self.fused_ops2_trt is not None:
-                outputs = self.fused_ops2_trt({'spatial_features': sf})
-                outputs = [outputs[nm] for nm in self.opt_fwd2_output_names]
+                self.trt_outputs = self.fused_ops2_trt({'spatial_features': sf}, self.trt_outputs)
+                outputs = [self.trt_outputs[nm] for nm in self.opt_fwd_output_names]
             else:
-                outputs = self.opt_fwd2(sf)
+                outputs = self.opt_fwd(sf)
             batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('FusedOps')
 
@@ -116,21 +117,21 @@ class CenterPointOpt(Detector3DTemplate):
 
         input_names = ['spatial_features']
 
-        self.opt_fwd2_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+        self.opt_fwd_output_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
                 for name in self.dense_head.ordered_outp_names()]
-        print('Fused operations output names:', self.opt_fwd2_output_names)
+        print('Fused operations output names:', self.opt_fwd_output_names)
 
-        self.opt_fwd2 = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
-        self.opt_fwd2.eval()
+        self.opt_fwd = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
+        self.opt_fwd.eval()
 
         generated_onnx=False
         onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             torch.onnx.export(
-                    self.opt_fwd2,
+                    self.opt_fwd,
                     fwd_data,
                     onnx_path, input_names=input_names,
-                    output_names=self.opt_fwd2_output_names,
+                    output_names=self.opt_fwd_output_names,
                     opset_version=17,
                     #custom_opsets={"kucsl": 17}
             )
@@ -139,10 +140,10 @@ class CenterPointOpt(Detector3DTemplate):
         sf = fwd_data 
         trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
         try:
-            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd2_output_names)
+            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd_output_names)
         except:
             print('TensorRT wrapper for fused_ops2 throwed exception, using eager mode')
-            eager_outputs = self.opt_fwd2(fwd_data) # for calibration
+            eager_outputs = self.opt_fwd(fwd_data) # for calibration
             self.fused_ops2_trt = None
 
         optimize_end = time.time()

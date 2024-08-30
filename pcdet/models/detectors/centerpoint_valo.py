@@ -95,6 +95,7 @@ class CenterPointVALO(AnytimeTemplateV2):
 
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
+        self.trt_outputs = None # Since output size of trt is fixed, use buffered
 
         # Force forecasting to be disabled
         self.keep_forecasting_disabled = False
@@ -179,8 +180,8 @@ class CenterPointVALO(AnytimeTemplateV2):
             self.measure_time_start('FusedOps')
             sf = batch_dict['spatial_features']
             if self.fused_convs_trt is not None:
-                outputs = self.fused_convs_trt({'spatial_features': sf})
-                pred_dicts, topk_outputs = self.convert_trt_outputs(outputs)
+                self.trt_outputs = self.fused_convs_trt({'spatial_features': sf}, self.trt_outputs)
+                pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs)
             else:
                 outputs = self.opt_dense_convs(sf)
             self.measure_time_end('FusedOps')
