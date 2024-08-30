@@ -129,7 +129,7 @@ class CenterHeadInf(nn.Module):
             self.class_names_each_head.append([x for x in cur_class_names if x in class_names])
             cur_class_id_mapping = torch.tensor(
                 [self.class_names.index(x) for x in cur_class_names if x in class_names]
-            ).cuda()
+            )
             class_id_mapping_each_head.append(cur_class_id_mapping)
         self.class_id_mapping_each_head = class_id_mapping_each_head
 
@@ -177,7 +177,7 @@ class CenterHeadInf(nn.Module):
         }
 
         post_process_cfg = self.model_cfg.POST_PROCESSING
-        self.post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
+        self.post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).float()
         self.nms_type = post_process_cfg.NMS_CONFIG.NMS_TYPE
 
         nms_thresh = post_process_cfg.NMS_CONFIG.NMS_THRESH
@@ -204,6 +204,9 @@ class CenterHeadInf(nn.Module):
             pred_dict: Dict[str,torch.Tensor], topk_output : List[torch.Tensor], \
             forecasted_dets : Optional[Dict[str,torch.Tensor]]) \
             -> Dict[str,torch.Tensor]:
+
+        pred_dict = {k:v.cpu() for k,v in pred_dict.items()}
+        topk_output = [t.cpu() for t in topk_output]
 
         if self.optimize_attr_convs:
             # Remove the HW dimentions by flattenning
@@ -255,9 +258,8 @@ class CenterHeadInf(nn.Module):
 
         if self.nms_type not in ['circle_nms', 'multi_class_nms']:
             if forecasted_dets is not None:
-                # get the forecasted_dets that match and cat them for NMS
                 for j in forecasted_dets.keys():
-                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j].cuda()), dim=0)
+                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j]), dim=0)
 
             selected, selected_scores = model_nms_utils.class_agnostic_nms(
                 final_dict['pred_scores'], final_dict['pred_boxes'], self.nms_type, self.nms_thresh[0],
@@ -265,9 +267,8 @@ class CenterHeadInf(nn.Module):
                 #score_thresh=None
         elif self.nms_type == 'multi_class_nms':
             if forecasted_dets is not None:
-                # get the forecasted_dets that match and cat them for NMS
                 for j in forecasted_dets.keys():
-                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j].cuda()), dim=0)
+                    final_dict[j] = torch.cat((final_dict[j], forecasted_dets[j]), dim=0)
 
             selected, selected_scores = model_nms_utils.multi_classes_nms_mmdet(
                 final_dict['pred_scores'], final_dict['pred_boxes'], final_dict['pred_labels'],

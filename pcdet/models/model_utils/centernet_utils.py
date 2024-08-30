@@ -156,17 +156,6 @@ def _transpose_and_gather_feat(feat : torch.Tensor, ind : torch.Tensor):
     feat = _gather_feat(feat, ind)
     return feat
 
-@torch.jit.script
-def get_ys_xs(heatmap  : torch.Tensor, K : int = 40):
-    N, C, H, W = heatmap.size()
-    #assert N == 1
-    hm = heatmap.flatten(0, 1) # C H W
-    best_cls_scores = torch.max(hm, dim=0).values.flatten()
-    inds = torch.topk(best_cls_scores, K).indices
-    ys = torch.div(inds, W, rounding_mode='trunc')
-    xs = inds % W
-    return ys.int(), xs.int()
-
 def topk_trt(scores : torch.Tensor, K : int = 40) -> List[torch.Tensor]:
     batch, num_class, height, width = scores.size()
     topk_scores, topk_inds = torch.topk(scores.flatten(2, 3), K)

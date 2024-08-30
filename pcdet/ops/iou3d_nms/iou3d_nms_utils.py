@@ -138,9 +138,8 @@ def nms_gpu(boxes : torch.Tensor, scores : torch.Tensor, thresh : float, pre_max
 
     boxes = boxes[order].contiguous()
     keep = torch.empty(boxes.size(0), dtype=torch.long)
-    num_out = torch.ops.iou3d_nms_cuda.nms_gpu(boxes, keep, thresh)
-    return order[keep[:num_out].cuda()].contiguous()
-
+    num_out = torch.ops.iou3d_nms_cuda.nms_gpu(boxes.cuda(), keep, thresh)
+    return order[keep[:num_out]].contiguous()
 
 def nms_normal_gpu(boxes : torch.Tensor, scores: torch.Tensor, thresh : float):
     """
