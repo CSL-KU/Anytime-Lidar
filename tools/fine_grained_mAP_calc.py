@@ -117,6 +117,7 @@ class SegInfo:
         seg_prec_dict = {}
         # this one will be used to build the dataset
         seg_sample_tokens_dict = {}
+        all_deadlines = set()
         for i, tpl in enumerate(self.seg_info_tuples):
             seg_sample_stats = tpl[self.seg_sample_stats_idx] # list of dicts
             num_gt_seg, tp_arr, scr_arr = 0, [], []
@@ -137,123 +138,135 @@ class SegInfo:
             tp_arr = np.array(tp_arr, dtype=int)
             scr_arr = np.array(scr_arr, dtype=float)
 
-            data = [int(tpl[self.deadline_ms_idx]), tp_arr, scr_arr, num_gt_seg]
+            deadline = int(tpl[self.deadline_ms_idx])
+            all_deadlines.add(deadline)
+            data = [deadline, tp_arr, scr_arr, num_gt_seg]
+
             key = self.get_key(i, use_cls=True, use_dist_th=True, use_dl=False)
             if key not in seg_eval_data_dict:
                 seg_eval_data_dict[key] = []
             seg_eval_data_dict[key].append(data)
 
-            # to determine best deadline of each segment
-            #if float(tpl[self.dist_th_idx]) == 0.5:
-            key = self.get_key(i, use_cls=False, use_dist_th=False, use_dl=True)
-            if key not in seg_prec_dict:
-                seg_prec_dict[key] = []
-            #prec = self.get_seg_prec_recall(data)[0]
-            #if prec != -1:
-            #    seg_prec_dict[key].append(prec)
-            seg_prec_dict[key].append(data)
+#            key = self.get_key(i, use_cls=False, use_dist_th=False, use_dl=True)
+#            if key not in seg_prec_dict:
+#                seg_prec_dict[key] = dict()
+#            if deadline not in seg_prec_dict[key]:
+#                seg_prec_dict[key][deadline] = []
+#            seg_prec_dict[key][deadline].append(
 
             key = self.get_key(i, use_cls=False, use_dist_th=False, use_dl=False)
             if key not in seg_sample_tokens_dict:
                 seg_sample_tokens_dict[key] = [s['sample_token'] for s in seg_sample_stats]
         self.seg_eval_data_dict = seg_eval_data_dict
+        self.seg_sample_tokens_dict = seg_sample_tokens_dict
+        self.all_segments = list(seg_sample_tokens_dict.keys())
+        self.all_deadlines = list(all_deadlines)
 
-        def merge_datas(datas):
-            return (datas[0][0],
-                    np.concatenate([d[1] for d in datas]),
-                    np.concatenate([d[2] for d in datas]),
-                    sum([d[3] for d in datas]))
 
-        # for each time segment of each scene, this dict holds the best deadline
-        new_seg_prec_dict = {}
-        for k,v in seg_prec_dict.items():
-            tokens = k.split('=')
-            new_key = '='.join(tokens[:-1])
-            best_deadline = int(tokens[-1])
-            #mean_prec = np.round(np.mean(v), 3).item()
-            merged_data = merge_datas(v)
-            #mean_prec = self.get_seg_prec_recall(merged_data)[0]
-            ap = self.calc_ap(*merged_data[1:])
-            if new_key not in new_seg_prec_dict:
-                new_seg_prec_dict[new_key] = []
-            new_seg_prec_dict[new_key].append((best_deadline, ap))
-#                if mean_prec > new_seg_prec_dict[new_key][1]:
-#                    new_seg_prec_dict[new_key] = (best_deadline, mean_prec)
-#            else:
-#                new_seg_prec_dict[new_key] = (best_deadline, mean_prec)
-        self.seg_prec_dict = new_seg_prec_dict
+#        def merge_datas(datas):
+#            return (datas[0][0],
+#                    np.concatenate([d[1] for d in datas]),
+#                    np.concatenate([d[2] for d in datas]),
+#                    sum([d[3] for d in datas]))
 
-        print('seg_prec_dict')
-        for k,v in self.seg_prec_dict.items():
-            print(k, v)
-            aprecs = [t[1] for t in v]
-            idx = np.argmax(aprecs)
-            self.seg_prec_dict[k] = v[idx]
+#        # for each time segment of each scene, this dict holds the best deadline
+#        new_seg_prec_dict = {}
+#        for k,v in seg_prec_dict.items():
+#            tokens = k.split('=')
+#            new_key = '='.join(tokens[:-1])
+#            best_deadline = int(tokens[-1])
+#
+#            if new_key not in new_seg_prec_dict:
+#                new_seg_prec_dict[new_key] = []
+#            new_seg_prec_dict[new_key].append((best_deadline, ap))
+#        self.seg_prec_dict = new_seg_prec_dict
 
-        if len(self.dataset_dict) > 0:
-            dataset_tuples=[]
-            for seg_key, (best_deadline, prec) in self.seg_prec_dict.items():
-                sample_tokens = seg_sample_tokens_dict[seg_key]
-                for sample_tkn in sample_tokens:
-                    if sample_tkn in self.dataset_dict:
-                        inout_list = self.dataset_dict[sample_tkn]
-                        deadlines = [l[-1] for l in inout_list]
-                        if best_deadline in deadlines:
-                            best_one = deadlines.index(best_deadline)
-                            dataset_tuples.append(inout_list[best_one])
-
-            # dump the tuples
-            print(f'Dumping {len(dataset_tuples)} samples as dataset')
-            with open('deadline_dataset.pkl', 'wb') as f:
-                pickle.dump(dataset_tuples, f)
-
+#TODO dataset stuff
+#        if len(self.dataset_dict) > 0:
+#            dataset_tuples=[]
+#            for seg_key, (best_deadline, prec) in self.seg_prec_dict.items():
+#                sample_tokens = seg_sample_tokens_dict[seg_key]
+#                for sample_tkn in sample_tokens:
+#                    if sample_tkn in self.dataset_dict:
+#                        inout_list = self.dataset_dict[sample_tkn]
+#                        deadlines = [l[-1] for l in inout_list]
+#                        if best_deadline in deadlines:
+#                            best_one = deadlines.index(best_deadline)
+#                            dataset_tuples.append(inout_list[best_one])
+#
+#            # dump the tuples
+#            print(f'Dumping {len(dataset_tuples)} samples as dataset')
+#            with open('deadline_dataset.pkl', 'wb') as f:
+#                pickle.dump(dataset_tuples, f)
+#
     def do_eval(self, deadline_ms=None):
         #if deadline is none, it will pick the deadline that gives the best result
 
-        upper_bound = (deadline_ms is None)
+        def get_dl_data(datas, dl):
+            for d in datas:
+                if d[0] == dl:
+                    return d
+            return datas[0]
+
+
         #calculate AP for each class and dist_th
-        seg_eval_dict = {}
-        if upper_bound:
-            chosen_deadlines = []
-            num_inconsistent = 0
-            for key, datas in self.seg_eval_data_dict.items():
-                # Get the best deadline
-                tokens = key.split('=')
-                seg_key = tokens[0] + '=' + tokens[1]
-                best_dl = self.seg_prec_dict[seg_key][0]
-                deadlines = [d[0] for d in datas]
-                if best_dl in deadlines:
-                    precs = [self.get_seg_prec_recall(d)[0] for d in datas]
-                    best_dl_cls = deadlines[np.argmax(precs)]
-                    if best_dl != best_dl_cls:
-                        num_inconsistent += 1
-                        #print('best_dls are not consistent', best_dl, best_dl_cls)
-                    seg_eval_dict[key] = datas[deadlines.index(best_dl)]
-                    #seg_eval_dict[key] = datas[deadlines.index(best_dl_cls)]
-                else:
-                    #print(f'Deadline {best_dl} not found for {key} in {deadlines}, using first')
-                    seg_eval_dict[key] = datas[0]
-                chosen_deadlines.append(seg_eval_dict[key][0])
-            print('Num inconsistent best segment deadline choices:', num_inconsistent)
-            deadlines, occurances =  np.unique(chosen_deadlines, return_counts=True)
+        if deadline_ms is None: # calculate upper bound
+#            chosen_deadlines = []
+#            num_inconsistent = 0
+#            for key, datas in self.seg_eval_data_dict.items():
+#                # Get the best deadline
+#                tokens = key.split('=')
+#                seg_key = tokens[0] + '=' + tokens[1]
+#                best_dl = self.seg_prec_dict[seg_key][0]
+#                deadlines = [d[0] for d in datas]
+#                if best_dl in deadlines:
+#                    precs = [self.get_seg_prec_recall(d)[0] for d in datas]
+#                    best_dl_cls = deadlines[np.argmax(precs)]
+#                    if best_dl != best_dl_cls:
+#                        num_inconsistent += 1
+#                        #print('best_dls are not consistent', best_dl, best_dl_cls)
+#                    seg_eval_dict[key] = datas[deadlines.index(best_dl)]
+#                    #seg_eval_dict[key] = datas[deadlines.index(best_dl_cls)]
+#                else:
+#                    #print(f'Deadline {best_dl} not found for {key} in {deadlines}, using first')
+#                    seg_eval_dict[key] = datas[0]
+#                chosen_deadlines.append(seg_eval_dict[key][0])
+#            print('Num inconsistent best segment deadline choices:', num_inconsistent)
+#            deadlines, occurances =  np.unique(chosen_deadlines, return_counts=True)
+            # for each segment, try all deadlines and find the best deadline
+            # that gives the most boost to the mAP.
+            max_mAP = 0.
+            cur_seg_dls = {seg:self.all_deadlines[0] for seg in self.all_segments}
+            for i, seg in enumerate(self.all_segments):
+                print(f'Processing {seg}, progress: {int(i/len(self.all_segments)*100)}')
+                for new_dl in self.all_deadlines:
+                    seg_eval_dict = {}
+                    old_dl = cur_seg_dls[seg]
+                    cur_seg_dls[seg] = new_dl
+                    for key, datas in self.seg_eval_data_dict.items():
+                        seg_i = '='.join(key.split('=')[:2])
+                        seg_eval_dict[key] = get_dl_data(datas, cur_seg_dls[seg_i])
+                    mAP = self.calc_mAP(seg_eval_dict, False)
+                    if mAP > max_mAP:
+                        max_mAP = mAP
+                        print('max mAP:', max_mAP)
+                    else:
+                        cur_seg_dls[seg] = old_dl
+            print('Upper bound mAP:', max_mAP)
             print('Deadline stats:')
+            deadlines, occurances = np.unique(np.array(list(cur_seg_dls.values())), return_counts=True)
             print(deadlines)
             print(occurances)
             print(np.round(occurances / np.sum(occurances), 2))
 
         else:
+            seg_eval_dict = {}
             for key, datas in self.seg_eval_data_dict.items():
-                found_data=False
-                for d in datas:
-                    if d[0] == deadline_ms:
-                        seg_eval_dict[key] = d
-                        found_data=True
-                        break
-                if not found_data:
-                    seg_eval_dict[key] = datas[0]
-                    #print('Data not found')
-                    #print(seg_eval_dict[key])
+                seg_eval_dict[key] = get_dl_data(datas, deadline_ms)
+            mAP = self.calc_mAP(seg_eval_dict)
+            print('mAP:', mAP)
 
+    def calc_mAP(self, seg_eval_dict, print_detailed=True):
         average_precs = []
         for cls_nm in self.class_names:
             for dist_th in self.dist_thresholds:
@@ -284,12 +297,13 @@ class SegInfo:
 
         all_aps = []
         for ap in average_precs:
-            print_fixed_width(ap[0], 30)
-            print_fixed_width(ap[1], 5)
-            print(round(ap[2], 3))
+            if print_detailed:
+                print_fixed_width(ap[0], 30)
+                print_fixed_width(ap[1], 5)
+                print(round(ap[2], 3))
             all_aps.append(ap[2])
-        print('mAP:', np.mean(all_aps))
-
+        mAP = np.mean(all_aps)
+        return mAP
 
     def calc_ap(self, all_tp, all_scr, all_num_gt) -> float:
         """ Calculated average precision. """
@@ -377,12 +391,9 @@ seg_info = SegInfo( # takes a list
 #        ['./cp_pp_valo_eval_data/'+f'eval_data_{dl}ms.pkl' for dl in (40.0,45.0,50.0,55.0,60.0)]
 )
 #VALO
-#for dl in range(45, 125+1, 20):
-#for dl in range(40, 60+1, 5):
-#print('deadline', dl)
-#seg_info.do_eval(70)
-#seg_info.do_eval(115)
-#seg_info.do_eval(145)
+for dl in seg_info.all_deadlines:
+    print('Deadline', dl)
+    seg_info.do_eval(dl)
 seg_info.do_eval()
 
 #baseline
