@@ -7,7 +7,7 @@ import sys
 from typing import List
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 
-class OptimizedFwdPipeline2(torch.nn.Module):
+class DenseConvsPipeline(torch.nn.Module):
     def __init__(self, backbone_2d, dense_head):
         super().__init__()
         self.backbone_2d = backbone_2d
@@ -85,8 +85,8 @@ class CenterPointOpt(Detector3DTemplate):
             self.measure_time_start('FusedOps')
             sf = batch_dict['spatial_features']
 
-            if self.fused_ops2_trt is not None:
-                self.trt_outputs = self.fused_ops2_trt({'spatial_features': sf}, self.trt_outputs)
+            if self.fused_ops_trt is not None:
+                self.trt_outputs = self.fused_ops_trt({'spatial_features': sf}, self.trt_outputs)
                 outputs = [self.trt_outputs[nm] for nm in self.opt_fwd_output_names]
             else:
                 outputs = self.opt_fwd(sf)
@@ -121,11 +121,11 @@ class CenterPointOpt(Detector3DTemplate):
                 for name in self.dense_head.ordered_outp_names()]
         print('Fused operations output names:', self.opt_fwd_output_names)
 
-        self.opt_fwd = OptimizedFwdPipeline2(self.backbone_2d, self.dense_head)
+        self.opt_fwd = DenseConvsPipeline(self.backbone_2d, self.dense_head)
         self.opt_fwd.eval()
 
         generated_onnx=False
-        onnx_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             torch.onnx.export(
                     self.opt_fwd,
@@ -137,20 +137,26 @@ class CenterPointOpt(Detector3DTemplate):
             )
             generated_onnx=True
 
-        sf = fwd_data 
-        trt_path = self.model_cfg.BACKBONE_2D.OPT_PATH + '.engine'
-        try:
-            self.fused_ops2_trt = TRTWrapper(trt_path, input_names, self.opt_fwd_output_names)
-        except:
-            print('TensorRT wrapper for fused_ops2 throwed exception, using eager mode')
-            eager_outputs = self.opt_fwd(fwd_data) # for calibration
-            self.fused_ops2_trt = None
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        if power_mode == 'UNKNOWN_POWER_MODE':
+            print('WARNING! Power mode is unknown. Please export PMODE.')
 
-        optimize_end = time.time()
-        print(f'Optimization took {optimize_end-optimize_start} seconds.')
         if generated_onnx:
             print('ONNX files created, please run again after creating TensorRT engines.')
             sys.exit(0)
+
+        tokens = self.model_cfg.ONNX_PATH.split('/')
+        trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
+        print('Trying to load trt engine at', trt_path)
+        try:
+            self.fused_ops_trt = TRTWrapper(trt_path, input_names, self.opt_fwd_output_names)
+        except:
+            print('TensorRT wrapper for fused_ops throwed exception, using eager mode')
+            eager_outputs = self.opt_fwd(fwd_data) # for calibration
+            self.fused_ops_trt = None
+
+        optimize_end = time.time()
+        print(f'Optimization took {optimize_end-optimize_start} seconds.')
 
         self.optimization1_done = True
 

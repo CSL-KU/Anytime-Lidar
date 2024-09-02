@@ -39,10 +39,11 @@ inp6="pos_embed_tensor"
 #inp7="voxel_coords"
 
 inp_onnx_path=$(realpath $1)
-outp_engine_path=$(echo $inp_onnx_path | sed 's/\.onnx$/.engine/')
+fname=$(echo $inp_onnx_path | awk -F'/' '{print $NF}')
+fname_prefix=$(echo $fname | awk -F'.' '{print $1}')
+outp_engine_path="./trt_engines/${PMODE}/${fname_prefix}.engine"
+mkdir -p "./trt_engines/${PMODE}"
 
-pushd ../deploy_files
-#pushd deploy_files_valo
 TRT_PATH="/home/humble/shared/libraries/TensorRT-10.1.0.27"
 LD_LIBRARY_PATH=$TRT_PATH/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH  \
 	$TRT_PATH/bin/trtexec --onnx=$inp_onnx_path  --saveEngine=$outp_engine_path --verbose \
@@ -56,4 +57,3 @@ LD_LIBRARY_PATH=$TRT_PATH/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH  \
 
 # Using this plugin doesnt solve the problem
 #	--staticPlugins=../../../libraries/IndexPutDeterministicTRT/build/libindex_put_lib.so \
-popd

@@ -41,7 +41,6 @@ MODEL:
         NUM_FILTERS: [128, 256]
         UPSAMPLE_STRIDES: [1, 2]
         NUM_UPSAMPLE_FILTERS: [256, 256]
-        OPT_PATH: /home/humble/shared/Anytime-Lidar/tools/deploy_files/cbgs_dyn_voxel01_cp_valo_dense_convs
 
     DENSE_HEAD:
         NAME: CenterHeadInf
@@ -99,6 +98,7 @@ MODEL:
 
         EVAL_METRIC: kitti
 
+    ONNX_PATH: deploy_files/onnx_files/cbgs_dyn_voxel01_cp_valo_dense_convs
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
     TILE_COUNT: 18

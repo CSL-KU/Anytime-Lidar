@@ -384,7 +384,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.collect_calib_data = False
 
-        self.calib_fname = f"calib_data_m{self.model_cfg.METHOD}_r{self.tcount}"
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        self.calib_fname = f"calibdata_{power_mode}_m{self.model_cfg.METHOD}_r{self.tcount}"
         if self.sched_vfe:
             self.calib_fname += '_svfe'
         if self.sched_bb3d:

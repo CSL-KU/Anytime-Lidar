@@ -13,6 +13,7 @@ export CALIBRATION=${CALIBRATION:-0}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export TASKSET=${TASKSET:-"taskset -c 2-7"}
 export USE_AMP=${USE_AMP:-"false"}
+export PMODE=${POWER_MODE:-"MAXN"}
 
 if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #PointPillars Multihead *
@@ -22,21 +23,21 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #SECOND CBGS *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_second_multihead.yaml"
     #CKPT_FILE="../models/cbgs_second_multihead_nds6229_updated.pth"
-    
+
     # Centerpoint-pointpillar * 
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
-    
-    # Centerpoint-voxel0075 *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
-
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_valo.yaml"
-    CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6647_opt.pth"
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_valo.yaml"
+    CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
 
     # Centerpoint-voxel01 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_trt.yaml"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
     #CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
+
+    # Centerpoint-voxel0075 *
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
 
     # VoxelNeXt *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml"

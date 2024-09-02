@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import gc
 import sys
+import pickle
 
 from eval_utils import eval_utils
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
@@ -43,7 +44,7 @@ VALO_DEBUG = False
 DO_DYN_SCHED = True
 ALWAYS_BLOCK_SCHED = False
 EVAL_TRACKER = False
-ANYTIME_CAPABLE = False
+ANYTIME_CAPABLE = True
 ENABLE_TILE_DROP = False
 VISUALIZE = False
 PROFILE = False
@@ -129,7 +130,7 @@ def pred_dict_to_f32_multi_arr(pred_dict, stamp):
 def f32_multi_arr_to_pred_dict(float_arr):
     if len(float_arr.array.layout.dim) == 0: # empty det
         boxes, scores, labels = torch.empty((0, 9)), torch.empty(0), \
-            torch.empty(0, dtype=torch.int)
+            torch.empty(0, dtype=torch.long)
     else:
         num_objs = float_arr.array.layout.dim[0].size;
         all_data = torch.tensor(float_arr.array.data, dtype=torch.float).view(num_objs, -1)
@@ -525,6 +526,13 @@ class StreamingEvaluator(Node):
 
         print(result_str)
 
+        calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
+        with open(f'eval_data_{calib_dl}ms.pkl', 'wb') as f:
+            pickle.dump({'det_annos': det_annos,
+                'calib_deadline_ms': calib_dl,
+                'result_str': result_str,
+                'annos_in_glob_coords':(frame_id != 'base_link')}, f)
+
 class InferenceServer(Node):
     def __init__(self, args, period_sec):
         super().__init__('inference_server')
@@ -818,9 +826,9 @@ class InferenceServer(Node):
         self.cmd_publisher.publish(eval_cmd)
 
         gc.enable()
-        for i, tdiff in enumerate(tdiffs):
-            if tdiff > 0:
-                print(f'Deadline {i} missed with {tdiff * 1000} ms')
+        #for i, tdiff in enumerate(tdiffs):
+        #    if tdiff > 0:
+        #        print(f'Deadline {i} missed with {tdiff * 1000} ms')
         model.print_time_stats()
 
 

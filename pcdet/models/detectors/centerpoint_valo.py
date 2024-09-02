@@ -239,10 +239,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         self.opt_dense_convs(fwd_data, True) # do this so tile sizes are determined
 
         generated_onnx=False
-        opt_path = self.model_cfg.BACKBONE_2D.OPT_PATH
-        if self.dense_head.optimize_attr_convs:
-            opt_path += '_dhopt'
-        onnx_path = opt_path + '.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "spatial_features": {
@@ -263,7 +260,16 @@ class CenterPointVALO(AnytimeTemplateV2):
             )
             generated_onnx=True
 
-        trt_path = opt_path + '.engine'
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        if power_mode == 'UNKNOWN_POWER_MODE':
+            print('WARNING! Power mode is unknown. Please export PMODE.')
+
+        if generated_onnx:
+            print('ONNX files created, please run again after creating TensorRT engines.')
+            sys.exit(0)
+
+        tokens = self.model_cfg.ONNX_PATH.split('/')
+        trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
         try:
             self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
         except:
@@ -273,9 +279,6 @@ class CenterPointVALO(AnytimeTemplateV2):
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
 
-        if generated_onnx:
-            print('ONNX files created, please run again after creating TensorRT engines.')
-            sys.exit(0)
 
         self.dense_head_scrpt = torch.jit.script(self.dense_head)
         self.optimization1_done = True
