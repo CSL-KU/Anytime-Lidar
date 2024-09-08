@@ -25,8 +25,8 @@ class CenterPointOpt(Detector3DTemplate):
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()

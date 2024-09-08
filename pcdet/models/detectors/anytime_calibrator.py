@@ -252,7 +252,7 @@ class AnytimeCalibrator():
                     axis=-1) +  self.time_reg_intercepts
             axes[1].scatter(bb3d_voxels.flatten(), pred_times.flatten(), label='pred')
         plt.legend()
-        plt.savefig(f'/home/humble/shared/latest_exp_plots/vfe_and_bb3d_time.pdf')
+        plt.savefig(f'../../latest_exp_plots/vfe_and_bb3d_time.pdf')
         plt.clf()
 
         if self.sched_bb3d and not self.use_baseline_bb3d_predictor:

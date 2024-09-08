@@ -48,6 +48,7 @@ ANYTIME_CAPABLE = True
 ENABLE_TILE_DROP = False
 VISUALIZE = False
 PROFILE = False
+DO_EVAL = False
 
 assert (DO_DYN_SCHED != ALWAYS_BLOCK_SCHED)
 
@@ -514,24 +515,29 @@ class StreamingEvaluator(Node):
                 data_dict, data_dict['final_box_dicts'], self.dataset.class_names, output_path=None
             )
 
-        nusc_annos = {} # not needed but keep it anyway
-        result_str, result_dict = self.dataset.evaluation(
-            det_annos, self.dataset.class_names,
-            eval_metric=self.cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
-            output_path='./tmp_results',
-            nusc_annos_outp=nusc_annos,
-            boxes_in_global_coords=(frame_id != 'base_link'),
-            #det_elapsed_musec=det_elapsed_musec,
-        )
-
-        print(result_str)
-
         calib_dl = float(os.getenv('CALIB_DEADLINE_MILLISEC', 0.))
+        eval_d = {
+            'cfg': self.cfg,
+            'det_annos': det_annos,
+            'annos_in_glob_coords':(frame_id != 'base_link'),
+            'calib_deadline_ms': calib_dl}
+
+        if DO_EVAL:
+            #nusc_annos = {} # not needed but keep it anyway
+            result_str, result_dict = self.dataset.evaluation(
+                det_annos, self.dataset.class_names,
+                eval_metric=self.cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
+                output_path='./tmp_results',
+                #nusc_annos_outp=nusc_annos,
+                boxes_in_global_coords=(frame_id != 'base_link'),
+                #det_elapsed_musec=det_elapsed_musec,
+            )
+
+            print(result_str)
+            eval_d['result_str'] result_str
+
         with open(f'eval_data_{calib_dl}ms.pkl', 'wb') as f:
-            pickle.dump({'det_annos': det_annos,
-                'calib_deadline_ms': calib_dl,
-                'result_str': result_str,
-                'annos_in_glob_coords':(frame_id != 'base_link')}, f)
+            pickle.dump(eval_d, f)
 
 class InferenceServer(Node):
     def __init__(self, args, period_sec):

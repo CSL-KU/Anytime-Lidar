@@ -67,8 +67,8 @@ class CenterPointVALO(AnytimeTemplateV2):
             torch.backends.cudnn.benchmark_limit = 0
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
@@ -184,6 +184,11 @@ class CenterPointVALO(AnytimeTemplateV2):
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs)
             else:
                 outputs = self.opt_dense_convs(sf)
+                outp_names = self.opt_dense_convs_output_names_pd + \
+                        self.opt_dense_convs_output_names_topk
+                out_dict = {name:outp for name, outp in zip(outp_names, outputs)}
+                pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
+
             self.measure_time_end('FusedOps')
 
             if self.is_calibrating():
@@ -256,7 +261,7 @@ class CenterPointVALO(AnytimeTemplateV2):
                     output_names=outp_names,
                     dynamic_axes=dynamic_axes,
                     opset_version=17,
-                    custom_opsets={"cuda_slicer": 17}
+                    custom_opsets={"cuda_slicer": 17},
             )
             generated_onnx=True
 
@@ -293,7 +298,6 @@ class CenterPointVALO(AnytimeTemplateV2):
                 pred_dicts[idx][name] = v
             else:
                 topk_outputs[idx][self.topk_outp_names.index(name)] = v
-
         return pred_dicts, topk_outputs
 
     def get_training_loss(self):
