@@ -30,7 +30,6 @@ def get_dl_data(datas, dl):
             return d
     return datas[0]
 
-
 #@numba.jit(nopython=True)
 def gen_features(bboxes, scores, labels, coords_2d=True):
     #bboxes = det_annos['boxes_lidar']
@@ -58,12 +57,14 @@ def create_bev_tensor(feature_coords, features):
     return bev_tensor
 
 class SegInfo:
-    def __init__(self, path_list, eval_path_list = []): #, dist_th=None, class_name=None):
-        self.class_names = ['car'] #,'truck', 'construction_vehicle', 'bus', 'trailer',
-#                      'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
-        self.dist_thresholds = ['2.0'] #, '1.0', '2.0', '4.0'] # hope this will be ok
+    def __init__(self, inp_dir): #, dist_th=None, class_name=None):
+        self.class_names = ['car','truck', 'construction_vehicle', 'bus', 'trailer',
+                      'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+        self.dist_thresholds = ['2.0', '1.0', '2.0', '4.0'] # hope this will be ok
 
         self.dataset_dict = {} # key: sample_token val: (deadline, bev_tensor)
+
+        eval_path_list = glob.glob(inp_dir + "/*.pkl")
         for path in eval_path_list:
             print('Loading', path)
             with open(path, 'rb') as handle:
@@ -73,13 +74,13 @@ class SegInfo:
                 assert not coords_glob
 
                 det_annos_all = d['det_annos']
-                last_scores = np.zeros(1, dtype=float)
-                for det_annos in det_annos_all: #[:10]:
+                print('Num samples:', len(det_annos_all))
+                for det_annos in det_annos_all:
                     scores = det_annos['score']
-                    if len(scores) > 0 and not np.array_equal(scores, last_scores):
-                        last_scores = scores
+                    if len(scores) > 0:
                         feature_coords, features = gen_features(det_annos['boxes_lidar'], scores, 
                                 det_annos['pred_labels'], coords_2d=False)
+
                         sample_token = det_annos['metadata']['token']
                         tpl = (feature_coords, features, deadline_ms) # in in out
                         if sample_token in self.dataset_dict:
@@ -88,7 +89,8 @@ class SegInfo:
                             self.dataset_dict[sample_token] = [tpl]
 
         self.seg_info_tuples = []
-        for path in path_list:
+        seg_info_path_list = glob.glob(inp_dir + "/*.json")
+        for path in seg_info_path_list:
             print('Loading', path)
             with open(path, 'r') as handle:
                 seg_info = json.load(handle)
@@ -101,12 +103,12 @@ class SegInfo:
             self.__setattr__(f+'_idx', i)
 
 #        if dist_th is not None:
-        self.seg_info_tuples = [t for t in self.seg_info_tuples \
-                 if t[self.dist_th_idx] == 2.0]
+#        self.seg_info_tuples = [t for t in self.seg_info_tuples \
+#                 if t[self.dist_th_idx] == 2.0]
 
 #        if class_name is not None:
-        self.seg_info_tuples = [t for t in self.seg_info_tuples \
-                 if t[self.class_idx] == 'car']
+#        self.seg_info_tuples = [t for t in self.seg_info_tuples \
+#                 if t[self.class_idx] == 'car']
         
         self.scene_to_idx={}
         self.scene_to_idx_counter=0
@@ -124,8 +126,9 @@ class SegInfo:
         # this one on the other hand merges the classes and dist thresholds
         seg_prec_dict = {}
         # this one will be used to build the dataset
-        seg_sample_tokens_dict = {}
+        sample_token_to_seg_dict = {}
         all_deadlines = set()
+        all_segments = set()
         for i, tpl in enumerate(self.seg_info_tuples):
             seg_sample_stats = tpl[self.seg_sample_stats_idx] # list of dicts
             num_gt_seg, tp_arr, scr_arr = 0, [], []
@@ -146,7 +149,7 @@ class SegInfo:
             tp_arr = np.array(tp_arr, dtype=int)
             scr_arr = np.array(scr_arr, dtype=float)
 
-            deadline = int(tpl[self.deadline_ms_idx])
+            deadline = int(float(tpl[self.deadline_ms_idx]))
             all_deadlines.add(deadline)
             data = [deadline, tp_arr, scr_arr, num_gt_seg]
 
@@ -156,12 +159,24 @@ class SegInfo:
             seg_eval_data_dict[key].append(data)
 
             key = self.get_key(i, use_cls=False, use_dist_th=False, use_dl=False)
-            if key not in seg_sample_tokens_dict:
-                seg_sample_tokens_dict[key] = [s['sample_token'] for s in seg_sample_stats]
+            tokens = [s['sample_token'] for s in seg_sample_stats]
+            for tkn in tokens:
+                if tkn in sample_token_to_seg_dict:
+                    assert sample_token_to_seg_dict[tkn] == key
+                else:
+                    sample_token_to_seg_dict[tkn] = key
+            all_segments.add(key)
+
         self.seg_eval_data_dict = seg_eval_data_dict
-        self.seg_sample_tokens_dict = seg_sample_tokens_dict
-        self.all_segments = list(seg_sample_tokens_dict.keys())
+        self.sample_token_to_seg_dict = sample_token_to_seg_dict
+        self.all_segments = list(all_segments)
         self.all_deadlines = list(all_deadlines)
+
+        if len(self.dataset_dict) > 0:
+            to_del = [k for k,v in self.dataset_dict.items() if len(v) != len(self.all_deadlines)]
+            for k in to_del:
+                del self.dataset_dict[k]
+            print('Dataset dict len after pruning:', len(self.dataset_dict))
 
     def calc_max_mAP(self, lims):
         if lims[0] == 0:
@@ -297,18 +312,15 @@ class SegInfo:
             print(occurances)
             print(np.round(occurances / np.sum(occurances), 2))
 
-            if len(self.dataset_dict) > 0:
+            if len(self.dataset_dict) > 0 and upper_bound_calc_method == 'heuristic':
                 dataset_tuples=[]
-                for key, data in best_seg_eval_dict.items():
-                    seg_key = '='.join(key.split('=')[:2])
-                    sample_tokens = self.seg_sample_tokens_dict[seg_key]
-                    for sample_tkn in sample_tokens:
-                        if sample_tkn in self.dataset_dict:
-                            inout_list = self.dataset_dict[sample_tkn]
-                            deadlines = [l[-1] for l in inout_list]
-                            if data[0] in deadlines:
-                                best_one = deadlines.index(data[0])
-                                dataset_tuples.append(inout_list[best_one])
+                for sample_tkn, inout_list in self.dataset_dict.items():
+                    segkey = self.sample_token_to_seg_dict[sample_tkn]
+                    dl = cur_seg_dls[segkey]
+                    idx = [l[-1] for l in inout_list].index(dl)
+                    dataset_tuples.append(inout_list[idx])
+
+                print('Duplicates are not removed')
                 # dump the tuples
                 print(f'Dumping {len(dataset_tuples)} samples as dataset')
                 with open('deadline_dataset.pkl', 'wb') as f:
@@ -328,8 +340,6 @@ class SegInfo:
                 for key, data in seg_eval_dict.items():
                     tokens = key.split('=')
                     if tokens[2] == cls_nm and tokens[3] == dist_th:
-                        #if len(data) != 4:
-                        #    print(data)
                         deadline_ms, tp_arr, scr_arr, num_gt_seg = data
                         all_tp.append(tp_arr)
                         all_scr.append(scr_arr)
@@ -433,24 +443,14 @@ class SegInfo:
         return self.scene_to_idx[scene] * num_time_seg_in_scene + t[fi['time_segment']]
 
 out_dir = './seg_plots'
-in_dir = './streaming_spi/'
-seg_info = SegInfo( # takes a list
-#        [in_dir+'cp_pp.json',
-#        in_dir+'cp_voxel01.json',
-#        in_dir+'cp_voxel0075.json'],
-#        [in_dir+'cp_pp_valo.json'],
-#        [in_dir+'cp_voxel01_valo.json'],
-        ['segment_precision_info.json'],
-#        [f'eval_data_{float(dl)}ms.pkl' for dl in range(95,195+1,50)]
-#        ['backup/segment_precision_info.json'],
-#        ['./backup/'+f'eval_data_{float(dl)}ms.pkl' for dl in range(45,105+1,10)]
-)
+inp_dir = sys.argv[1]
+seg_info = SegInfo(inp_dir)
 #VALO
-#for dl in seg_info.all_deadlines:
-#    print('Deadline', dl)
-#    seg_info.do_eval(dl)
+for dl in seg_info.all_deadlines:
+    print('Deadline', dl)
+    seg_info.do_eval(dl)
 
-seg_info.do_eval(None, 'precision_based')
+#seg_info.do_eval(None, 'precision_based')
 seg_info.do_eval(None, 'heuristic')
 #seg_info.do_eval(None, 'exhaustive')
 
