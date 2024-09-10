@@ -38,6 +38,9 @@ from multiprocessing import Process, Barrier, Pool, Value
 import concurrent
 from torch.profiler import profile, record_function, ProfilerActivity
 
+from fine_grained_mAP_calc import gen_features, create_bev_tensor
+from pcdet.models.model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+
 # export FINE_GRAINED_EVAL=1 for fine grained evaluation results saved to json
 
 VALO_DEBUG = False
@@ -534,7 +537,7 @@ class StreamingEvaluator(Node):
             )
 
             print(result_str)
-            eval_d['result_str'] result_str
+            eval_d['result_str'] = result_str
 
         with open(f'eval_data_{calib_dl}ms.pkl', 'wb') as f:
             pickle.dump(eval_d, f)
@@ -603,6 +606,17 @@ class InferenceServer(Node):
 
         self.model = model
 
+        global ANYTIME_CAPABLE
+        if ANYTIME_CAPABLE:
+            # load trt model
+            trt_path = "./deploy_files/trt_engines/pmode_0000/deadline_pred_mdl.engine"
+            print('Trying to load trt engine at', trt_path)
+            try:
+                self.dl_pred_trt = TRTWrapper(trt_path, ['bev_inp'], ['deadline'])
+                self.dl_pred_out_buf = None
+            except:
+                print('TensorRT wrapper for deadline pred model throwed exception')
+                ANYTIME_CAPABLE = False
 
     def load_scene(self, scene_token):
         for idx, (s_tkn, ind) in enumerate(self.scene_start_indices):
@@ -627,31 +641,49 @@ class InferenceServer(Node):
                 print('Samples loaded')
                 return
 
-    def get_dyn_deadline_sec(self, sample_idx):
+    def get_dyn_deadline_sec(self, sample_idx, pred_dict=None):
         if self.calib_dl != 0.:
             return self.calib_dl / 1000.
 
         if not ANYTIME_CAPABLE:
             return 10.0 # ignore deadline
 
-        max_vel_n = 15 # meters per second
-        max_deadline = 0.125
-        min_deadline = 0.075
-        if sample_idx > 0 and sample_idx < self.num_samples:
-            prev_tkn = self.dataset.infos[sample_idx-1]['token']
-            cur_tkn = self.dataset.infos[sample_idx]['token']
+        if pred_dict is not None:
+            bboxes = pred_dict['pred_boxes'].numpy() # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+            scores = pred_dict['pred_scores'].flatten().float().numpy()
+            labels = pred_dict['pred_labels'].flatten().float().numpy()
+            coords, feats = gen_features(bboxes, scores, labels)
+            #print(coords.shape, feats.shape)
+            #print(feats)
+            bev_inp = torch.zeros((1,8,64,64), dtype=torch.float)
+            coords = torch.from_numpy(coords[:, :2]).long()//2
+            feats = torch.from_numpy(feats).T.float()
+            bev_inp[0, :, coords[:,1], coords[:,0]] = feats
+            #bev_inp = create_bev_tensor(coords, feats)
+            self.dl_pred_out_buf = self.dl_pred_trt({'bev_inp': bev_inp.cuda()},
+                    self.dl_pred_out_buf)
+            dl = self.dl_pred_out_buf['deadline'].cpu().item()
+            return dl / 1000.0
 
-            prev_coord = self.model.token_to_pose[prev_tkn][7:10]
-            cur_coord = self.model.token_to_pose[cur_tkn][7:10]
-
-            prev_ts = self.model.token_to_ts[prev_tkn]
-            cur_ts = self.model.token_to_ts[cur_tkn]
-
-            vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
-            vel_n = np.linalg.norm(vel)
-            return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
         else:
-            return max_deadline
+            max_vel_n = 15 # meters per second
+            max_deadline = 0.175
+            min_deadline = 0.075
+            if sample_idx > 0 and sample_idx < self.num_samples:
+                prev_tkn = self.dataset.infos[sample_idx-1]['token']
+                cur_tkn = self.dataset.infos[sample_idx]['token']
+
+                prev_coord = self.model.token_to_pose[prev_tkn][7:10]
+                cur_coord = self.model.token_to_pose[cur_tkn][7:10]
+
+                prev_ts = self.model.token_to_ts[prev_tkn]
+                cur_ts = self.model.token_to_ts[cur_tkn]
+
+                vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
+                vel_n = np.linalg.norm(vel)
+                return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
+            else:
+                return max_deadline
 
     def infer_loop(self, bar, shr_tracker_time_sec):
         model = self.model
@@ -678,6 +710,7 @@ class InferenceServer(Node):
         #if self.calib_dl > 0. and self.calib_dl < self.period_sec*1000:
         #    DO_DYN_SCHED = False
         #    ALWAYS_BLOCK_SCHED = True
+        pred_dict = None
 
         while rclpy.ok():
             if VALO_DEBUG:
@@ -723,7 +756,7 @@ class InferenceServer(Node):
             if PROFILE and i > 200 or i >= self.num_samples:
                 break
 
-            dyn_deadline_sec = self.get_dyn_deadline_sec(i)
+            dyn_deadline_sec = self.get_dyn_deadline_sec(i, pred_dict)
 
             sample_token = self.dataset.infos[i]['token']
             scene_token = self.model.token_to_scene[sample_token]
