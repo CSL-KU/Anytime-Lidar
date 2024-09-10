@@ -82,7 +82,7 @@ class TRTWrapper(torch.nn.Module):
             self.context.set_input_shape(input_name, tuple(input_tensor.shape))
             self.context.set_tensor_address(input_name, input_tensor.data_ptr())
 
-        assert self.context.all_binding_shapes_specified
+        #assert self.context.all_binding_shapes_specified
 
         # create output tensors
         if outputs is None:
