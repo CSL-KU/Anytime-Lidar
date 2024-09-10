@@ -662,13 +662,20 @@ class InferenceServer(Node):
             #bev_inp = create_bev_tensor(coords, feats)
             self.dl_pred_out_buf = self.dl_pred_trt({'bev_inp': bev_inp.cuda()},
                     self.dl_pred_out_buf)
-            dl = self.dl_pred_out_buf['deadline'].cpu().item()
-            return dl / 1000.0
+            dl = self.dl_pred_out_buf['deadline'].cpu().flatten().item()
 
+            #TODO keep the same DL for one sec?
+
+            # choose the closest deadline from the list
+            #cp_pp_valo_deadlines = torch.tensor([65., 75., 85., 95., 105., 115.])
+            #diff, idx = torch.min(torch.abs(cp_pp_valo_deadlines - dl), 0)
+            #return cp_pp_valo_deadlines[idx].item() / 1000.0
+
+            return dl / 1000.0
         else:
             max_vel_n = 15 # meters per second
-            max_deadline = 0.175
-            min_deadline = 0.075
+            max_deadline = 0.115
+            min_deadline = 0.065
             if sample_idx > 0 and sample_idx < self.num_samples:
                 prev_tkn = self.dataset.infos[sample_idx-1]['token']
                 cur_tkn = self.dataset.infos[sample_idx]['token']
