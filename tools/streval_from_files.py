@@ -30,7 +30,7 @@ def main():
     root_path = "../data/nuscenes/" + dataset_version
     loaded_nusc = NuScenes(version=dataset_version, dataroot=root_path, verbose=True)
    
-    eval_dict_paths = glob.glob(inp_dir + "/*.pkl")
+    eval_dict_paths = glob.glob(inp_dir + "/eval_data_*.pkl")
 
     os.environ['FINE_GRAINED_EVAL'] = '1'
     for ed_path in eval_dict_paths:
@@ -38,9 +38,9 @@ def main():
         with open(ed_path, 'rb') as handle:
             eval_d = pickle.load(handle)
 
-        #if 'result_str' in eval_d:
-        #    print('Skipping this one it is already evaluated')
-        #    continue # done already
+        if 'result_str' in eval_d:
+            print('Skipping this one it is already evaluated')
+            continue # done already
 
         cfg = eval_d['cfg']
         det_annos = eval_d['det_annos']
