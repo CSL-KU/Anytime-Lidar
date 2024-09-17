@@ -63,6 +63,7 @@ class CenterPointOpt(Detector3DTemplate):
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
+            #batch_dict = self.vfe(batch_dict)
             self.measure_time_end('VFE')
 
             if not self.use_pillars:

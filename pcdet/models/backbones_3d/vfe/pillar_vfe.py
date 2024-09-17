@@ -80,6 +80,8 @@ class PillarVFE(VFETemplate):
         self.y_offset = self.voxel_y / 2 + point_cloud_range[1]
         self.z_offset = self.voxel_z / 2 + point_cloud_range[2]
 
+        self.point_cloud_range = point_cloud_range
+
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
@@ -90,6 +92,10 @@ class PillarVFE(VFETemplate):
         max_num = torch.arange(max_num, dtype=torch.int, device=actual_num.device).view(max_num_shape)
         paddings_indicator = actual_num.int() > max_num
         return paddings_indicator
+
+
+    def range_filter(self, batch_dict, filter_z=True):
+        return batch_dict # has to be done bef
 
     def forward(self, batch_dict, **kwargs):
   
