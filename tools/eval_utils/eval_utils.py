@@ -16,9 +16,66 @@ from eval_utils.centerpoint_tracker import CenterpointTracker as Tracker
 
 speed_test = False
 visualize = False
+visualize_ros2 = False
 if visualize:
     import open3d
     from visual_utils import open3d_vis_utils as V
+
+if visualize_ros2:
+    import rclpy
+    from rclpy.node import Node
+    from autoware_auto_perception_msgs.msg import DetectedObjects, ObjectClassification
+    from valo_msgs.msg import Float32MultiArrayStamped
+    from sensor_msgs.msg import PointCloud2, PointField
+    from rclpy.clock import ClockType, Clock
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+    from inference_ros2 import pred_dict_to_f32_multi_arr, f32_multi_arr_to_detected_objs, \
+            points_to_pc2
+
+    class VisualizationNode(Node):
+        def __init__(self, cls_names):
+            super().__init__('valo_visualizer')
+            qos_profile = QoSProfile(
+                    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=10)
+            self.system_clock = Clock(clock_type=ClockType.SYSTEM_TIME)
+            self.det_debug_publisher = self.create_publisher(DetectedObjects, 'detected_objects_debug',
+                    qos_profile)
+            self.ground_truth_publisher = self.create_publisher(DetectedObjects, 'ground_truth_objects',
+                    qos_profile)
+            self.pc_publisher = self.create_publisher(PointCloud2, 'point_cloud',
+                    qos_profile)
+
+            oc = ObjectClassification()
+            self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
+                    for name in cls_names }
+
+        def pred_dict_to_detected_objs(self, pred_dict, tstamp=None):
+            if tstamp is None:
+                tstamp = self.system_clock.now().to_msg()
+            float_arr = pred_dict_to_f32_multi_arr(pred_dict, tstamp)
+            return f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
+
+        def publish_vis_data(self, dets_pred_dict, gt_pred_dict=None, points=None, tstamp=None):
+            if tstamp is None:
+                tstamp = self.system_clock.now().to_msg()
+
+            if points is not None:
+                num_fields = points.shape[1]
+                assert num_fields >= 3 and num_fields <= 5
+                pc_msg = points_to_pc2(points)
+                pc_msg.header.frame_id = 'base_link'
+                pc_msg.header.stamp = tstamp
+                self.pc_publisher.publish(pc_msg)
+
+            det_objs = self.pred_dict_to_detected_objs(dets_pred_dict, tstamp)
+            self.det_debug_publisher.publish(det_objs)
+
+            if gt_pred_dict is not None:
+                gt_objs = self.pred_dict_to_detected_objs(dets_pred_dict, tstamp)
+                self.ground_truth_publisher.publish(gt_objs)
+
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
@@ -81,235 +138,75 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
     if visualize:
         V.initialize_visualizer()
 
+    if visualize_ros2:
+        rclpy.init(args=None)
+        vis_node = VisualizationNode(cfg.CLASS_NAMES)
+
     det_elapsed_musec = []
-    if cfg.MODEL.STREAMING_EVAL:
-        with open('token_to_pos.json', 'r') as handle:
-            token_to_pose = json.load(handle)
+        #def get_ts(data_dict):
+        #    return token_to_pose[data_dict['metadata']['token']]['timestamp']
 
-        def get_ts(data_dict):
-            return token_to_pose[data_dict['metadata']['token']]['timestamp']
+    pred_tuples = [None] *len(dataloader)
+    for i in range(len(dataloader)):
+        if speed_test and i == num_samples:
+            break
+        if getattr(args, 'infer_time', False):
+            start_time = time.time()
+        data_indexes = [i*batch_size+j for j in range(batch_size) \
+                if i*batch_size+j < len(dataset)]
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=args.use_amp):
+                pred_dicts, ret_dict = model(data_indexes)
+        det_elapsed_musec.append(model.last_elapsed_time_musec)
+        disp_dict = {}
 
-        def get_scene_token(data_dict):
-            return token_to_pose[data_dict['metadata']['token']]['scene']
+        if getattr(args, 'infer_time', False):
+            inference_time = time.time() - start_time
+            infer_time_meter.update(inference_time * 1000)
+            # use ms to measure inference time
+            disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
 
-        all_data_dicts = [dataset.get_metadata_dict(i) for i in range(len(dataloader))]
-        print('Loaded data dicts')
-        all_scene_tokens = [get_scene_token(dd) for dd in all_data_dicts]
-        tokens_and_num_samples, idx = [[all_scene_tokens[0], 0]], 0
-        for tkn in all_scene_tokens:
-            if tkn != tokens_and_num_samples[idx][0]:
-                tokens_and_num_samples.append([tkn, 0])
-                idx += 1
-            tokens_and_num_samples[idx][1] += 1
+        batch_dict = model.latest_batch_dict
+        if visualize:
+            # Can infer which detections are projection from the scores
+            # -x -y -z +x +y +z
+            pd = batch_dict['final_box_dicts'][0]
+            V.draw_scenes(
+                points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
+                gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
+                ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
+                max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
+                pc_range=model.vfe.point_cloud_range.cpu().numpy(),
+                nonempty_tile_coords=batch_dict.get('nonempty_tile_coords', None),
+                tile_coords=batch_dict.get('chosen_tile_coords', None),
+                clusters=batch_dict.get('clusters', None))
 
-        print('Scenes and number samples in them:')
-        for tns in tokens_and_num_samples:
-            print(tns)
+        if visualize_ros2: # 200 ms on jetson orin
+            det_pred_dict = batch_dict['final_box_dicts'][0]
+            gt_pred_dict = dataset.get_gt_as_pred_dict(data_indexes[0])
+            points = batch_dict['points']
+            points = points[points[:,-1] == 0.] # only one scan
+            points = points[:, 1:-1].cpu().contiguous().numpy()
+            vis_node.publish_vis_data(det_pred_dict, gt_pred_dict, points, tstamp=None)
 
-        # process each scene seperately
-        # NOTE For nonblocking, set E2E_REL_DEADLINE_S to 0, but it doesn't work now, need to check
-        do_dyn_sched = bool(int(os.getenv('DO_DYN_SCHED', '0')))
-        e2e_dl_musec = int(float(os.getenv('E2E_REL_DEADLINE_S', 0.1)) * 1000000)
-        print('Dynamic Scheduling:', 'ON' if do_dyn_sched else 'OFF')
-        print('End to end deadline (microseconds):', 'IGNORED' if do_dyn_sched else e2e_dl_musec)
-        det_idx = 0
-        all_sample_tokens = []
-        for scene_token, num_samples in tokens_and_num_samples:
-            # initialize buffer
-            buffered_pred_dicts = [model.get_dummy_det_dict()]
-            #buf_det_idx = -1 #DEBUG
+        statistics_info(cfg, ret_dict, metric, disp_dict)
+        bd = {k:batch_dict[k] for k in ('frame_id', 'metadata')}
+        pred_tuples[i] = (bd, pred_dicts)
+        if cfg.LOCAL_RANK == 0:
+            progress_bar.set_postfix(disp_dict)
+            progress_bar.update()
 
-            scene_end_idx = det_idx + num_samples
-            samples_added = 0
+        if i % 100 == 0:
+            gc.collect() # don't invoke this all the time as it slows down
 
-            det_ts = get_ts(all_data_dicts[det_idx])
-            #init_ts = det_ts # DEBUG
-
-            while det_idx < scene_end_idx:
-                with torch.no_grad():
-                    ts = get_ts(all_data_dicts[det_idx])
-                    inf_idx = det_idx if det_ts == ts else det_idx - 1
-                    #print(f'Init detection {inf_idx}')
-                    with torch.cuda.amp.autocast(enabled=args.use_amp):
-                        pred_dicts, ret_dict = model([inf_idx])
-
-                #save_det_idx = det_idx #DEBUG
-                disp_dict = {}
-                statistics_info(cfg, ret_dict, metric, disp_dict)
-
-                etm = model.last_elapsed_time_musec
-                det_end_ts = det_ts + etm
-                if do_dyn_sched:
-                    # Below three lines are not the real dyn sched
-                    #etm_cut = (etm - (etm % 50000))
-                    #etm = etm_cut if etm % 50000 < 25000 else etm_cut + 50000
-                    #e2e_end_ts = det_ts + etm
-
-                    # Compute the cur tail and approx next tail
-                    while inf_idx+1 < scene_end_idx and \
-                            get_ts(all_data_dicts[inf_idx+1]) < det_end_ts:
-                        inf_idx += 1
-
-                    wait_idx = inf_idx + 1
-                    cur_tail = det_end_ts - get_ts(all_data_dicts[inf_idx])
-
-                    # Assume the next execution time will be same (etm)
-                    next_det_end_ts = det_end_ts + etm
-                    while inf_idx+1 < scene_end_idx and \
-                            get_ts(all_data_dicts[inf_idx+1]) < next_det_end_ts:
-                        inf_idx += 1
-                    next_tail = next_det_end_ts - get_ts(all_data_dicts[inf_idx])
-
-                    # 0 will force nonblocking
-                    #print(f'cur_tail: {cur_tail}, next_tail: {next_tail}')
-                    if wait_idx < scene_end_idx and next_tail < cur_tail:
-                        e2e_end_ts = get_ts(all_data_dicts[wait_idx])
-                    else:
-                        e2e_end_ts = 0
-
-                elif e2e_dl_musec > 0:
-                    e2e_end_ts = det_ts + e2e_dl_musec
-
-                while det_ts < det_end_ts and det_idx < scene_end_idx:
-                    dd = all_data_dicts[det_idx]
-                    bd = {'metadata': [{'token':dd['metadata']['token']}],
-                            'frame_id': [dd['frame_id']]}
-                    all_sample_tokens.append(dd['metadata']['token'])
-                    annos = dataset.generate_prediction_dicts(
-                        bd, copy.deepcopy(buffered_pred_dicts), class_names,
-                        output_path=final_output_dir if args.save_to_file else None
-                    )
-                    det_annos += annos
-
-                    if visualize:
-                        # Can infer which detections are projection from the scores
-                        # -x -y -z +x +y +z
-                        batch_dict = dataset.getitem_pre(det_idx)
-                        pd = buffered_pred_dicts[0]
-                        #print(batch_dict['gt_boxes'][:5, :])
-                        lbd = model.latest_batch_dict
-                        V.draw_scenes(
-                            points=batch_dict['points'],
-                            ref_boxes=pd['pred_boxes'],
-                            gt_boxes=batch_dict['gt_boxes'],
-                            ref_scores=pd['pred_scores'],
-                            ref_labels=pd['pred_labels'],
-                            max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
-                            pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                            nonempty_tile_coords=lbd.get('nonempty_tile_coords', None),
-                            tile_coords=lbd.get('chosen_tile_coords', None),
-                            clusters=lbd.get('clusters', None))
-
-                    #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
-                    det_idx += 1
-                    samples_added += 1
-                    progress_bar.set_postfix(disp_dict)
-                    progress_bar.update()
-                    if det_idx < scene_end_idx:
-                        det_ts = get_ts(all_data_dicts[det_idx])
-
-                #buf_det_idx = save_det_idx # DEBUG
-                #print(f'Detected {save_det_idx}') # DEBUG
-                buffered_pred_dicts = copy.deepcopy(pred_dicts)
-
-                late = (e2e_end_ts < det_end_ts)
-                if late:
-                    det_ts = det_end_ts
-                else:
-                    # since e2e_end_ts is not exact, we break when we are close,
-                    # assuming the time between sapmles are 50000 microseconds
-
-                    while round((e2e_end_ts - det_ts) / 50000.) > 0 and det_idx < scene_end_idx:
-                        dd = all_data_dicts[det_idx]
-                        bd = {'metadata': [{'token':dd['metadata']['token']}],
-                                'frame_id': [dd['frame_id']]}
-                        all_sample_tokens.append(dd['metadata']['token'])
-                        annos = dataset.generate_prediction_dicts(
-                            bd, copy.deepcopy(buffered_pred_dicts), class_names,
-                            output_path=final_output_dir if args.save_to_file else None
-                        )
-                        det_annos += annos
-                        #print(f'Using det {buf_det_idx} for {det_idx}') # DEBUG
-
-                        if visualize:
-                            # Can infer which detections are projection from the scores
-                            # -x -y -z +x +y +z
-                            batch_dict = dataset.getitem_pre(det_idx)
-                            pd = buffered_pred_dicts[0]
-                            lbd = model.latest_batch_dict
-                            V.draw_scenes(
-                                points=batch_dict['points'], ref_boxes=pd['pred_boxes'],
-                                gt_boxes=batch_dict['gt_boxes'],# ???
-                                ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
-                                max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
-                                pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                                nonempty_tile_coords=lbd.get('nonempty_tile_coords', None),
-                                tile_coords=lbd.get('chosen_tile_coords', None),
-                                clusters=lbd.get('clusters', None))
-
-                        det_idx += 1
-                        samples_added += 1
-                        progress_bar.set_postfix(disp_dict)
-                        progress_bar.update()
-                        if det_idx < scene_end_idx:
-                            det_ts = get_ts(all_data_dicts[det_idx])
-
-                gc.collect()
-
-            assert samples_added == num_samples
-
-    else:
-        pred_tuples = [None] *len(dataloader)
-
-        for i in range(len(dataloader)):
-            if speed_test and i == num_samples:
-                break
-            if getattr(args, 'infer_time', False):
-                start_time = time.time()
-            data_indexes = [i*batch_size+j for j in range(batch_size) \
-                    if i*batch_size+j < len(dataset)]
-            with torch.no_grad():
-                with torch.cuda.amp.autocast(enabled=args.use_amp):
-                    pred_dicts, ret_dict = model(data_indexes)
-            batch_dict = model.latest_batch_dict
-            det_elapsed_musec.append(model.last_elapsed_time_musec)
-            disp_dict = {}
-
-            if getattr(args, 'infer_time', False):
-                inference_time = time.time() - start_time
-                infer_time_meter.update(inference_time * 1000)
-                # use ms to measure inference time
-                disp_dict['infer_time'] = f'{infer_time_meter.val:.2f}({infer_time_meter.avg:.2f})'
-
-            if visualize:
-                # Can infer which detections are projection from the scores
-                # -x -y -z +x +y +z
-                pd = batch_dict['final_box_dicts'][0]
-                V.draw_scenes(
-                    points=batch_dict['points'][:, 1:], ref_boxes=pd['pred_boxes'],
-                    gt_boxes=batch_dict['gt_boxes'].cpu().flatten(0,1).numpy(),
-                    ref_scores=pd['pred_scores'], ref_labels=pd['pred_labels'],
-                    max_num_tiles=(model.tcount if hasattr(model, 'tcount') else None),
-                    pc_range=model.vfe.point_cloud_range.cpu().numpy(),
-                    nonempty_tile_coords=batch_dict.get('nonempty_tile_coords', None),
-                    tile_coords=batch_dict.get('chosen_tile_coords', None),
-                    clusters=batch_dict.get('clusters', None))
-
-            statistics_info(cfg, ret_dict, metric, disp_dict)
-            bd = {k:batch_dict[k] for k in ('frame_id', 'metadata')}
-            pred_tuples[i] = (bd, pred_dicts)
-            if cfg.LOCAL_RANK == 0:
-                progress_bar.set_postfix(disp_dict)
-                progress_bar.update()
-
-            if i % 100 == 0:
-                gc.collect() # don't invoke this all the time as it slows down
-        op = final_output_dir if args.save_to_file else None
-        for bd, pred_dicts in pred_tuples:
-            annos = dataset.generate_prediction_dicts(
-                bd, pred_dicts, class_names, output_path=op
-            )
-            det_annos += annos
+        #print(i)
+        #input()
+    op = final_output_dir if args.save_to_file else None
+    for bd, pred_dicts in pred_tuples:
+        annos = dataset.generate_prediction_dicts(
+            bd, pred_dicts, class_names, output_path=op
+        )
+        det_annos += annos
 
     gc.enable()
 

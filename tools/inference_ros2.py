@@ -52,6 +52,7 @@ ENABLE_TILE_DROP = False
 VISUALIZE = False
 PROFILE = False
 DO_EVAL = False
+USE_EGOVEL_FOR_DL_PRED = False
 
 assert (DO_DYN_SCHED != ALWAYS_BLOCK_SCHED)
 
@@ -74,11 +75,21 @@ def points_to_pc2(points):
         PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
         PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
         PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
-        PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
-    #    PointField(name='time', offset=16, datatype=PointField.FLOAT32, count=1),
     ]
+    point_step = 12
+
+    if points.shape[1] > 3:
+        point_cloud.fields.append(PointField(name='intensity', offset=12,
+                datatype=PointField.FLOAT32, count=1))
+        point_step += 4
+
+    if points.shape[1] > 4:
+        point_cloud.fields.append(PointField(name='time', offset=16,
+            datatype=PointField.FLOAT32, count=1))
+        point_step += 4
+
+    point_cloud.point_step = point_step
     point_cloud.is_bigendian = False
-    point_cloud.point_step = 16  # 4 fields x 4 bytes each
     point_cloud.row_step = point_cloud.point_step * points.shape[0]
 
     # Flatten the array for the data field
@@ -609,7 +620,8 @@ class InferenceServer(Node):
         global ANYTIME_CAPABLE
         if ANYTIME_CAPABLE:
             # load trt model
-            trt_path = "./deploy_files/trt_engines/pmode_0000/deadline_pred_mdl.engine"
+            power_mode = os.getenv('PMODE', 'pmode_0000')
+            trt_path = f"./deploy_files/trt_engines/{power_mode}/deadline_pred_mdl.engine"
             print('Trying to load trt engine at', trt_path)
             try:
                 self.dl_pred_trt = TRTWrapper(trt_path, ['bev_inp'], ['deadline'])
@@ -648,15 +660,34 @@ class InferenceServer(Node):
         if not ANYTIME_CAPABLE:
             return 10.0 # ignore deadline
 
-        if pred_dict is not None:
+        if USE_EGOVEL_FOR_DL_PRED:
+            max_vel_n = 15 # meters per second
+            max_deadline = 0.245
+            min_deadline = 0.095
+            if sample_idx > 0 and sample_idx < self.num_samples:
+                prev_tkn = self.dataset.infos[sample_idx-1]['token']
+                cur_tkn = self.dataset.infos[sample_idx]['token']
+
+                prev_coord = self.model.token_to_pose[prev_tkn][7:10]
+                cur_coord = self.model.token_to_pose[cur_tkn][7:10]
+
+                prev_ts = self.model.token_to_ts[prev_tkn]
+                cur_ts = self.model.token_to_ts[cur_tkn]
+
+                vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
+                vel_n = np.linalg.norm(vel)
+                return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
+            else:
+                return max_deadline
+        elif pred_dict is not None:
             bboxes = pred_dict['pred_boxes'].numpy() # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
             scores = pred_dict['pred_scores'].flatten().float().numpy()
             labels = pred_dict['pred_labels'].flatten().float().numpy()
             coords, feats = gen_features(bboxes, scores, labels)
             #print(coords.shape, feats.shape)
             #print(feats)
-            bev_inp = torch.zeros((1,8,64,64), dtype=torch.float)
-            coords = torch.from_numpy(coords[:, :2]).long()//2
+            bev_inp = torch.zeros((1,8,128,128), dtype=torch.float)
+            coords = torch.from_numpy(coords[:, :2]).long()
             feats = torch.from_numpy(feats).T.float()
             bev_inp[0, :, coords[:,1], coords[:,0]] = feats
             #bev_inp = create_bev_tensor(coords, feats)
@@ -673,24 +704,7 @@ class InferenceServer(Node):
 
             return dl / 1000.0
         else:
-            max_vel_n = 15 # meters per second
-            max_deadline = 0.115
-            min_deadline = 0.065
-            if sample_idx > 0 and sample_idx < self.num_samples:
-                prev_tkn = self.dataset.infos[sample_idx-1]['token']
-                cur_tkn = self.dataset.infos[sample_idx]['token']
-
-                prev_coord = self.model.token_to_pose[prev_tkn][7:10]
-                cur_coord = self.model.token_to_pose[cur_tkn][7:10]
-
-                prev_ts = self.model.token_to_ts[prev_tkn]
-                cur_ts = self.model.token_to_ts[cur_tkn]
-
-                vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
-                vel_n = np.linalg.norm(vel)
-                return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
-            else:
-                return max_deadline
+            return 10.0
 
     def infer_loop(self, bar, shr_tracker_time_sec):
         model = self.model
