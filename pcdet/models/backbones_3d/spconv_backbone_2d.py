@@ -379,14 +379,14 @@ class PillarRes18BackBone8x(nn.Module):
         return self.conv5(x_conv4)
 
     def forward(self, batch_dict):
-        x_conv4 = self.forward_up_to_dense(batch_dict)
+        batch_dict = self.forward_up_to_dense(batch_dict)
+        x_conv4 = batch_dict['x_conv4_out']
         x_conv5 = self.forward_dense(x_conv4)
 
         # batch_dict.update({
         #     'encoded_spconv_tensor': out,
         #     'encoded_spconv_tensor_stride': 8
         # })
-
         batch_dict.update({
             'multi_scale_2d_features': {
                 #'x_conv1': x_conv1,
@@ -396,6 +396,7 @@ class PillarRes18BackBone8x(nn.Module):
                 'x_conv5': x_conv5,
             }
         })
+        del batch_dict['x_conv4_out']
         batch_dict.update({
             'multi_scale_2d_strides': {
                 'x_conv1': 1,

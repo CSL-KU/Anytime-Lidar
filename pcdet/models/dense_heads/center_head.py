@@ -69,6 +69,7 @@ class CenterHead(nn.Module):
         self.grid_size = grid_size
         self.point_cloud_range = point_cloud_range
         self.voxel_size = voxel_size
+        self.initial_voxel_size = voxel_size
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', None)
 
         self.class_names = class_names
@@ -146,6 +147,8 @@ class CenterHead(nn.Module):
         ret_boxes = gt_boxes.new_zeros((num_max_objs, gt_boxes.shape[-1] - 1 + 1))
         inds = gt_boxes.new_zeros(num_max_objs).long()
         mask = gt_boxes.new_zeros(num_max_objs).long()
+        ret_boxes_src = gt_boxes.new_zeros(num_max_objs, gt_boxes.shape[-1])
+        ret_boxes_src[:gt_boxes.shape[0]] = gt_boxes
 
         x, y, z = gt_boxes[:, 0], gt_boxes[:, 1], gt_boxes[:, 2]
         coord_x = (x - self.point_cloud_range[0]) / self.voxel_size[0] / feature_map_stride
@@ -184,7 +187,7 @@ class CenterHead(nn.Module):
             if gt_boxes.shape[1] > 8:
                 ret_boxes[k, 8:] = gt_boxes[k, 7:-1]
 
-        return heatmap, ret_boxes, inds, mask
+        return heatmap, ret_boxes, inds, mask, ret_boxes_src
 
     def assign_targets(self, gt_boxes, feature_map_size=None, **kwargs):
         """
@@ -206,12 +209,13 @@ class CenterHead(nn.Module):
             'target_boxes': [],
             'inds': [],
             'masks': [],
-            'heatmap_masks': []
+            'heatmap_masks': [],
+            'target_boxes_src': [],
         }
 
         all_names = np.array(['bg', *self.class_names])
         for idx, cur_class_names in enumerate(self.class_names_each_head):
-            heatmap_list, target_boxes_list, inds_list, masks_list = [], [], [], []
+            heatmap_list, target_boxes_list, inds_list, masks_list, target_boxes_src_list = [], [], [], [], []
             for bs_idx in range(batch_size):
                 cur_gt_boxes = gt_boxes[bs_idx]
                 gt_class_names = all_names[cur_gt_boxes[:, -1].cpu().long().numpy()]
@@ -230,7 +234,7 @@ class CenterHead(nn.Module):
                 else:
                     gt_boxes_single_head = torch.cat(gt_boxes_single_head, dim=0)
 
-                heatmap, ret_boxes, inds, mask = self.assign_target_of_single_head(
+                heatmap, ret_boxes, inds, mask, ret_boxes_src = self.assign_target_of_single_head(
                     num_classes=len(cur_class_names), gt_boxes=gt_boxes_single_head.cpu(),
                     feature_map_size=feature_map_size, feature_map_stride=target_assigner_cfg.FEATURE_MAP_STRIDE,
                     num_max_objs=target_assigner_cfg.NUM_MAX_OBJS,
@@ -241,11 +245,13 @@ class CenterHead(nn.Module):
                 target_boxes_list.append(ret_boxes.to(gt_boxes_single_head.device))
                 inds_list.append(inds.to(gt_boxes_single_head.device))
                 masks_list.append(mask.to(gt_boxes_single_head.device))
+                target_boxes_src_list.append(ret_boxes_src.to(gt_boxes_single_head.device))
 
             ret_dict['heatmaps'].append(torch.stack(heatmap_list, dim=0))
             ret_dict['target_boxes'].append(torch.stack(target_boxes_list, dim=0))
             ret_dict['inds'].append(torch.stack(inds_list, dim=0))
             ret_dict['masks'].append(torch.stack(masks_list, dim=0))
+            ret_dict['target_boxes_src'].append(torch.stack(target_boxes_src_list, dim=0))
         return ret_dict
 
     def sigmoid(self, x):
@@ -276,6 +282,40 @@ class CenterHead(nn.Module):
             loss += hm_loss + loc_loss
             tb_dict['hm_loss_head_%d' % idx] = hm_loss.item()
             tb_dict['loc_loss_head_%d' % idx] = loc_loss.item()
+
+            if 'iou' in pred_dict or self.model_cfg.get('IOU_REG_LOSS', False):
+
+                batch_box_preds = centernet_utils.decode_bbox_from_pred_dicts(
+                    pred_dict=pred_dict,
+                    point_cloud_range=self.point_cloud_range, voxel_size=self.voxel_size,
+                    feature_map_stride=self.feature_map_stride
+                )  # (B, H, W, 7 or 9)
+
+                if 'iou' in pred_dict:
+                    batch_box_preds_for_iou = batch_box_preds.permute(0, 3, 1, 2)  # (B, 7 or 9, H, W)
+
+                    iou_loss = loss_utils.calculate_iou_loss_centerhead(
+                        iou_preds=pred_dict['iou'],
+                        batch_box_preds=batch_box_preds_for_iou.clone().detach(),
+                        mask=target_dicts['masks'][idx],
+                        ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
+                    )
+                    loss += iou_loss
+                    tb_dict['iou_loss_head_%d' % idx] = iou_loss.item()
+
+                if self.model_cfg.get('IOU_REG_LOSS', False):
+                    iou_reg_loss = loss_utils.calculate_iou_reg_loss_centerhead(
+                        batch_box_preds=batch_box_preds_for_iou,
+                        mask=target_dicts['masks'][idx],
+                        ind=target_dicts['inds'][idx], gt_boxes=target_dicts['target_boxes_src'][idx]
+                    )
+                    if target_dicts['masks'][idx].sum().item() != 0:
+                        iou_reg_loss = iou_reg_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
+                        loss += iou_reg_loss
+                        tb_dict['iou_reg_loss_head_%d' % idx] = iou_reg_loss.item()
+                    else:
+                        loss += (batch_box_preds_for_iou * 0.).sum()
+                        tb_dict['iou_reg_loss_head_%d' % idx] = (batch_box_preds_for_iou * 0.).sum()
 
         tb_dict['rpn_loss'] = loss.item()
         return loss, tb_dict
@@ -384,12 +424,16 @@ class CenterHead(nn.Module):
             roi_labels[bs_idx, :num_boxes] = pred_dicts[bs_idx]['pred_labels']
         return rois, roi_scores, roi_labels
 
-    def forward(self, data_dict):
-        data_dict = self.forward_pre(data_dict)
-        data_dict = self.forward_post(data_dict)
-        data_dict = self.forward_topk(data_dict)
-        data_dict = self.forward_genbox(data_dict)
-        return data_dict
+    def forward(self, batch_dict):
+        # Dynamic pillar size
+        ds_factor = batch_dict.get('voxel_size_ds_factor', 1)
+        self.voxel_size = self.initial_voxel_size * ds_factor
+
+        batch_dict = self.forward_pre(batch_dict)
+        batch_dict = self.forward_post(batch_dict)
+        batch_dict = self.forward_topk(batch_dict)
+        batch_dict = self.forward_genbox(batch_dict)
+        return batch_dict
 
     def ordered_outp_names(self):
         names =  ['hm'] + list(self.separate_head_cfg.HEAD_ORDER)
@@ -428,7 +472,7 @@ class CenterHead(nn.Module):
 
         if self.training:
             target_dict = self.assign_targets(
-                batch_dict['gt_boxes'], feature_map_size=data_dict['spatial_features_2d'].size()[2:],
+                batch_dict['gt_boxes'], feature_map_size=batch_dict['spatial_features_2d'].size()[2:],
                 feature_map_stride=batch_dict.get('spatial_features_2d_strides', None)
             )
             self.forward_ret_dict['target_dicts'] = target_dict

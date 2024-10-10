@@ -206,6 +206,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
+    @torch.no_grad()
     def range_filter(self, batch_dict, filter_z=True):
         points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
 
@@ -220,6 +221,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
         batch_dict['points_coords'] = points_coords[mask]
         return batch_dict
 
+    @torch.no_grad()
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
 
@@ -264,7 +266,6 @@ class DynamicPillarVFESimple2D(VFETemplate):
         return pillar_coords, features, unq_inv, torch.max(unq_inv) + 1
 
     def forward_nn(self, features : torch.Tensor, unq_inv : torch.Tensor, num_out_inds : int) -> torch.Tensor:
-
         for pfn in self.pfn_layers:
             features = pfn(features, unq_inv, num_out_inds)
 

@@ -2,7 +2,8 @@ from functools import partial
 
 import numpy as np
 from skimage import transform
-
+import torch
+import torchvision
 from ...utils import box_utils, common_utils
 
 tv = None
@@ -23,7 +24,6 @@ class VoxelGeneratorWrapper():
                 self.spconv_ver = 1
             except:
                 from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
-#                from spconv.utils import Point2VoxelGPU3d as VoxelGenerator
                 self.spconv_ver = 2
 
         if self.spconv_ver == 1:
@@ -52,13 +52,12 @@ class VoxelGeneratorWrapper():
                 voxels, coordinates, num_points = voxel_output
         else:
             assert tv is not None, f"Unexpected error, library: 'cumm' wasn't imported properly."
-            #voxel_output = self._voxel_generator.point_to_voxel(tv.from_numpy(points))
-            tv_voxels, tv_coordinates, tv_num_points = \
-                    self._voxel_generator.point_to_voxel(tv.from_numpy(points))
+            voxel_output = self._voxel_generator.point_to_voxel(tv.from_numpy(points))
+            tv_voxels, tv_coordinates, tv_num_points = voxel_output
             # make copy with numpy(), since numpy_view() will disappear as soon as the generator is deleted
-            voxels = tv_voxels.cpu().numpy()
-            coordinates = tv_coordinates.cpu().numpy()
-            num_points = tv_num_points.cpu().numpy()
+            voxels = tv_voxels.numpy()
+            coordinates = tv_coordinates.numpy()
+            num_points = tv_num_points.numpy()
         return voxels, coordinates, num_points
 
 
@@ -82,12 +81,7 @@ class DataProcessor(object):
             return partial(self.mask_points_and_boxes_outside_range, config=config)
 
         if data_dict.get('points', None) is not None:
-            points = data_dict['points']
-            mask1 = common_utils.mask_points_by_range(points, self.point_cloud_range)
-            # also remove points on top of the car
-            mask2 = (points[:, 0] <= 1.) & (points[:, 0] >= -1) \
-                   & (points[:, 1] <= 2.5) & (points[:, 1] >= -2.5)
-            mask = np.logical_and(mask1, np.logical_not(mask2))
+            mask = common_utils.mask_points_by_range(data_dict['points'], self.point_cloud_range)
             data_dict['points'] = data_dict['points'][mask]
 
         if data_dict.get('gt_boxes', None) is not None and config.REMOVE_OUTSIDE_BOXES and self.training:
@@ -234,6 +228,56 @@ class DataProcessor(object):
             image=data_dict['depth_maps'],
             factors=(self.depth_downsample_factor, self.depth_downsample_factor)
         )
+        return data_dict
+
+    def image_normalize(self, data_dict=None, config=None):
+        if data_dict is None:
+            return partial(self.image_normalize, config=config)
+        mean = config.mean
+        std = config.std
+        compose = torchvision.transforms.Compose(
+            [
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Normalize(mean=mean, std=std),
+            ]
+        )
+        data_dict["camera_imgs"] = [compose(img) for img in data_dict["camera_imgs"]]
+        return data_dict
+
+    def image_calibrate(self,data_dict=None, config=None):
+        if data_dict is None:
+            return partial(self.image_calibrate, config=config)
+        img_process_infos = data_dict['img_process_infos']
+        transforms = []
+        for img_process_info in img_process_infos:
+            resize, crop, flip, rotate = img_process_info
+
+            rotation = torch.eye(2)
+            translation = torch.zeros(2)
+            # post-homography transformation
+            rotation *= resize
+            translation -= torch.Tensor(crop[:2])
+            if flip:
+                A = torch.Tensor([[-1, 0], [0, 1]])
+                b = torch.Tensor([crop[2] - crop[0], 0])
+                rotation = A.matmul(rotation)
+                translation = A.matmul(translation) + b
+            theta = rotate / 180 * np.pi
+            A = torch.Tensor(
+                [
+                    [np.cos(theta), np.sin(theta)],
+                    [-np.sin(theta), np.cos(theta)],
+                ]
+            )
+            b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
+            b = A.matmul(-b) + b
+            rotation = A.matmul(rotation)
+            translation = A.matmul(translation) + b
+            transform = torch.eye(4)
+            transform[:2, :2] = rotation
+            transform[:2, 3] = translation
+            transforms.append(transform.numpy())
+        data_dict["img_aug_matrix"] = transforms
         return data_dict
 
     def forward(self, data_dict):

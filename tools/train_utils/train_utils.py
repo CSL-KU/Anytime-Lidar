@@ -11,14 +11,14 @@ from pcdet.utils import common_utils, commu_utils
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, 
                     use_logger_to_record=False, logger=None, logger_iter_interval=50, cur_epoch=None, 
-                    total_epochs=None, ckpt_save_dir=None, ckpt_save_time_interval=300, show_gpu_stat=False, use_amp=False):
+                    total_epochs=None, ckpt_save_dir=None, ckpt_save_time_interval=300, show_gpu_stat=False, use_amp=False, cfg=None):
     if total_it_each_epoch == len(train_loader):
         dataloader_iter = iter(train_loader)
 
     ckpt_save_cnt = 1
     start_it = accumulated_iter % total_it_each_epoch
 
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16)/2)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16))
     
     if rank == 0:
         pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
@@ -31,7 +31,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
     model.total_epochs = total_epochs
     for cur_it in range(start_it, total_it_each_epoch):
-        model.cur_epoch = int(cur_it / total_it_each_epoch)
+        model.cur_epoch = cur_epoch #int(cur_it / total_it_each_epoch)
         try:
             batch = next(dataloader_iter)
         except StopIteration:
@@ -154,8 +154,13 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
                 merge_all_iters_to_one_epoch=False, use_amp=False,
-                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False):
+                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False, cfg=None):
     accumulated_iter = start_iter
+
+    # use for disable data augmentation hook
+    hook_config = cfg.get('HOOK', None)
+    augment_disable_flag = False
+
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(train_loader)
         if merge_all_iters_to_one_epoch:
@@ -173,6 +178,8 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 cur_scheduler = lr_warmup_scheduler
             else:
                 cur_scheduler = lr_scheduler
+
+            augment_disable_flag = disable_augmentation_hook(hook_config, dataloader_iter, total_epochs, cur_epoch, cfg, augment_disable_flag, logger)
             accumulated_iter = train_one_epoch(
                 model, optimizer, train_loader, model_func,
                 lr_scheduler=cur_scheduler,
@@ -248,3 +255,20 @@ def save_checkpoint(state, filename='checkpoint'):
         torch.save(state, filename, _use_new_zipfile_serialization=False)
     else:
         torch.save(state, filename)
+
+def disable_augmentation_hook(hook_config, dataloader, total_epochs, cur_epoch, cfg, flag, logger):
+    """
+    This hook turns off the data augmentation during training.
+    """
+    if hook_config is not None:
+        DisableAugmentationHook = hook_config.get('DisableAugmentationHook', None)
+        if DisableAugmentationHook is not None:
+            num_last_epochs = DisableAugmentationHook.NUM_LAST_EPOCHS
+            if (total_epochs - num_last_epochs) <= cur_epoch and not flag:
+                DISABLE_AUG_LIST = DisableAugmentationHook.DISABLE_AUG_LIST
+                dataset_cfg=cfg.DATA_CONFIG
+                logger.info(f'Disable augmentations: {DISABLE_AUG_LIST}')
+                dataset_cfg.DATA_AUGMENTOR.DISABLE_AUG_LIST = DISABLE_AUG_LIST
+                dataloader._dataset.data_augmentor.disable_augmentation(dataset_cfg.DATA_AUGMENTOR)
+                flag = True
+    return flag
