@@ -26,7 +26,7 @@ class PillarNetOpt(Detector3DTemplate):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        # NOTE I enabled the next two for training
+        # NOTE Enable the next two for training
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
@@ -48,7 +48,9 @@ class PillarNetOpt(Detector3DTemplate):
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
 
-        self.counter = 0
+        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1])
+        self.res_idx = 0
+
 
     def forward(self, batch_dict):
         if self.training:
@@ -59,9 +61,8 @@ class PillarNetOpt(Detector3DTemplate):
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
 
             #Downsample factor
-            batch_dict['voxel_size_ds_factor'] = 1
-            #batch_dict['voxel_size_ds_factor'] = 2**self.counter
-            #self.counter = (self.counter +1) % 2
+            batch_dict['resolution_divider'] = self.resolution_dividers[self.res_idx]
+            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
 
             batch_dict = self.backbone_3d(batch_dict)
             batch_dict = self.backbone_2d(batch_dict)
@@ -74,7 +75,7 @@ class PillarNetOpt(Detector3DTemplate):
 
             return ret_dict, tb_dict, disp_dict
         else:
-            return self.forward_eval(self, batch_dict)
+            return self.forward_eval(batch_dict)
 
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):

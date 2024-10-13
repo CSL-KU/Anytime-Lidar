@@ -426,8 +426,8 @@ class CenterHead(nn.Module):
 
     def forward(self, batch_dict):
         # Dynamic pillar size
-        ds_factor = batch_dict.get('voxel_size_ds_factor', 1)
-        self.voxel_size = self.initial_voxel_size * ds_factor
+        res_div = batch_dict.get('resolution_divider', 1)
+        self.voxel_size = self.initial_voxel_size * res_div
 
         batch_dict = self.forward_pre(batch_dict)
         batch_dict = self.forward_post(batch_dict)
