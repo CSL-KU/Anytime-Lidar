@@ -8,6 +8,7 @@ from ..model_utils import centernet_utils
 from ...utils import loss_utils
 from typing import Dict, List
 from functools import partial
+from pcdet.ops.fn_instance_norm.fn_instance_norm import FnInstanceNorm
 
 class SeparateHead(nn.Module):
     def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False, norm_func=None, enable_normalization=True):
@@ -92,7 +93,12 @@ class CenterHead(nn.Module):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
 
-        norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
+        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        if norm_method == 'Batch':
+            norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
+        elif norm_method == 'Instance':
+            norm_func = partial(FnInstanceNorm, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
+
         self.shared_conv = nn.Sequential(
             nn.Conv2d(
                 input_channels, self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
@@ -424,13 +430,11 @@ class CenterHead(nn.Module):
             roi_labels[bs_idx, :num_boxes] = pred_dicts[bs_idx]['pred_labels']
         return rois, roi_scores, roi_labels
 
-    def forward(self, batch_dict):
-        # Dynamic pillar size
-        res_div = batch_dict.get('resolution_divider', 1)
-        self.voxel_size = self.initial_voxel_size * res_div
 
+    def forward(self, batch_dict):
         batch_dict = self.forward_pre(batch_dict)
         batch_dict = self.forward_post(batch_dict)
+        batch_dict = self.forward_assign_targets(batch_dict)
         batch_dict = self.forward_topk(batch_dict)
         batch_dict = self.forward_genbox(batch_dict)
         return batch_dict
@@ -440,6 +444,10 @@ class CenterHead(nn.Module):
         if 'iou' in self.separate_head_cfg.HEAD_DICT:
             names += ['iou']
         return names
+
+    def adjust_voxel_size_wrt_resolution(self, res_div : int):
+        self.voxel_size[0] = self.initial_voxel_size[0]*res_div
+        self.voxel_size[1] = self.initial_voxel_size[1]*res_div
 
     # Alternative function for scripting
     def forward_up_to_topk(self, spatial_features_2d : torch.Tensor) -> List[torch.Tensor]:
@@ -470,15 +478,18 @@ class CenterHead(nn.Module):
         for head, pd in zip(self.heads_list, batch_dict['pred_dicts']):
             pd.update(head.forward_attr(x))
 
+        return batch_dict
+
+    def forward_assign_targets(self, batch_dict, feature_map_size=None):
         if self.training:
+            if feature_map_size is None:
+                feature_map_size = batch_dict['spatial_features_2d'].size()[2:]
             target_dict = self.assign_targets(
-                batch_dict['gt_boxes'], feature_map_size=batch_dict['spatial_features_2d'].size()[2:],
+                batch_dict['gt_boxes'], feature_map_size=feature_map_size,
                 feature_map_stride=batch_dict.get('spatial_features_2d_strides', None)
             )
             self.forward_ret_dict['target_dicts'] = target_dict
-
-        self.forward_ret_dict['pred_dicts'] = batch_dict['pred_dicts']
-        return batch_dict
+            self.forward_ret_dict['pred_dicts'] = batch_dict['pred_dicts']
 
     def forward_topk(self, batch_dict):
         if not self.training or self.predict_boxes_when_training:

@@ -8,6 +8,7 @@ from ...utils import loss_utils
 from ...ops.cuda_slicer import cuda_slicer_utils
 from typing import Dict, List, Tuple, Optional, Final
 from functools import partial
+from pcdet.ops.fn_instance_norm.fn_instance_norm import FnInstanceNorm
 
 class SeparateHead(nn.Module):
     vel_conv_available : Final[bool]
@@ -91,7 +92,6 @@ class SeparateHead(nn.Module):
 # Inference only, torchscript compatible
 class CenterHeadInf(nn.Module): 
     point_cloud_range : Final[List[float]]
-    voxel_size : Final[List[float]]
     feature_map_stride : Final[int]
     nms_type : Final[str]
     nms_thresh : Final[List[float]]
@@ -104,7 +104,9 @@ class CenterHeadInf(nn.Module):
     num_det_heads : Final[int]
     tcount : Final[int]
     optimize_attr_convs : Final[bool]
+    initial_voxel_size : Final[List[float]]
 
+    voxel_size : List[float]
     class_id_mapping_each_head : List[torch.Tensor]
     det_dict_copy : Dict[str,torch.Tensor]
     iou_rectifier : torch.Tensor
@@ -119,6 +121,8 @@ class CenterHeadInf(nn.Module):
         self.grid_size = grid_size
         self.point_cloud_range = point_cloud_range.tolist()
         self.voxel_size = voxel_size
+        self.initial_voxel_size = voxel_size
+
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', 1)
 
         self.class_names = class_names
@@ -142,7 +146,11 @@ class CenterHeadInf(nn.Module):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
 
-        norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
+        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        if norm_method == 'Batch':
+            norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
+        elif norm_method == 'Instance':
+            norm_func = partial(FnInstanceNorm, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
         self.shared_conv = nn.Sequential(
             nn.Conv2d(
                 input_channels, self.model_cfg.SHARED_CONV_CHANNEL, 3, stride=1, padding=1,
@@ -194,7 +202,6 @@ class CenterHeadInf(nn.Module):
         self.max_obj_per_sample = post_process_cfg.MAX_OBJ_PER_SAMPLE
 
         self.tcount = self.model_cfg.get('TILE_COUNT', 1)
-
 
     def instancenorm_mode(self):
         for dh in self.heads_list:
@@ -349,6 +356,7 @@ class CenterHeadInf(nn.Module):
     def forward(self, spatial_features_2d : torch.Tensor,
             forecasted_dets : Optional[List[Dict[str,torch.Tensor]]]):
         assert not self.training
+
         tensors = self.forward_pre(spatial_features_2d)
         x = tensors[0]
         pred_dicts = [{'hm':t} for t in tensors[1:]]
@@ -421,11 +429,19 @@ class CenterHeadInf(nn.Module):
             -> List[Dict[str,torch.Tensor]]:
         return self.generate_predicted_boxes(batch_size, pred_dicts, topk_outputs, forecasted_dets)
 
+    def get_empty_final_box_dicts(self):
+        return [self.get_empty_det_dict() for i in range(self.num_det_heads)]
+
     def get_empty_det_dict(self):
         det_dict = {}
         for k,v in self.det_dict_copy.items():
             det_dict[k] = v.clone().detach()
         return det_dict
+
+    @torch.jit.export
+    def adjust_voxel_size_wrt_resolution(self, res_div : int):
+        self.voxel_size[0] = self.initial_voxel_size[0]*res_div
+        self.voxel_size[1] = self.initial_voxel_size[1]*res_div
 
 @torch.jit.script
 def scatter_sliced_tensors(chosen_tile_coords : List[int],

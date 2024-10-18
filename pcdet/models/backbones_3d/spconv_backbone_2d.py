@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch
 
 from ...utils.spconv_utils import replace_feature, spconv
-
+from pcdet.ops.fn_instance_norm.fn_instance_norm import FnInstanceNorm
 
 def post_act_block(in_channels, out_channels, kernel_size, indice_key=None, stride=1, padding=0,
                    conv_type='subm', norm_fn=None):
@@ -210,6 +210,7 @@ class PillarRes18BackBone8x(nn.Module):
         super().__init__()
         self.model_cfg = model_cfg
         norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
+
         self.sparse_shape = grid_size[[1, 0]]
         
         block = post_act_block
@@ -241,7 +242,12 @@ class PillarRes18BackBone8x(nn.Module):
             SparseBasicBlock(256, 256, norm_fn=norm_fn, indice_key='res4'),
         )
         
-        norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
+        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        if norm_method == 'Batch':
+            norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
+        elif norm_method == 'Instance':
+            norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
+
         self.conv5 = nn.Sequential(
             # [200, 176] <- [100, 88]
             dense_block(256, 256, 3, norm_fn=norm_fn, stride=2, padding=1),

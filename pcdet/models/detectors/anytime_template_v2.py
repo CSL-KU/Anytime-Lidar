@@ -177,6 +177,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         pcount_area, vcount_area = None, None
         if self.sched_vfe and self.sched_bb3d:
             points, points_coords = batch_dict['points'], batch_dict['points_coords']
+            torch.cuda.synchronize() # prevents tile calculations failure
             point_tile_coords, netc, pcount_area, vcount_area = tile_calculations_all(
                     points_coords, self.tile_size_voxels, self.vfe.scale_xy,
                     self.vfe.scale_y, self.tcount)

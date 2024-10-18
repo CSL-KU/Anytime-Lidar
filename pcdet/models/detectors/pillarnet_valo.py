@@ -9,6 +9,7 @@ import onnx
 import os
 import sys
 import numpy as np
+import platform
 from typing import List
 
 import ctypes
@@ -69,8 +70,11 @@ class PillarNetVALO(AnytimeTemplateV2):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
+
+        is_x86 = (platform.machine() in ['x86_64', 'AMD64', 'x86'])
+
+        torch.backends.cuda.matmul.allow_tf32 = is_x86
+        torch.backends.cudnn.allow_tf32 = is_x86
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
@@ -92,6 +96,10 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.optimization1_done = False
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
 
+        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1])
+        self.res_idx = 0
+        self.latest_losses = [0.] * len(self.resolution_dividers)
+
         # Force forecasting to be disabled
         self.keep_forecasting_disabled = False
         if not self.keep_forecasting_disabled:
@@ -100,6 +108,45 @@ class PillarNetVALO(AnytimeTemplateV2):
                     self.dense_head.cls_id_to_det_head_idx_map))
 
     def forward(self, batch_dict):
+        if self.training:
+            batch_dict = self.vfe.range_filter(batch_dict)
+            points = batch_dict['points']
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            batch_dict['pillar_features'] = batch_dict['voxel_features']
+            batch_dict['pillar_coords'] = batch_dict['voxel_coords']
+
+            #TODO try forwarding with both resolutions and add losses
+
+            resdiv = self.resolution_dividers[self.res_idx]
+            batch_dict['resolution_divider'] = resdiv
+            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
+
+            batch_dict = self.backbone_3d(batch_dict)
+            batch_dict = self.backbone_2d(batch_dict)
+
+            self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
+            batch_dict = self.dense_head.forward_pre(batch_dict)
+            batch_dict = self.dense_head.forward_post(batch_dict)
+
+            fms = self.model_cfg.DENSE_HEAD.TARGET_ASSIGNER_CONFIG.FEATURE_MAP_STRIDE
+            target_hw = [sz // fms // resdiv for sz in self.dataset.grid_size[:2]]
+
+            batch_dict = self.dense_head.forward_assign_targets(batch_dict, feature_map_size=target_hw)
+            loss, tb_dict, disp_dict = self.get_training_loss()
+
+            ret_dict = {
+                'loss': loss
+            }
+            self.latest_losses[self.res_idx] = loss.item()
+
+            disp_dict.update({f"loss_resdiv{self.resolution_dividers[i]}": l \
+                    for i, l in enumerate(self.latest_losses)})
+
+            return ret_dict, tb_dict, disp_dict
+        else:
+            return self.forward_eval(batch_dict)
+
+    def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             batch_dict = self.vfe.range_filter(batch_dict)
             self.measure_time_start('Sched1')
@@ -121,6 +168,22 @@ class PillarNetVALO(AnytimeTemplateV2):
                 e2 = torch.cuda.Event(enable_timing=True)
                 e2.record()
                 batch_dict['vfe_layer_time_events'] = [e1, e2]
+
+            if batch_dict['pillar_coords'].size(0) == 1:
+                # Can't infer anything out of this, use random data to prevent instancenorm error
+                pc = batch_dict['pillar_coords']
+                pf = batch_dict['pillar_features']
+
+                num_rand_pillars = 64
+                xlim, ylim, _ = self.dataset.grid_size
+                pc = torch.randint(0, min(xlim, ylim), (num_rand_pillars, pc.size(1)),
+                        dtype=pc.dtype, device=pc.device)
+                pc[:, 0] = 0 # batch size 1
+                batch_dict['pillar_coords'] = pc
+                pf = pf.repeat(num_rand_pillars, 1)
+                batch_dict['pillar_features'] = pf
+
+            batch_dict['resolution_divider'] = 1
 
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
@@ -184,21 +247,14 @@ class PillarNetVALO(AnytimeTemplateV2):
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
             if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
                 forecasted_dets = None # NOTE this appears to be a bug, but dont know how to fix it
+            self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(batch_dict['resolution_divider'])
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
             self.measure_time_end('CenterHead-GenBox')
 
-            if self.training:
-                loss, tb_dict, disp_dict = self.get_training_loss()
-
-                ret_dict = {
-                        'loss': loss
-                        }
-                return ret_dict, tb_dict, disp_dict
-            else:
-                # let the hooks of parent class handle this
-                return batch_dict
+            # let the hooks of parent class handle this
+            return batch_dict
 
 
     def optimize1(self, fwd_data):
@@ -236,7 +292,7 @@ class PillarNetVALO(AnytimeTemplateV2):
 
             torch.onnx.export(
                     self.opt_dense_convs,
-                    fwd_data,
+                    fwd_data.requires_grad_(False),
                     onnx_path,
                     input_names=input_names,
                     output_names=outp_names,
