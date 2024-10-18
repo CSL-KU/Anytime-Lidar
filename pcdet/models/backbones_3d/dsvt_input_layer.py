@@ -9,16 +9,14 @@ from pcdet.models.model_utils.dsvt_utils import PositionEmbeddingLearned
 from torch.onnx import register_custom_op_symbolic
 from typing import Dict, List, Tuple, Final
 
-# load torch.ops.kucsl.ingroup_inds_nograd
-torch.ops.load_library("../pcdet/ops/ingroup_inds" \
-        "/ingroup_inds_cuda.cpython-310-aarch64-linux-gnu.so")
+import pcdet.ops.utils as pcdet_utils
+pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/ingroup_inds")
+pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/dsvt_ops")
+
 def ingroup_inds_nograd(g, group_inds):
     return g.op("kucsl::ingroup_inds_nograd", group_inds)
 register_custom_op_symbolic("kucsl::ingroup_inds_nograd", ingroup_inds_nograd, 17)
 
-
-torch.ops.load_library("../pcdet/ops/dsvt_ops" \
-        "/dsvt_ops.cpython-310-aarch64-linux-gnu.so")
 def get_window_coors(g, coors, sparse_shape, window_shape, do_shift, shift_list, return_win_coors):
     return g.op("dsvt_ops::get_window_coors", coors, sparse_shape, window_shape, do_shift, shift_list, return_win_coors)
 register_custom_op_symbolic("dsvt_ops::get_window_coors", get_window_coors, 17)

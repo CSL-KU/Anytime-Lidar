@@ -2,19 +2,9 @@ import torch
 
 from . import ioubev_nms_cuda
 from typing import Optional, List
-from os import listdir
-# to be released
-# try:
-#     import weighted_nms_ext
-# except Exception as e:
-#     print(f'Error {e} when import weighted_nms.')
 
-for file_name in listdir("../pcdet/ops/ioubev_nms"):
-    if file_name.endswith('.so'):
-        torch.ops.load_library("../pcdet/ops/ioubev_nms/" + file_name)
-        break
-
-
+import pcdet.ops.utils as pcdet_utils
+pcdet_utils.load_torch_op_shr_lib("../pcdet/ops/ioubev_nms")
 
 def nms_gpu_bev(boxes : torch.Tensor, scores : torch.Tensor, thresh : float, pre_maxsize : Optional[int], post_max_size : Optional[int]):
     """Nms function with gpu implementation.
