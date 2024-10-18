@@ -5,10 +5,43 @@ DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
     POINT_CLOUD_RANGE: [-57.6, -57.6, -5.0, 57.6, 57.6, 3.0]
 
-    DATA_PROCESSOR:
-        #- NAME: mask_points_and_boxes_outside_range
-        #  REMOVE_OUTSIDE_BOXES: True
+    DATA_AUGMENTOR:
+        DISABLE_AUG_LIST: ['placeholder']
+        AUG_CONFIG_LIST:
+            - NAME: gt_sampling
+              DB_INFO_PATH:
+                - nuscenes_dbinfos_10sweeps_withvelo.pkl
+              PREPARE: {
+                filter_by_min_points: [
+                    'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',
+                    'barrier:5', 'motorcycle:5', 'bicycle:5', 'pedestrian:5', 'traffic_cone:5'
+                ],
+              }
 
+              SAMPLE_GROUPS: [
+                'car:2','truck:3', 'construction_vehicle:7', 'bus:4', 'trailer:6',
+                'barrier:2', 'motorcycle:6', 'bicycle:6', 'pedestrian:2', 'traffic_cone:2'
+              ]
+
+              NUM_POINT_FEATURES: 5
+              DATABASE_WITH_FAKELIDAR: False
+              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
+              LIMIT_WHOLE_SCENE: True
+
+            - NAME: random_world_flip
+              ALONG_AXIS_LIST: ['x', 'y']
+
+            - NAME: random_world_rotation
+              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
+
+            - NAME: random_world_scaling
+              WORLD_SCALE_RANGE: [0.9, 1.1]
+            
+            - NAME: random_world_translation
+              NOISE_TRANSLATE_STD: [0.5, 0.5, 0.5]
+
+
+    DATA_PROCESSOR:
         - NAME: shuffle_points
           SHUFFLE_ENABLED: {
             'train': True,
@@ -19,29 +52,31 @@ DATA_CONFIG:
           VOXEL_SIZE: [0.1, 0.1, 0.2]
 
 MODEL:
-    NAME: CenterPointVALO
-    NAME_POSTFIX: vn01
+    NAME: PillarNetVALO
+    NAME_POSTFIX: sp01
 
     VFE:
-        NAME: DynMeanVFE
+        NAME: DynamicPillarVFESimple2D
+        WITH_DISTANCE: False
+        USE_ABSLOTE_XYZ: True
+        USE_CLUSTER_XYZ: False
+        USE_NORM: True
+        NUM_FILTERS: [ 32 ]
 
     BACKBONE_3D:
-        NAME: VoxelResBackBone8x
-
-    MAP_TO_BEV:
-        NAME: HeightCompression
-        NUM_BEV_FEATURES: 256
+        NAME: PillarRes18BackBone8x
+        RESOLUTION_DIV: [1, 2]
+        NORM_METHOD: 'Instance'
 
     BACKBONE_2D:
-        NAME: BaseBEVBackboneSliced
+        NAME: BaseBEVBackboneV1
 
-        #TILE_COUNT: 18
-        #METHOD: 4
-        LAYER_NUMS: [5, 5]
-        LAYER_STRIDES: [1, 2]
-        NUM_FILTERS: [128, 256]
-        UPSAMPLE_STRIDES: [1, 2]
-        NUM_UPSAMPLE_FILTERS: [256, 256]
+        LAYER_NUMS: [ 5, 5 ]
+        LAYER_STRIDES: [ 1, 2 ]
+        NUM_FILTERS: [ 256, 256 ]
+        UPSAMPLE_STRIDES: [ 1, 2 ]
+        NUM_UPSAMPLE_FILTERS: [ 128, 128 ]
+        NORM_METHOD: 'Instance'
 
     DENSE_HEAD:
         NAME: CenterHeadInf
@@ -56,11 +91,11 @@ MODEL:
             ['motorcycle', 'bicycle'],
             ['pedestrian', 'traffic_cone'],
         ]
-        
+
         SHARED_CONV_CHANNEL: 64
         USE_BIAS_BEFORE_NORM: True
         NUM_HM_CONV: 2
-        ENABLE_NORM_IN_ATTR_LAYERS: True
+        ENABLE_NORM_IN_ATTR_LAYERS: False
         SEPARATE_HEAD_CFG:
             HEAD_ORDER: ['center', 'center_z', 'dim', 'rot', 'vel']
             HEAD_DICT: {
@@ -99,15 +134,14 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-    ONNX_PATH: deploy_files/onnx_files/cbgs_dyn_voxel01_cp_valo_dense_convs
+    ONNX_PATH: deploy_files/onnx_files/pillarnet01_valo_dense_convs
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
-    TILE_COUNT: 18
     METHOD: 4
-    PROJECTION_COEFF: 1.0
+    TILE_COUNT: 18
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 4
+    BATCH_SIZE_PER_GPU: 8
     NUM_EPOCHS: 20
 
     OPTIMIZER: adam_onecycle
