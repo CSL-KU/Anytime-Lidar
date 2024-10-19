@@ -70,7 +70,7 @@ class CenterHead(nn.Module):
         self.grid_size = grid_size
         self.point_cloud_range = point_cloud_range
         self.voxel_size = voxel_size
-        self.initial_voxel_size = voxel_size
+        self.initial_voxel_size = voxel_size.copy()
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', None)
 
         self.class_names = class_names
@@ -490,6 +490,7 @@ class CenterHead(nn.Module):
             )
             self.forward_ret_dict['target_dicts'] = target_dict
             self.forward_ret_dict['pred_dicts'] = batch_dict['pred_dicts']
+        return batch_dict
 
     def forward_topk(self, batch_dict):
         if not self.training or self.predict_boxes_when_training:

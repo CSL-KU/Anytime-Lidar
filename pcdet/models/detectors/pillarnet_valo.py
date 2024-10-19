@@ -115,8 +115,6 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
 
-            #TODO try forwarding with both resolutions and add losses
-
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
             self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
@@ -130,7 +128,6 @@ class PillarNetVALO(AnytimeTemplateV2):
 
             fms = self.model_cfg.DENSE_HEAD.TARGET_ASSIGNER_CONFIG.FEATURE_MAP_STRIDE
             target_hw = [sz // fms // resdiv for sz in self.dataset.grid_size[:2]]
-
             batch_dict = self.dense_head.forward_assign_targets(batch_dict, feature_map_size=target_hw)
             loss, tb_dict, disp_dict = self.get_training_loss()
 

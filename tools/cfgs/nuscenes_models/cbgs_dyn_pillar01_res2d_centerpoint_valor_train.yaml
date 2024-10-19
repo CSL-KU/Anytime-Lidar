@@ -81,7 +81,7 @@ MODEL:
     DENSE_HEAD:
         NAME: CenterHead
         CLASS_AGNOSTIC: False
-        OPTIMIZE_ATTR_CONVS : True
+        NORM_METHOD: 'Instance'
 
         CLASS_NAMES_EACH_HEAD: [
             ['car'], 
@@ -150,13 +150,13 @@ OPTIMIZATION:
     MOMENTUM: 0.9
 
     MOMS: [0.95, 0.85]
-    PCT_START: 0.4
-    DIV_FACTOR: 10
+    PCT_START: 0.2
+    DIV_FACTOR: 5
     DECAY_STEP_LIST: [35, 45]
     LR_DECAY: 0.1
     LR_CLIP: 0.0000001
 
     LR_WARMUP: False
-    WARMUP_EPOCH: 1
+    WARMUP_EPOCH: 0
 
     GRAD_NORM_CLIP: 10
