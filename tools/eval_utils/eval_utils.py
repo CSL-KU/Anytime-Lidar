@@ -27,10 +27,11 @@ if visualize_ros2:
     from autoware_auto_perception_msgs.msg import DetectedObjects, ObjectClassification
     from valo_msgs.msg import Float32MultiArrayStamped
     from sensor_msgs.msg import PointCloud2, PointField
+    from visualization_msgs.msg import Marker, MarkerArray
     from rclpy.clock import ClockType, Clock
     from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
     from inference_ros2 import pred_dict_to_f32_multi_arr, f32_multi_arr_to_detected_objs, \
-            points_to_pc2
+            points_to_pc2, gen_viz_rectangle, gen_viz_filled_rectangle
 
     class VisualizationNode(Node):
         def __init__(self, cls_names):
@@ -47,9 +48,13 @@ if visualize_ros2:
             self.pc_publisher = self.create_publisher(PointCloud2, 'point_cloud',
                     qos_profile)
 
+            self.heatmap_pub = self.create_publisher(MarkerArray, 'heatmap', 10)
+
             oc = ObjectClassification()
             self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
                     for name in cls_names }
+
+            self.heatmap = None
 
         def pred_dict_to_detected_objs(self, pred_dict, tstamp=None):
             if tstamp is None:
@@ -57,9 +62,12 @@ if visualize_ros2:
             float_arr = pred_dict_to_f32_multi_arr(pred_dict, tstamp)
             return f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
 
-        def publish_vis_data(self, dets_pred_dict, gt_pred_dict=None, points=None, tstamp=None):
+        def publish_vis_data(self, dets_pred_dict, gt_pred_dict=None, points=None, tstamp=None, heatmap_ma=None):
             if tstamp is None:
                 tstamp = self.system_clock.now().to_msg()
+
+            if heatmap_ma is not None:
+                self.heatmap_pub.publish(heatmap_ma)
 
             if points is not None:
                 num_fields = points.shape[1]
@@ -73,8 +81,23 @@ if visualize_ros2:
             self.det_debug_publisher.publish(det_objs)
 
             if gt_pred_dict is not None:
-                gt_objs = self.pred_dict_to_detected_objs(dets_pred_dict, tstamp)
+                gt_objs = self.pred_dict_to_detected_objs(gt_pred_dict, tstamp)
                 self.ground_truth_publisher.publish(gt_objs)
+
+        def publish_frame(self, pc_range):
+            vertices_xyz = np.array((
+                (pc_range[0], pc_range[1], 0.), #-x -y
+                (pc_range[3], pc_range[1], 0.), #+x -y
+                (pc_range[3], pc_range[4], 0.), #+x +y
+                (pc_range[0], pc_range[4], 0.)  #-x +y
+            ))
+            whole_area_rect = gen_viz_rectangle(vertices_xyz, 9999)
+            whole_area_rect.header.stamp = self.system_clock.now().to_msg()
+
+            ma = MarkerArray()
+            ma.markers.append(whole_area_rect)
+            self.heatmap_pub.publish(ma)
+
 
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
@@ -184,10 +207,60 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if visualize_ros2: # 200 ms on jetson orin
             det_pred_dict = batch_dict['final_box_dicts'][0]
             gt_pred_dict = dataset.get_gt_as_pred_dict(data_indexes[0])
+
             points = batch_dict['points']
+
+            pub_heatmap = True
+            ma = None
+            if pub_heatmap:
+                ult_heatmap = None
+                if 'ult_heatmap' in batch_dict:
+                    ult_heatmap = batch_dict['ult_heatmap'].cpu()
+                elif 'pred_dicts' in batch_dict and 'hm' in batch_dict['pred_dicts'][0]:
+                    heatmaps = [pd['hm'] for pd in batch_dict['pred_dicts']]
+                    all_heatmaps = torch.cat(heatmaps, dim=1)
+                    ult_heatmap, _ = torch.max(all_heatmaps, 1, keepdim=True)
+                    ult_heatmap = ult_heatmap.cpu()
+                if ult_heatmap is not None:
+                    hm_h, hm_w = ult_heatmap.shape[2:]
+                    if vis_node.heatmap is None:
+                        pc_range = model.vfe.point_cloud_range
+                        pc_range = pc_range.cpu().numpy()
+                        vis_node.publish_frame(pc_range)
+
+                        # heatmap tile
+                        field_h = pc_range[4] - pc_range[1]
+                        field_w = pc_range[3] - pc_range[0]
+                        hm_tile_h = field_h / hm_h
+                        hm_tile_w = field_w / hm_w
+
+                        tile_verts = np.array((
+                            (pc_range[0],           pc_range[1], 0.), #-x -y
+                            (pc_range[0]+hm_tile_w, pc_range[1], 0.), #+x -y
+                            (pc_range[0]+hm_tile_w, pc_range[1]+hm_tile_h, 0.), #+x +y
+                            (pc_range[0],           pc_range[1]+hm_tile_h, 0.)  #-x +y
+                        ))
+
+                        ma = MarkerArray()
+                        for k in range(hm_h):
+                            for j in range(hm_w):
+                                tv = tile_verts + np.array((hm_tile_w*k, hm_tile_h*j, 0.))
+                                tile = gen_viz_filled_rectangle(tv, k*hm_w+j,
+                                        float(ult_heatmap[0, 0, j, k]))
+                                ma.markers.append(tile)
+                        vis_node.heatmap = ma
+                    else:
+                        ma = vis_node.heatmap
+                        for k in range(hm_h):
+                            for j in range(hm_w):
+                                a = float(ult_heatmap[0, 0, j, k])
+                                ma.markers[k*hm_w+j].color.a = 0.5 if a > 0.1 else 0.
+
             points = points[points[:,-1] == 0.] # only one scan
             points = points[:, 1:-1].cpu().contiguous().numpy()
-            vis_node.publish_vis_data(det_pred_dict, gt_pred_dict, points, tstamp=None)
+
+            vis_node.publish_vis_data(det_pred_dict, gt_pred_dict, points,
+                    tstamp=None, heatmap_ma=ma)
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
         bd = {k:batch_dict[k] for k in ('frame_id', 'metadata')}
@@ -199,8 +272,6 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if i % 100 == 0:
             gc.collect() # don't invoke this all the time as it slows down
 
-        #print(i)
-        #input()
     op = final_output_dir if args.save_to_file else None
     for bd, pred_dicts in pred_tuples:
         annos = dataset.generate_prediction_dicts(

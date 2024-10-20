@@ -1,9 +1,11 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
+from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from .forecaster import Forecaster
 import torch
+import torch_scatter
 import time
 import onnx
 import os
@@ -106,6 +108,8 @@ class PillarNetVALO(AnytimeTemplateV2):
             self.forecaster = torch.jit.script(Forecaster(tuple(self.dataset.point_cloud_range.tolist()), 
                     self.tcount, self.score_thresh, self.forecasting_coeff, self.dense_head.num_det_heads,
                     self.dense_head.cls_id_to_det_head_idx_map))
+        
+        self.calc_ult_heatmap = True
 
     def forward(self, batch_dict):
         if self.training:
@@ -225,9 +229,7 @@ class PillarNetVALO(AnytimeTemplateV2):
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs)
             else:
                 outputs = self.opt_dense_convs(x_conv4)
-                outp_names = self.opt_dense_convs_output_names_pd + \
-                        self.opt_dense_convs_output_names_topk
-                out_dict = {name:outp for name, outp in zip(outp_names, outputs)}
+                out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
             self.measure_time_end('FusedOps')
 
@@ -241,6 +243,19 @@ class PillarNetVALO(AnytimeTemplateV2):
             tile_sizes = self.opt_dense_convs.get_out_tile_sizes()
             topk_outputs = fix_topk_outputs(tile_sizes, batch_dict['tile_mapping'], topk_outputs)
 
+            if self.calc_ult_heatmap:
+                fms = self.model_cfg.DENSE_HEAD.TARGET_ASSIGNER_CONFIG.FEATURE_MAP_STRIDE
+                target_hw = [sz // fms for sz in self.dataset.grid_size[:2]]
+                ult_heatmap = torch.zeros((1, 1, target_hw[0], target_hw[1]),
+                        dtype=topk_outputs[0][0].dtype,
+                        device=topk_outputs[0][0].device)
+                all_scores = torch.cat([t[0] for t in topk_outputs])
+                all_ys = torch.cat([t[2] for t in topk_outputs]).long()
+                all_xs = torch.cat([t[3] for t in topk_outputs]).long()
+                # NOTE, better is to do scatter_max, but its ok
+                ult_heatmap[:, :, all_ys, all_xs] = all_scores
+                batch_dict['ult_heatmap'] = ult_heatmap
+
             forecasted_dets = torch.jit.wait(fcdets_fut) if fcdets_fut is not None else None
             if forecasted_dets is not None and len(forecasted_dets) != self.dense_head.num_det_heads:
                 forecasted_dets = None # NOTE this appears to be a bug, but dont know how to fix it
@@ -250,12 +265,13 @@ class PillarNetVALO(AnytimeTemplateV2):
                     topk_outputs, forecasted_dets)
             self.measure_time_end('CenterHead-GenBox')
 
-            # let the hooks of parent class handle this
             return batch_dict
-
 
     def optimize1(self, fwd_data):
         optimize_start = time.time()
+
+        self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head, self.tcount)
+        self.opt_dense_convs.eval()
 
         input_names = ['x_conv4']
         print(input_names[0], fwd_data.size())
@@ -266,14 +282,11 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.opt_dense_convs_output_names_topk = [name + str(i) for i in range(self.dense_head.num_det_heads) \
                 for name in self.topk_outp_names]
 
-        outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
-
-        print('Fused operations output names:', outp_names)
+        self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
+        print('Fused operations output names:', self.opt_outp_names)
 
         self.dense_head.instancenorm_mode()
 
-        self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head, self.tcount)
-        self.opt_dense_convs.eval()
         self.opt_dense_convs(fwd_data, True) # do this so tile sizes are determined
 
         generated_onnx=False
@@ -284,15 +297,13 @@ class PillarNetVALO(AnytimeTemplateV2):
                     3: "width",
                 },
             }
-            #for nm in self.opt_dense_convs_output_names:
-            #    dynamic_axes[nm] = {3 : "out_width"}
 
             torch.onnx.export(
                     self.opt_dense_convs,
                     fwd_data.requires_grad_(False),
                     onnx_path,
                     input_names=input_names,
-                    output_names=outp_names,
+                    output_names=self.opt_outp_names,
                     dynamic_axes=dynamic_axes,
                     opset_version=17,
                     custom_opsets={"cuda_slicer": 17}
@@ -311,7 +322,7 @@ class PillarNetVALO(AnytimeTemplateV2):
         trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
         print('Trying to load trt engine at', trt_path)
         try:
-            self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
+            self.fused_convs_trt = TRTWrapper(trt_path, input_names, self.opt_outp_names)
         except:
             print('TensorRT wrapper for fused_convs throwed exception, using eager mode')
             self.fused_convs_trt = None

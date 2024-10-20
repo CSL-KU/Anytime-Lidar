@@ -30,6 +30,8 @@ from valo_msgs.msg import Float32MultiArrayStamped
 from callback_profile.msg import CallbackProfile
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import PointCloud2, PointField
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
 import tf2_ros
 import math
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
@@ -49,7 +51,7 @@ ALWAYS_BLOCK_SCHED = False
 EVAL_TRACKER = False
 ANYTIME_CAPABLE = True
 ENABLE_TILE_DROP = False
-VISUALIZE = False
+VISUALIZE = True
 PROFILE = False
 DO_EVAL = False
 USE_EGOVEL_FOR_DL_PRED = False
@@ -252,14 +254,80 @@ def get_gt_objects(indices, dataset, cls_mapping):
     dummy_stamp = TimeMsg() # will be overwritten later
     for idx, ind in enumerate(indices):
         gt_dict = dataset.get_gt_as_pred_dict(ind)
-        float_arr = pred_dict_to_f32_multi_arr(gt_dict, dummy_stamp)
-        objs[idx] = f32_multi_arr_to_detected_objs(float_arr, cls_mapping)
+        if gt_dict['pred_boxes'].size(0) == 0:
+            objs[idx] = None
+        else:
+            float_arr = pred_dict_to_f32_multi_arr(gt_dict, dummy_stamp)
+            objs[idx] = f32_multi_arr_to_detected_objs(float_arr, cls_mapping)
     return objs
 
 def get_debug_pts_and_gt_objects(indices, dataset, cls_mapping):
     debug_pts = get_debug_pts(indices, dataset)
     gt_objects = get_gt_objects(indices, dataset, cls_mapping)
     return debug_pts, gt_objects
+
+def gen_viz_rectangle(vertices_xyz, rect_id):
+    marker = Marker()
+
+    marker.header.frame_id = "base_link"  # Replace with the appropriate frame
+    #marker.header.stamp =  # set it later
+
+    marker.ns = "rectangle"
+    marker.id = rect_id
+    marker.type = Marker.LINE_STRIP  # To draw a line connecting the vertices
+    marker.action = Marker.ADD
+
+    # Define the marker properties (scale, color, etc.)
+    marker.scale.x = 0.13  # Line width
+    marker.color.r = 1.0
+    marker.color.g = 0.47
+    marker.color.b = 0.0
+    marker.color.a = 1.0  # Full opacity
+
+    # Add points for the rectangle
+    for vertex in vertices_xyz:
+        point = Point()
+        point.x, point.y, point.z = vertex
+        marker.points.append(point)
+
+    # Close the rectangle by adding the first point again
+    marker.points.append(Point(x=vertices_xyz[0][0], y=vertices_xyz[0][1], z=vertices_xyz[0][2]))
+
+    return marker
+
+
+def gen_viz_filled_rectangle(vertices_xyz, rect_id, opacity=0.2):
+    marker = Marker()
+
+    marker.header.frame_id = "base_link"  # Replace with the appropriate frame
+    #marker.header.stamp =  # set it later
+
+    marker.ns = "filled_rectangle"
+    marker.id = rect_id
+    marker.type = Marker.CUBE
+    marker.action = Marker.ADD
+
+    marker.pose.position.x = (vertices_xyz[0][0] + vertices_xyz[1][0]) / 2.0
+    marker.pose.position.y = (vertices_xyz[1][1] + vertices_xyz[2][1]) / 2.0
+    marker.pose.position.z = -10.0
+
+    marker.pose.orientation.x = 0.0
+    marker.pose.orientation.y = 0.0
+    marker.pose.orientation.z = 0.0
+    marker.pose.orientation.w = 1.0
+
+    marker.scale.x = vertices_xyz[1][0] - vertices_xyz[0][0]
+    marker.scale.y = vertices_xyz[1][1] - vertices_xyz[2][1]
+    marker.scale.z = 0.01  # Thickness (small to make it look flat)
+
+    marker.color.r = 1.0
+    marker.color.g = 0.47
+    marker.color.b = 0.0
+    marker.color.a = opacity  # Opacity
+
+    return marker
+
+
 
 class StreamingEvaluator(Node):
     def __init__(self, args, period_sec, shr_tracker_time_sec):
@@ -373,8 +441,9 @@ class StreamingEvaluator(Node):
 
             #publish ground truth as well
             gt_objs = self.gt_objects[idx]
-            gt_objs.header.stamp = msg.stamp
-            self.ground_truth_publisher.publish(gt_objs)
+            if gt_objs is not None:
+                gt_objs.header.stamp = msg.stamp
+                self.ground_truth_publisher.publish(gt_objs)
 
     def tracker_callback(self, msg):
          # save the time of msg arrival for streaming eval
@@ -567,8 +636,47 @@ class InferenceServer(Node):
 
         self.cmd_publisher = self.create_publisher(Header, 'evaluator_cmd', 10)
 
-        if VISUALIZE:
-            self.pc_idx_publisher = self.create_publisher(Header, 'point_cloud_idx', 10)
+        self.tcount = self.model_cfg.MODEL.get('TILE_COUNT', 0)
+        print('[IS] TILE COUNT:', self.tcount)
+
+        #if VISUALIZE:
+        self.pc_idx_publisher = self.create_publisher(Header, 'point_cloud_idx', 10)
+        self.rect_array_pub = self.create_publisher(MarkerArray, 'chosen_tiles', 10)
+
+        pc_range =  self.dataset.point_cloud_range
+        if self.tcount == 0:
+            vertices_xyz = np.array((
+                (pc_range[0], pc_range[1], 0.), #-x -y
+                (pc_range[3], pc_range[1], 0.), #+x -y
+                (pc_range[3], pc_range[4], 0.), #+x +y
+                (pc_range[0], pc_range[4], 0.)  #-x +y
+            ))
+            whole_area_rect = gen_viz_filled_rectangle(vertices_xyz, 0)
+            whole_area_rect.header.stamp = self.system_clock.now().to_msg()
+
+            ma = MarkerArray()
+            ma.markers.append(whole_area_rect)
+            self.rect_array_pub.publish(ma)
+
+        if VISUALIZE and self.tcount > 0:
+            # To publish chosen tiles
+            tile_w = (pc_range[3] - pc_range[0]) / self.tcount
+            #tile_h = (pc_range[4] - pc_range[1])
+            v_top = np.array((pc_range[0], pc_range[1], 0.))
+            v_bot = np.array((pc_range[0], pc_range[4], 0.))
+            
+            self.rect_arr = MarkerArray()
+            shift = np.array((tile_w, 0., 0.))
+            stamp = self.system_clock.now().to_msg()
+            for i in range(self.tcount):
+                vertices = (v_top, v_top + shift, v_bot + shift, v_bot)
+                rect = gen_viz_filled_rectangle(vertices, i)
+                rect.header.stamp = stamp
+                self.rect_arr.markers.append(rect)
+                v_top += shift
+                v_bot += shift
+
+            self.rect_array_pub.publish(self.rect_arr)
 
     def init_model(self, args):
         cfg_from_yaml_file(args.cfg_file, cfg)
@@ -653,58 +761,55 @@ class InferenceServer(Node):
                 print('Samples loaded')
                 return
 
-    def get_dyn_deadline_sec(self, sample_idx, pred_dict=None):
+    def get_dyn_deadline_sec(self, last_sample_idx, sample_idx):
         if self.calib_dl != 0.:
             return self.calib_dl / 1000.
 
         if not ANYTIME_CAPABLE:
             return 10.0 # ignore deadline
 
+#        if last_sample_idx != -1:
+#            deadlines_ms = [95, 145, 195]
+#            chosen_dl = self.model.calc_bbox_misalignment(last_sample_idx, sample_idx, deadlines_ms)
+#            return chosen_dl / 1000.0 # make it sec 
+
         if USE_EGOVEL_FOR_DL_PRED:
             max_vel_n = 15 # meters per second
             max_deadline = 0.245
             min_deadline = 0.095
             if sample_idx > 0 and sample_idx < self.num_samples:
-                prev_tkn = self.dataset.infos[sample_idx-1]['token']
-                cur_tkn = self.dataset.infos[sample_idx]['token']
-
-                prev_coord = self.model.token_to_pose[prev_tkn][7:10]
-                cur_coord = self.model.token_to_pose[cur_tkn][7:10]
-
-                prev_ts = self.model.token_to_ts[prev_tkn]
-                cur_ts = self.model.token_to_ts[cur_tkn]
-
-                vel = ((cur_coord - prev_coord) /  ((cur_ts - prev_ts) / 1000000.)).numpy()
+                vel = self.model.get_egovel(sample_idx)
                 vel_n = np.linalg.norm(vel)
                 return max_deadline - (vel_n/max_vel_n) * (max_deadline - min_deadline)
             else:
                 return max_deadline
-        elif pred_dict is not None:
-            bboxes = pred_dict['pred_boxes'].numpy() # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
-            scores = pred_dict['pred_scores'].flatten().float().numpy()
-            labels = pred_dict['pred_labels'].flatten().float().numpy()
-            coords, feats = gen_features(bboxes, scores, labels)
-            #print(coords.shape, feats.shape)
-            #print(feats)
-            bev_inp = torch.zeros((1,8,128,128), dtype=torch.float)
-            coords = torch.from_numpy(coords[:, :2]).long()
-            feats = torch.from_numpy(feats).T.float()
-            bev_inp[0, :, coords[:,1], coords[:,0]] = feats
-            #bev_inp = create_bev_tensor(coords, feats)
-            self.dl_pred_out_buf = self.dl_pred_trt({'bev_inp': bev_inp.cuda()},
-                    self.dl_pred_out_buf)
-            dl = self.dl_pred_out_buf['deadline'].cpu().flatten().item()
-
-            #TODO keep the same DL for one sec?
-
-            # choose the closest deadline from the list
-            #cp_pp_valo_deadlines = torch.tensor([65., 75., 85., 95., 105., 115.])
-            #diff, idx = torch.min(torch.abs(cp_pp_valo_deadlines - dl), 0)
-            #return cp_pp_valo_deadlines[idx].item() / 1000.0
-
-            return dl / 1000.0
         else:
             return 10.0
+#        elif self.model.latest_batch_dict is not None:
+#            pred_dict = self.model.latest_batch_dict['final_box_dicts'][0]
+#            bboxes = pred_dict['pred_boxes'].numpy() # (N, 9) #xyz(3) dim(3) yaw(1) vel(2)
+#            scores = pred_dict['pred_scores'].flatten().float().numpy()
+#            labels = pred_dict['pred_labels'].flatten().float().numpy()
+#            coords, feats = gen_features(bboxes, scores, labels)
+#            #print(coords.shape, feats.shape)
+#            #print(feats)
+#            bev_inp = torch.zeros((1,8,128,128), dtype=torch.float)
+#            coords = torch.from_numpy(coords[:, :2]).long()
+#            feats = torch.from_numpy(feats).T.float()
+#            bev_inp[0, :, coords[:,1], coords[:,0]] = feats
+#            #bev_inp = create_bev_tensor(coords, feats)
+#            self.dl_pred_out_buf = self.dl_pred_trt({'bev_inp': bev_inp.cuda()},
+#                    self.dl_pred_out_buf)
+#            dl = self.dl_pred_out_buf['deadline'].cpu().flatten().item()
+#
+#            #TODO keep the same DL for one sec?
+#
+#            # choose the closest deadline from the list
+#            #cp_pp_valo_deadlines = torch.tensor([65., 75., 85., 95., 105., 115.])
+#            #diff, idx = torch.min(torch.abs(cp_pp_valo_deadlines - dl), 0)
+#            #return cp_pp_valo_deadlines[idx].item() / 1000.0
+#
+#            return dl / 1000.0
 
     def infer_loop(self, bar, shr_tracker_time_sec):
         model = self.model
@@ -727,11 +832,12 @@ class InferenceServer(Node):
         #wakeup_time = init_time + self.period_sec
         self.model.last_elapsed_time_musec = 100000
         processed_inds = set()
+        last_processed_ind = -1
 
         #if self.calib_dl > 0. and self.calib_dl < self.period_sec*1000:
         #    DO_DYN_SCHED = False
         #    ALWAYS_BLOCK_SCHED = True
-        pred_dict = None
+        model.latest_batch_dict = None
 
         while rclpy.ok():
             if VALO_DEBUG:
@@ -772,12 +878,9 @@ class InferenceServer(Node):
                             f" {i} by sleeping {sleep_time} seconds.")
                     time.sleep(sleep_time)
 
-                processed_inds.add(i)
-
             if PROFILE and i > 200 or i >= self.num_samples:
                 break
 
-            dyn_deadline_sec = self.get_dyn_deadline_sec(i, pred_dict)
 
             sample_token = self.dataset.infos[i]['token']
             scene_token = self.model.token_to_scene[sample_token]
@@ -799,7 +902,11 @@ class InferenceServer(Node):
                 eval_cmd.stamp = TimeMsg(sec=sec, nanosec=int((scene_load_time-sec)*1e9))
                 self.cmd_publisher.publish(eval_cmd)
 
+                last_processed_ind = -1
+                model.latest_batch_dict = None
+
             last_scene_token = scene_token
+            dyn_deadline_sec = self.get_dyn_deadline_sec(last_processed_ind, i)
 
             with record_function("inference"):
                 batch_dict = self.batch_dicts_arr[i]
@@ -819,9 +926,9 @@ class InferenceServer(Node):
                     self.pc_idx_publisher.publish(idx_msg)
 
                 deadline_sec_override, reset = model.initialize(sample_token)
-                if reset:
+                #if reset:
                     #Clear buffers
-                    model.latest_batch_dict = None
+                #    model.latest_batch_dict = None
 
                 with torch.no_grad():
                     load_data_to_gpu(batch_dict)
@@ -844,8 +951,9 @@ class InferenceServer(Node):
                 model.latest_batch_dict = {k: batch_dict[k] for k in \
                         ['final_box_dicts', 'metadata']}
 
-                if 'chosen_tile_coords' in batch_dict:
-                    model.latest_batch_dict['chosen_tile_coords'] = batch_dict['chosen_tile_coords']
+                for k in ('chosen_tile_coords', 'nonempty_tile_coords'):
+                    if k in batch_dict:
+                        model.latest_batch_dict[k] = batch_dict[k]
 
                 torch.cuda.synchronize()
                 model.measure_time_end('PostProcess')
@@ -864,6 +972,14 @@ class InferenceServer(Node):
                 else:
                     pred_dict = batch_dict['final_box_dicts'][0]
 
+                if VISUALIZE and 'chosen_tile_coords' in batch_dict:
+                    # Chosen tile coords is given, visualize the regions as rectangles
+                    ctc = batch_dict['chosen_tile_coords']
+                    for i in range(len(self.rect_arr.markers)):
+                        self.rect_arr.markers[i].header.stamp = cur_stamp
+                        self.rect_arr.markers[i].action = Marker.ADD if i in ctc else Marker.DELETE
+                    self.rect_array_pub.publish(self.rect_arr)
+
                 self.publish_dets(pred_dict, cur_stamp)
 
                 finishovski_time = time.time()
@@ -880,6 +996,9 @@ class InferenceServer(Node):
                 #if i % 10 == 0:
                 #    gc.collect()
                 #    print(torch.cuda.memory_summary())
+
+            processed_inds.add(i)
+            last_processed_ind = i
 
         eval_cmd = Header()
         eval_cmd.frame_id = 'stop_sampling'

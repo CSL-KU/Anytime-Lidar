@@ -20,6 +20,9 @@ def forecast_past_dets(g, pred_boxes, past_pose_indexes, past_poses, cur_pose, \
 register_custom_op_symbolic("kucsl::forecast_past_dets", forecast_past_dets, 17)
 
 
+def move_to_world_coords(pred_boxes, poses, pose_idx):
+    return torch.ops.kucsl.move_to_world_coords(pred_boxes, poses, pose_idx)
+
 class Forecaster(torch.nn.Module):
     pc_range : Final[Tuple[float]]
     tcount : Final[int]

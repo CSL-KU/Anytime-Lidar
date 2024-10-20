@@ -56,7 +56,7 @@ def create_bev_tensor(feature_coords, features):
     bev_tensor[0, :, coords[:,1].ravel(), coords[:,0].ravel()] = features.T
     return bev_tensor
 
-def calc_ap(all_tp, all_scr, all_num_gt) -> float:
+def calc_ap(all_tp, all_scr, all_num_gt, nelem=101) -> float:
     """ Calculated average precision. """
     sort_inds = np.argsort(-all_scr) # descending
     tp = all_tp[sort_inds]
@@ -69,7 +69,7 @@ def calc_ap(all_tp, all_scr, all_num_gt) -> float:
 
     prec = tp / (fp + tp)
     rec = tp / float(all_num_gt)
-    nelem = 101
+    #nelem = 101
     rec_interp = np.linspace(0, 1, nelem)
     precision = np.interp(rec_interp, rec, prec, right=0)
     #conf = np.interp(rec_interp, rec, scr, right=0)
@@ -98,7 +98,7 @@ class SegInfo:
             print('Loading', path)
             with open(path, 'rb') as handle:
                 d = pickle.load(handle)
-                deadline_ms = d['calib_deadline_ms']
+                deadline_ms = int(d['calib_deadline_ms'])
                 coords_glob = d['annos_in_glob_coords']
                 assert not coords_glob
 
@@ -156,7 +156,7 @@ class SegInfo:
         seg_prec_dict = {}
         # this one will be used to build the dataset
         sample_token_to_seg_dict = {}
-        sample_token_to_egovel = {}
+        #sample_token_to_egovel = {}
         all_deadlines = set()
         all_segments = set()
         for i, tpl in enumerate(self.seg_info_tuples):
@@ -166,7 +166,7 @@ class SegInfo:
             for sample in seg_sample_stats: # all samples in the segment
                 num_gt_seg += sample['num_gt']
                 #sample['egopose_translation_xy']
-                sample_token_to_egovel[sample['sample_token']] = sample['egovel_xy']
+                #sample_token_to_egovel[sample['sample_token']] = sample['egovel_xy']
                 predictions = sample['pred_data']
                 if len(predictions) > 0:
                     if isinstance(predictions[0], dict):
@@ -199,7 +199,7 @@ class SegInfo:
 
         self.seg_eval_data_dict = seg_eval_data_dict
         self.sample_token_to_seg_dict = sample_token_to_seg_dict
-        self.sample_token_to_egovel = sample_token_to_egovel
+        #self.sample_token_to_egovel = sample_token_to_egovel
         self.all_segments = list(all_segments)
         self.all_deadlines = list(all_deadlines)
         self.global_worst_dl = 0.
@@ -287,45 +287,37 @@ class SegInfo:
                                 cur_seg_dls[seg] = old_dl
                             progress_bar.update()
                 best_perm = list(cur_seg_dls.values())
-            elif upper_bound_calc_method == 'precision_based':
+            elif upper_bound_calc_method == 'ap_based':
                 num_iters = len(self.all_segments)
                 progress_bar = tqdm(total=num_iters, leave=True, dynamic_ncols=True)
                 seg_dls, best_seg_eval_dict, best_perm = {}, {}, []
                 for j, seg in enumerate(self.all_segments):
-                    datas_all = []
+                    datas_all = {dist_th:[] for dist_th in self.dist_thresholds}
                     keys_all = []
                     for key, datas in self.seg_eval_data_dict.items():
-                        seg_i = '='.join(key.split('=')[:2])
+                        fields = key.split('=')
+                        seg_i = '='.join(fields[:2])
                         if seg == seg_i:
-                            datas_all.extend(datas)
+                            dist_th = fields[3]
+                            datas_all[dist_th].extend(datas)
                             keys_all.append(key)
-                    #determine the best deadline for this segment
-                    deadlines, cnt = np.unique([d[0] for d in datas_all], return_counts=True)
-                    cnt = -(cnt - np.max(cnt)) # num zeros to add
-                    best_dl, max_prec = datas_all[0][0], 0.
-                    for i, dl in enumerate(deadlines):
-                        dl_datas = [d for d in datas_all if d[0] == dl]
+                    best_dl, max_ap = self.all_deadlines[0], 0.
+                    for i, dl in enumerate(self.all_deadlines):
+                        ap_list = []
+                        for dist_th in self.dist_thresholds[2:]: # NOTE 2: appears to give best result
+                            datas_all_dist = datas_all[dist_th]
+                            dl_datas = [d for d in datas_all_dist if d[0] == dl]
+                            assert len(dl_datas) > 0
+                            ap_list.append(calc_ap(
+                                np.concatenate([d[1] for d in dl_datas]), # tp
+                                np.concatenate([d[2] for d in dl_datas]), # scr
+                                np.sum([d[3] for d in dl_datas]).item() # gt
+                            ))
+                        new_ap = np.mean(ap_list)
 
-                        class_agnostic = False
-                        if class_agnostic:
-                            merged_datas = (
-                                dl_datas[0],
-                                np.concatenate([d[1] for d in dl_datas]),
-                                np.concatenate([d[2] for d in dl_datas]),
-                                np.sum([d[3] for d in dl_datas]).item()
-                            )
-                            mean_prec, mean_rec = self.get_seg_prec_recall(merged_datas)
-                        else:
-                            precs_and_recs  = [self.get_seg_prec_recall(d) for d in dl_datas]
-                            precs_and_recs += [0., 0.] * cnt[i]
-                            precs_and_recs = np.array(precs_and_recs)
-                            mean_prec = np.mean(precs_and_recs[:, 0])
-                            mean_rec = np.mean(precs_and_recs[:, 1])
-                            #mean_prec += mean_rec
-
-                        if mean_prec > max_prec:
+                        if new_ap > max_ap:
                             best_dl = dl
-                            max_prec = mean_prec
+                            max_ap = new_ap
 
                     for key in keys_all:
                         datas = get_dl_data(self.seg_eval_data_dict[key], best_dl)
@@ -355,15 +347,15 @@ class SegInfo:
                     segkey = self.sample_token_to_seg_dict[sample_tkn]
                     dl = cur_seg_dls[segkey]
                     idx = [l[-1] for l in inout_list].index(dl)
-                    dataset_tuples.append(inout_list[idx] + \
-                            [self.sample_token_to_egovel[sample_tkn]])
+                    dataset_tuples.append(inout_list[idx] + [sample_tkn])
+#                            [self.sample_token_to_egovel[sample_tkn]]
 
                 print('Duplicates are not removed')
                 # dump the tuples
                 print(f'Dumping {len(dataset_tuples)} samples as dataset')
                 with open('deadline_dataset.pkl', 'wb') as f:
                     pickle.dump({
-                        'fields': ('coords', 'features', 'deadline', 'egovel_xy'),
+                        'fields': ('coords', 'features', 'deadline', 'sample_tkn'),
                         'data':dataset_tuples}, f)
             return max_mAP
         else:
@@ -453,17 +445,17 @@ class SegInfo:
             key += str(tpl[self.deadline_ms_idx]) + '='
         return key[:-1]
 
-    def get_keyidx(self, tpl_idx):
-        t = self.seg_info_tuples[tpl_idx]
-
-        scene = t[self.scene_idx]
-        if scene not in self.scene_to_idx:
-            self.scene_to_idx[scene] = self.scene_to_idx_counter
-            self.scene_to_idx_counter += 1
-
-        num_time_seg_in_scene = 20
-        return self.scene_to_idx[scene] * num_time_seg_in_scene + t[fi['time_segment']]
-
+#    def get_keyidx(self, tpl_idx):
+#        t = self.seg_info_tuples[tpl_idx]
+#
+#        scene = t[self.scene_idx]
+#        if scene not in self.scene_to_idx:
+#            self.scene_to_idx[scene] = self.scene_to_idx_counter
+#            self.scene_to_idx_counter += 1
+#
+#        num_time_seg_in_scene = 20
+#        return self.scene_to_idx[scene] * num_time_seg_in_scene + t[fi['time_segment']]
+#
     def do_eval_all_deadlines(self):
         #VALO
         mAPs = []
@@ -485,6 +477,6 @@ if __name__ == '__main__':
     seg_info = SegInfo(inp_dir)
 
     seg_info.do_eval_all_deadlines()
+    #seg_info.do_eval(None, 'ap_based')
     seg_info.do_eval(None, 'heuristic')
-    #seg_info.do_eval(None, 'precision_based')
     #seg_info.do_eval(None, 'exhaustive')
