@@ -103,7 +103,7 @@ class PillarNetOpt(Detector3DTemplate):
                 self.trt_outputs = self.dense_convs_trt({'x_conv4': x_conv4}, self.trt_outputs)
                 outputs = [self.trt_outputs[nm] for nm in self.opt_dense_convs_output_names]
             else:
-                outputs = self.opt_dense_convs(sf)
+                outputs = self.opt_dense_convs(x_conv4)
             batch_dict["pred_dicts"] = self.dense_head.convert_out_to_pred_dicts(outputs)
             self.measure_time_end('DenseConvsPipeline')
 

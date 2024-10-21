@@ -1,11 +1,9 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
-from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from .forecaster import Forecaster
 import torch
-import torch_scatter
 import time
 import onnx
 import os
@@ -109,7 +107,7 @@ class PillarNetVALO(AnytimeTemplateV2):
                     self.tcount, self.score_thresh, self.forecasting_coeff, self.dense_head.num_det_heads,
                     self.dense_head.cls_id_to_det_head_idx_map))
         
-        self.calc_ult_heatmap = True
+        self.calc_ult_heatmap = False
 
     def forward(self, batch_dict):
         if self.training:

@@ -160,7 +160,7 @@ class CenterHeadInf(nn.Module):
             nn.ReLU(),
         )
 
-        self.optimize_attr_convs = self.model_cfg.get('OPTIMIZE_ATTR_CONVS', False)
+        self.optimize_attr_convs = self.model_cfg.get('OPTIMIZE_ATTR_CONVS', True)
 
         self.heads_list = nn.ModuleList()
         self.separate_head_cfg = self.model_cfg.SEPARATE_HEAD_CFG

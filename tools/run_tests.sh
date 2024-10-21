@@ -31,8 +31,8 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
 
     # Centerpoint-voxel01 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_trt.yaml"
-    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
-    CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
 
     # Centerpoint-voxel0075 *
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
@@ -49,12 +49,13 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
 
     # PillarNet 0.1
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
     #CKPT_FILE="../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valor_train.yaml"
+    #CKPT_FILE="../output/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valor_train/default/ckpt/checkpoint_epoch_30.pth"
 
     # PillarNet 0.2
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
+    CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
+    CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
 
     # DSVT - CenterHead
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"
@@ -217,7 +218,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
-    chrt -r 90 $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
+    chrt -r 90 $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.DENSE_HEAD.NAME" CenterHeadInf
 elif [ $1 == 'singlemt' ]; then
     $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.TILE_COUNT" $4
 elif [ $1 == 'singlems' ]; then
