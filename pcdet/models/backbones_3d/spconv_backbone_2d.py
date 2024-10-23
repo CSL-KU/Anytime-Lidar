@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch
 
 from ...utils.spconv_utils import replace_feature, spconv
-from pcdet.ops.fn_instance_norm.fn_instance_norm import FnInstanceNorm
+from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
+from pcdet.ops.norm_funcs.fn_instance_norm import FnInstanceNorm
 
 def post_act_block(in_channels, out_channels, kernel_size, indice_key=None, stride=1, padding=0,
                    conv_type='subm', norm_fn=None):
@@ -204,18 +205,25 @@ class PillarBackBone8x(nn.Module):
 
         return batch_dict
 
-
 class PillarRes18BackBone8x(nn.Module):
     def __init__(self, model_cfg, input_channels, grid_size, **kwargs):
         super().__init__()
         self.model_cfg = model_cfg
-        norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
+
+        self.res_divs = model_cfg.get('RESOLUTION_DIV', [1])
+        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        if norm_method == 'ResAwareBatch':
+            norm_fn = partial(ResAwareBatchNorm1d, num_resolutions=len(self.res_divs), \
+                    eps=1e-3, momentum=0.01)
+        else: #norm_method == 'Batch':
+            norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
+        #elif norm_method == 'Instance':
 
         self.sparse_shape = grid_size[[1, 0]]
-        
+
         block = post_act_block
         dense_block = post_act_block_dense
-        
+
         self.conv1 = spconv.SparseSequential(
             SparseBasicBlock(32, 32, norm_fn=norm_fn, indice_key='res1'),
             SparseBasicBlock(32, 32, norm_fn=norm_fn, indice_key='res1'),
@@ -242,9 +250,11 @@ class PillarRes18BackBone8x(nn.Module):
             SparseBasicBlock(256, 256, norm_fn=norm_fn, indice_key='res4'),
         )
         
-        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         if norm_method == 'Batch':
             norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
+        elif norm_method == 'ResAwareBatch':
+            norm_fn = partial(ResAwareBatchNorm2d, num_resolutions=len(self.res_divs), \
+                    eps=1e-3, momentum=0.01)
         elif norm_method == 'Instance':
             norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
 
@@ -264,21 +274,19 @@ class PillarRes18BackBone8x(nn.Module):
             'x_conv5': 256
         }
 
-
         # Grouped with respect to having same input size
         self.num_layer_groups = 4
-        self.res_divs = model_cfg.get('RESOLUTION_DIV', [1])
-        if 2 in self.res_divs:
-            self.maxpool2 = spconv.SparseMaxPool2d(2, stride=2)
-        if 3 in self.res_divs:
-            self.maxpool3 = spconv.SparseMaxPool2d(3, stride=3)
-        if 4 in self.res_divs:
-            self.maxpool4 = spconv.SparseMaxPool2d(4, stride=4)
+
+#        if 2 in self.res_divs:
+#            self.maxpool2 = spconv.SparseMaxPool2d(2, stride=2)
+#        if 3 in self.res_divs:
+#            self.maxpool3 = spconv.SparseMaxPool2d(3, stride=3)
+#        if 4 in self.res_divs:
+#            self.maxpool4 = spconv.SparseMaxPool2d(4, stride=4)
 
     def get_inds_dividers(self, tile_size_voxels):
         # numbers here are determined with respect to strides
         return [tile_size_voxels / float(s) for s in (2,4,8)]
-
 
     def forward_up_to_dense(self, batch_dict):
         pillar_features, pillar_coords = batch_dict['pillar_features'], batch_dict['pillar_coords']
@@ -302,20 +310,21 @@ class PillarRes18BackBone8x(nn.Module):
         if record_int_indices:
             vinds = []
 
+        res_div = batch_dict.get('resolution_divider', 1)
+        sparse_shape = [s//res_div for s in self.sparse_shape]
         input_sp_tensor = spconv.SparseConvTensor(
             features=pillar_features,
             indices=pillar_coords.int(),
-            spatial_shape=self.sparse_shape,
+            spatial_shape=sparse_shape,
             batch_size=batch_size
         )
 
-        res_div = batch_dict.get('resolution_divider', 1)
-        if res_div == 2:
-            input_sp_tensor = self.maxpool2(input_sp_tensor)
-        elif res_div == 3:
-            input_sp_tensor = self.maxpool3(input_sp_tensor)
-        elif res_div == 4:
-            input_sp_tensor = self.maxpool4(input_sp_tensor)
+        #if res_div == 2:
+        #    input_sp_tensor = self.maxpool2(input_sp_tensor)
+        #elif res_div == 3:
+        #    input_sp_tensor = self.maxpool3(input_sp_tensor)
+        #elif res_div == 4:
+        #    input_sp_tensor = self.maxpool4(input_sp_tensor)
 
         #x_conv1 = self.conv1(input_sp_tensor)
         #x_conv2 = self.conv2(x_conv1)

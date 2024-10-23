@@ -2,7 +2,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 from functools import partial
-from pcdet.ops.fn_instance_norm.fn_instance_norm import FnInstanceNorm
+from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm2d
+from pcdet.ops.norm_funcs.fn_instance_norm import FnInstanceNorm
+
+def get_norm_func(norm_method, res_divs):
+    if norm_method == 'Batch':
+        norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
+    elif norm_method == 'ResAwareBatch':
+        norm_fn = partial(ResAwareBatchNorm2d, num_resolutions=len(res_divs), \
+                eps=1e-3, momentum=0.01)
+    elif norm_method == 'Instance':
+        norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
+    return norm_fn
+
 
 class BaseBEVBackbone(nn.Module):
     def __init__(self, model_cfg, input_channels):
@@ -24,11 +36,9 @@ class BaseBEVBackbone(nn.Module):
         else:
             upsample_strides = num_upsample_filters = []
 
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
-        if norm_method == 'Batch':
-            norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
-        elif norm_method == 'Instance':
-            norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
+        norm_fn = get_norm_func(norm_method, res_divs)
 
         num_levels = len(layer_nums)
         c_in_list = [input_channels, *num_filters[:-1]]
@@ -125,11 +135,9 @@ class BaseBEVBackboneV1(nn.Module):
         upsample_strides = self.model_cfg.UPSAMPLE_STRIDES
         assert len(num_upsample_filters) == len(upsample_strides)
 
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
-        if norm_method == 'Batch':
-            norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
-        elif norm_method == 'Instance':
-            norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
+        norm_fn = get_norm_func(norm_method, res_divs)
 
         num_levels = len(layer_nums)
         self.blocks = nn.ModuleList()

@@ -11,10 +11,17 @@ import sys
 import numpy as np
 import platform
 from typing import List
+from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
 
 import ctypes
 ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so",
         mode=ctypes.RTLD_GLOBAL)
+
+def set_bn_resolution(model, resdiv, res_idx):
+    #NOTE I hope this won't take a lot of time
+    for module in model.modules():
+        if isinstance(module, ResAwareBatchNorm1d) or isinstance(module, ResAwareBatchNorm2d):
+            module.setResIndex(res_idx)
 
 class DenseConvsPipeline(torch.nn.Module):
     def __init__(self, backbone_3d, backbone_2d, dense_head, tcount):
@@ -52,6 +59,7 @@ class DenseConvsPipeline(torch.nn.Module):
 
     def get_out_tile_sizes(self):
         return self.out_tile_sizes
+
 
 # correct the topk xs, this can be faster if xs's are catted
 @torch.jit.script
@@ -111,15 +119,18 @@ class PillarNetVALO(AnytimeTemplateV2):
 
     def forward(self, batch_dict):
         if self.training:
+            resdiv = self.resolution_dividers[self.res_idx]
+            batch_dict['resolution_divider'] = resdiv
+            self.vfe.change_voxel_size(resdiv)
+            self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
+            set_bn_resolution(self, resdiv, self.res_idx)
+            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
+
             batch_dict = self.vfe.range_filter(batch_dict)
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
-
-            resdiv = self.resolution_dividers[self.res_idx]
-            batch_dict['resolution_divider'] = resdiv
-            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
 
             batch_dict = self.backbone_3d(batch_dict)
             batch_dict = self.backbone_2d(batch_dict)
@@ -131,12 +142,14 @@ class PillarNetVALO(AnytimeTemplateV2):
             fms = self.model_cfg.DENSE_HEAD.TARGET_ASSIGNER_CONFIG.FEATURE_MAP_STRIDE
             target_hw = [sz // fms // resdiv for sz in self.dataset.grid_size[:2]]
             batch_dict = self.dense_head.forward_assign_targets(batch_dict, feature_map_size=target_hw)
+
             loss, tb_dict, disp_dict = self.get_training_loss()
 
-            ret_dict = {
-                'loss': loss
-            }
             self.latest_losses[self.res_idx] = loss.item()
+
+            ret_dict = {
+               'loss': loss
+            }
 
             disp_dict.update({f"loss_resdiv{self.resolution_dividers[i]}": l \
                     for i, l in enumerate(self.latest_losses)})
@@ -147,6 +160,14 @@ class PillarNetVALO(AnytimeTemplateV2):
 
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
+            self.res_idx = 0
+            resdiv = self.resolution_dividers[self.res_idx]
+            batch_dict['resolution_divider'] = resdiv
+            self.vfe.change_voxel_size(resdiv)
+            self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
+            set_bn_resolution(self.vfe, resdiv, self.res_idx)
+            set_bn_resolution(self.backbone_3d, resdiv, self.res_idx)
+
             batch_dict = self.vfe.range_filter(batch_dict)
             self.measure_time_start('Sched1')
             batch_dict = self.schedule1(batch_dict)
@@ -182,8 +203,6 @@ class PillarNetVALO(AnytimeTemplateV2):
                 pf = pf.repeat(num_rand_pillars, 1)
                 batch_dict['pillar_features'] = pf
 
-            batch_dict['resolution_divider'] = 1
-
             self.measure_time_start('Backbone3D')
             batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
             x_conv4 = batch_dict['x_conv4_out']
@@ -214,6 +233,8 @@ class PillarNetVALO(AnytimeTemplateV2):
 
             if not self.optimization1_done:
                 self.optimize1(x_conv4)
+
+            set_bn_resolution(self.opt_dense_convs, resdiv, self.res_idx)
 
             batch_dict['spatial_features'] = x_conv4
             batch_dict['tcount'] = self.tcount
