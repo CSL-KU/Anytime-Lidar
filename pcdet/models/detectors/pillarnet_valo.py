@@ -12,6 +12,7 @@ import numpy as np
 import platform
 from typing import List
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
+from ...utils.spconv_utils import spconv
 
 import ctypes
 ctypes.CDLL("../pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so",
@@ -22,6 +23,18 @@ def set_bn_resolution(model, resdiv, res_idx):
     for module in model.modules():
         if isinstance(module, ResAwareBatchNorm1d) or isinstance(module, ResAwareBatchNorm2d):
             module.setResIndex(res_idx)
+
+def set_dilation_and_padding(model, resdiv, num_res):
+    x = (num_res - resdiv + 1) # supports resdivs 1 and 2
+    for module in model.modules():
+        #NOTE: I think we don't have to apply those to inverse and transpose convs
+        if isinstance(module, torch.nn.Conv2d) or \
+                isinstance(module, spconv.SubMConv2d) or \
+                isinstance(module, spconv.SparseConv2d): # or \
+            if module.kernel_size[0] > 1 and module.kernel_size[1] > 1:
+                module.dilation = (x, x)
+                module.padding = (x, x)
+
 
 class DenseConvsPipeline(torch.nn.Module):
     def __init__(self, backbone_3d, backbone_2d, dense_head, tcount):
@@ -104,6 +117,7 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.optimization1_done = False
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
 
+        self.do_dyn_dilation = self.model_cfg.get('DYNAMIC_DILATION', False)
         self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1])
         self.res_idx = 0
         self.latest_losses = [0.] * len(self.resolution_dividers)
@@ -121,10 +135,11 @@ class PillarNetVALO(AnytimeTemplateV2):
         if self.training:
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
+            if self.do_dyn_dilation:
+                set_dilation_and_padding(self, resdiv, len(self.resolution_dividers))
             self.vfe.change_voxel_size(resdiv)
             self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
             set_bn_resolution(self, resdiv, self.res_idx)
-            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
 
             batch_dict = self.vfe.range_filter(batch_dict)
             points = batch_dict['points']
@@ -146,6 +161,7 @@ class PillarNetVALO(AnytimeTemplateV2):
             loss, tb_dict, disp_dict = self.get_training_loss()
 
             self.latest_losses[self.res_idx] = loss.item()
+            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
 
             ret_dict = {
                'loss': loss
@@ -163,6 +179,8 @@ class PillarNetVALO(AnytimeTemplateV2):
             self.res_idx = 0
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
+            if self.do_dyn_dilation:
+                set_dilation_and_padding(self, resdiv, len(self.resolution_dividers))
             self.vfe.change_voxel_size(resdiv)
             self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
             set_bn_resolution(self.vfe, resdiv, self.res_idx)
