@@ -183,7 +183,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
         if self.with_distance:
             num_point_features += 1
 
-        res_divs = model_cfg.get('RESOLUTION_DIV', [1])
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
 
         self.num_filters = self.model_cfg.NUM_FILTERS
@@ -203,7 +203,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
         self.voxel_params = []
         for resdiv in res_divs:
             voxel_size_tmp = [vs * resdiv for vs in voxel_size[:2]]
-            grid_size_tmp = [gs // resdiv for gs in grid_size]
+            grid_size_tmp = [int(gs / resdiv) for gs in grid_size]
             self.voxel_params.append((
                     voxel_size_tmp[0], #voxel_x
                     voxel_size_tmp[1], #voxel_y

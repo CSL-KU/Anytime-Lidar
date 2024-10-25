@@ -152,7 +152,7 @@ class CenterHeadInf(nn.Module):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
 
-        res_divs = model_cfg.get('RESOLUTION_DIV', [1])
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         if norm_method == 'Batch':
             norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
@@ -449,9 +449,9 @@ class CenterHeadInf(nn.Module):
         return det_dict
 
     @torch.jit.export
-    def adjust_voxel_size_wrt_resolution(self, res_div : int):
-        self.voxel_size[0] = self.initial_voxel_size[0]*res_div
-        self.voxel_size[1] = self.initial_voxel_size[1]*res_div
+    def adjust_voxel_size_wrt_resolution(self, res_div : float):
+        self.voxel_size[0] = round(self.initial_voxel_size[0]*res_div, 3)
+        self.voxel_size[1] = round(self.initial_voxel_size[1]*res_div, 3)
 
 @torch.jit.script
 def scatter_sliced_tensors(chosen_tile_coords : List[int],

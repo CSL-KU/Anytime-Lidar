@@ -155,7 +155,7 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict = self.dense_head.forward_pre(batch_dict)
             batch_dict = self.dense_head.forward_post(batch_dict)
 
-            batch_dict = self.dense_head.forward_assign_targets(batch_dict, feature_map_size=self.target_hw)
+            batch_dict = self.dense_head.forward_assign_targets(batch_dict)
 
             loss, tb_dict, disp_dict = self.get_training_loss()
 
@@ -274,11 +274,12 @@ class PillarNetVALO(AnytimeTemplateV2):
                 batch_dict['bb2d_time_events'] = [e3, e4]
 
             self.measure_time_start('CenterHead-GenBox')
-            topk_outputs = fix_topk_outputs(self.out_tile_wsize // resdiv,
+            topk_outputs = fix_topk_outputs(int(self.out_tile_wsize / resdiv),
                     batch_dict['tile_mapping'], topk_outputs)
 
             if self.calc_ult_heatmap:
-                ult_heatmap = torch.zeros((1, 1, self.target_hw[0], self.target_hw[1]),
+                target_hw  = [int(sz/resdiv) for sz in self.target_hw]
+                ult_heatmap = torch.zeros((1, 1, target_hw[0], target_hw[1]),
                         dtype=topk_outputs[0][0].dtype,
                         device=topk_outputs[0][0].device)
                 all_scores = torch.cat([t[0] for t in topk_outputs])
@@ -302,7 +303,6 @@ class PillarNetVALO(AnytimeTemplateV2):
     def optimize(self, fwd_data):
         optimize_start = time.time()
 
-        resdiv = self.resolution_dividers[self.res_idx]
         if self.dense_head_scrpt is None:
             self.dense_head.instancenorm_mode()
             self.dense_head_scrpt = torch.jit.script(self.dense_head)
@@ -322,8 +322,6 @@ class PillarNetVALO(AnytimeTemplateV2):
 
         self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
         print('Fused operations output names:', self.opt_outp_names)
-
-        #self.opt_dense_convs(fwd_data)
 
         #generated_onnx=False
         # Currently, create a onnx and tensorrt file for each resolution
@@ -415,5 +413,5 @@ class PillarNetVALO(AnytimeTemplateV2):
 
     def calibrate(self, batch_size=1):
         ret = super().calibrate(1)
-        self.res_idx = 0
+        self.res_idx = 1
         return ret

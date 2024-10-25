@@ -210,7 +210,7 @@ class PillarRes18BackBone8x(nn.Module):
         super().__init__()
         self.model_cfg = model_cfg
 
-        self.res_divs = model_cfg.get('RESOLUTION_DIV', [1])
+        self.res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         if norm_method == 'ResAwareBatch':
             norm_fn = partial(ResAwareBatchNorm1d, num_resolutions=len(self.res_divs), \
@@ -310,8 +310,8 @@ class PillarRes18BackBone8x(nn.Module):
         if record_int_indices:
             vinds = []
 
-        res_div = batch_dict.get('resolution_divider', 1)
-        sparse_shape = [s//res_div for s in self.sparse_shape]
+        resdiv = batch_dict.get('resolution_divider', 1)
+        sparse_shape = [int(s/resdiv) for s in self.sparse_shape]
         input_sp_tensor = spconv.SparseConvTensor(
             features=pillar_features,
             indices=pillar_coords.int(),
