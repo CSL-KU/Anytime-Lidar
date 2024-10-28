@@ -4,6 +4,7 @@ import time
 import onnx
 import os
 import sys
+import platform
 from typing import List
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 
@@ -26,9 +27,10 @@ class PillarNetOpt(Detector3DTemplate):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        # NOTE Enable the next two for training
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
+        is_x86 = (platform.machine() in ['x86_64', 'AMD64', 'x86'])
+
+        torch.backends.cuda.matmul.allow_tf32 = is_x86
+        torch.backends.cudnn.allow_tf32 = is_x86
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
@@ -48,10 +50,6 @@ class PillarNetOpt(Detector3DTemplate):
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
 
-        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1])
-        self.res_idx = 0
-
-
     def forward(self, batch_dict):
         if self.training:
             batch_dict = self.vfe.range_filter(batch_dict)
@@ -59,10 +57,6 @@ class PillarNetOpt(Detector3DTemplate):
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
-
-            #Downsample factor
-            batch_dict['resolution_divider'] = self.resolution_dividers[self.res_idx]
-            self.res_idx = (self.res_idx +1) % len(self.resolution_dividers)
 
             batch_dict = self.backbone_3d(batch_dict)
             batch_dict = self.backbone_2d(batch_dict)
