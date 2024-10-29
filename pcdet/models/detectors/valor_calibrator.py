@@ -141,7 +141,6 @@ class ValorCalibrator():
         f.close()
 
         self.preprocess_wcet_ms = np.percentile(self.calib_data_dict['preprocess_times_ms'], 99.)
-        print('preprocess_wcet_ms', self.preprocess_wcet_ms)
 
         # Fit the linear model for bb3
         num_voxels, bb3d_times, num_points, vfe_times = self.get_calib_data_arranged()
@@ -212,11 +211,17 @@ class ValorCalibrator():
         dense_ops_times_arr = np.array(dense_ops_times_tuples)
         inds = np.argsort(dense_ops_times_arr[:, 0])
         self.dense_ops_times_ms = dense_ops_times_arr[inds]
-        print('dense_ops_times_ms')
-        print(self.dense_ops_times_ms)
 
         self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 99)
-        print('postprocess_wcet_ms', self.postprocess_wcet_ms)
+        if False:
+            print('preprocess_wcet_ms', self.preprocess_wcet_ms)
+            print('dense_ops_times_ms')
+            print(self.dense_ops_times_ms)
+            print('postprocess_wcet_ms', self.postprocess_wcet_ms)
+
+        if 'e2e_times_ms' in self.calib_data_dict:
+            print('End to end execution time stats (ms):')
+            get_stats(np.array(self.calib_data_dict['e2e_times_ms']))
 
     def collect_data(self, fname="calib_data.json"):
         print('Calibration starting...')

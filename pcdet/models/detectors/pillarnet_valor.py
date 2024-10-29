@@ -260,7 +260,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 for name in self.topk_outp_names]
 
         self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
-        print('Fused operations output names:', self.opt_outp_names)
+        #print('Fused operations output names:', self.opt_outp_names)
 
         # Create a onnx and tensorrt file for each resolution
         onnx_path = self.model_cfg.ONNX_PATH + f'_res{self.res_idx}.onnx'
@@ -358,6 +358,7 @@ class PillarNetVALOR(Detector3DTemplate):
             self.res_idx = 0
             return None
 
+        cur_res_idx = self.res_idx
         collect_calib_data = [False] * self.num_res
         calib_fnames = [""] * self.num_res
         for res_idx in range(self.num_res):
@@ -379,5 +380,6 @@ class PillarNetVALOR(Detector3DTemplate):
                 # After this, the calibration data should be processed with dynamic deadline
             self.calibration_off()
 
-        self.res_idx = 0
+        self.res_idx = cur_res_idx
+        #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
         return None
