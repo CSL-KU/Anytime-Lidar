@@ -21,7 +21,7 @@ import concurrent.futures
 #        "time_segment",
 #        "dist_th",
 #        "class",
-#        "deadline_ms",
+#        "resolution",
 #        "seg_sample_stats"
 #    ],
 
@@ -31,13 +31,10 @@ def get_dl_data(datas, dl):
             return d
     return datas[0]
 
-def gen_features(bboxes, scores, labels, coords_2d=False):
+def gen_features(bboxes, scores, labels):
     #bboxes = det_annos['boxes_lidar']
     #TODO, consider duplicated feature coords
-    if coords_2d:
-       feature_coords = (bboxes[:, :2] + 57.6).astype(int) # since pc range is -57.6 +57+6
-    else:
-       feature_coords = (bboxes[:, :3] + 57.6)
+    feature_coords = (bboxes[:, :2] + 57.6)
 
      # sizes(3), heading(1), vel(2), score(1), label(1)
     features = np.empty((bboxes.shape[0], 8), dtype=float)
@@ -50,11 +47,11 @@ def gen_features(bboxes, scores, labels, coords_2d=False):
 
     return feature_coords, features
 
-def create_bev_tensor(feature_coords, features):
-    bev_tensor = np.zeros((1, 8, 64, 64), dtype=float)
-    coords = feature_coords[:, :2].astype(int)//2
-    bev_tensor[0, :, coords[:,1].ravel(), coords[:,0].ravel()] = features.T
-    return bev_tensor
+#def create_bev_tensor(feature_coords, features):
+#    bev_tensor = np.zeros((1, 8, 64, 64), dtype=float)
+#    coords = feature_coords[:, :2].astype(int)//2
+#    bev_tensor[0, :, coords[:,1].ravel(), coords[:,0].ravel()] = features.T
+#    return bev_tensor
 
 def calc_ap(all_tp, all_scr, all_num_gt, nelem=101) -> float:
     """ Calculated average precision. """
@@ -98,7 +95,8 @@ class SegInfo:
             print('Loading', path)
             with open(path, 'rb') as handle:
                 d = pickle.load(handle)
-                deadline_ms = int(d['calib_deadline_ms'])
+                resolution = int(d['resolution'])
+                print('resolution index is', resolution)
                 coords_glob = d['annos_in_glob_coords']
                 assert not coords_glob
 
@@ -111,7 +109,7 @@ class SegInfo:
                                 det_annos['pred_labels'])
 
                         sample_token = det_annos['metadata']['token']
-                        tpl = [feature_coords, features, deadline_ms] # in in out
+                        tpl = [feature_coords, features, resolution] # in in out
                         if sample_token in self.dataset_dict:
                             self.dataset_dict[sample_token].append(tpl)
                         else:
@@ -150,14 +148,14 @@ class SegInfo:
             t[self.time_segment_idx] = int(t[self.time_segment_idx][0] / seg_len)
 
         # each value of this dict holds eval data of same scene, time, dist_th and class 
-        # but different deadlines
+        # but different resolutions
         seg_eval_data_dict = {}
         # this one on the other hand merges the classes and dist thresholds
         seg_prec_dict = {}
         # this one will be used to build the dataset
         sample_token_to_seg_dict = {}
         #sample_token_to_egovel = {}
-        all_deadlines = set()
+        all_resolutions = set()
         all_segments = set()
         for i, tpl in enumerate(self.seg_info_tuples):
             seg_sample_stats = tpl[self.seg_sample_stats_idx] # list of dicts
@@ -179,9 +177,9 @@ class SegInfo:
             tp_arr = np.array(tp_arr, dtype=int)
             scr_arr = np.array(scr_arr, dtype=float)
 
-            deadline = int(float(tpl[self.deadline_ms_idx]))
-            all_deadlines.add(deadline)
-            data = [deadline, tp_arr, scr_arr, num_gt_seg]
+            resolution = int(float(tpl[self.resolution_idx]))
+            all_resolutions.add(resolution)
+            data = [resolution, tp_arr, scr_arr, num_gt_seg]
 
             key = self.get_key(i, use_cls=True, use_dist_th=True, use_dl=False)
             if key not in seg_eval_data_dict:
@@ -201,11 +199,11 @@ class SegInfo:
         self.sample_token_to_seg_dict = sample_token_to_seg_dict
         #self.sample_token_to_egovel = sample_token_to_egovel
         self.all_segments = list(all_segments)
-        self.all_deadlines = list(all_deadlines)
+        self.all_resolutions = list(all_resolutions)
         self.global_worst_dl = 0.
 
         if len(self.dataset_dict) > 0:
-            to_del = [k for k,v in self.dataset_dict.items() if len(v) != len(self.all_deadlines)]
+            to_del = [k for k,v in self.dataset_dict.items() if len(v) != len(self.all_resolutions)]
             for k in to_del:
                 del self.dataset_dict[k]
             print('Dataset dict len after pruning:', len(self.dataset_dict))
@@ -217,7 +215,7 @@ class SegInfo:
             progress_bar = None
 
         max_mAP =.0
-        for it, perm in enumerate(product(self.all_deadlines, repeat=len(self.all_segments))):
+        for it, perm in enumerate(product(self.all_resolutions, repeat=len(self.all_segments))):
             if it >= lims[0] and it < lims[1]:
                 cur_seg_dls = {seg:dl for dl, seg in zip(perm, self.all_segments)}
                 seg_eval_dict = {}
@@ -238,15 +236,15 @@ class SegInfo:
 
         return (max_mAP, best_perm, best_seg_eval_dict)
 
-    def do_eval(self, deadline_ms=None, upper_bound_calc_method='heuristic'):
-        #if deadline is none, it will pick the deadline that gives the best result
+    def do_eval(self, resolution=None, upper_bound_calc_method='heuristic'):
+        #if resolution is none, it will pick the resolution that gives the best result
 
-        if deadline_ms is None: # calculate upper bound
+        if resolution is None: # calculate upper bound
             max_mAP = 0.
             best_seg_eval_dict = None
 
             if upper_bound_calc_method == 'exhaustive':
-                num_iters = len(self.all_deadlines)**len(self.all_segments)
+                num_iters = len(self.all_resolutions)**len(self.all_segments)
                 num_procs = 12
                 step = num_iters // num_procs
                 lims_all = [[i*step, (i+1)*step] for i in range(num_procs)]
@@ -261,17 +259,17 @@ class SegInfo:
                             best_perm = perm_ret
                             best_seg_eval_dict = seg_eval_dict_ret
             elif upper_bound_calc_method == 'heuristic':
-                # for each segment, try all deadlines and find the best deadline
+                # for each segment, try all resolutions and find the best resolution
                 # that gives the most boost to the mAP.
-                num_iters = len(self.all_deadlines)*len(self.all_segments)
+                num_iters = len(self.all_resolutions)*len(self.all_segments)
                 progress_bar = tqdm(total=num_iters, leave=True, dynamic_ncols=True)
-                init_dl = self.global_worst_dl if self.global_worst_dl != 0. else self.all_deadlines[0]
+                init_dl = self.global_worst_dl if self.global_worst_dl != 0. else self.all_resolutions[0]
                 cur_seg_dls = {seg:init_dl for seg in self.all_segments}
-                print('Heuristic started by initializing all deadlines to', init_dl)
+                print('Heuristic started by initializing all resolutions to', init_dl)
 
                 with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
                     for i, seg in enumerate(self.all_segments):
-                        for new_dl in self.all_deadlines:
+                        for new_dl in self.all_resolutions:
                             old_dl = cur_seg_dls[seg]
                             cur_seg_dls[seg] = new_dl
                             seg_eval_dict = {}
@@ -301,8 +299,8 @@ class SegInfo:
                             dist_th = fields[3]
                             datas_all[dist_th].extend(datas)
                             keys_all.append(key)
-                    best_dl, max_ap = self.all_deadlines[0], 0.
-                    for i, dl in enumerate(self.all_deadlines):
+                    best_dl, max_ap = self.all_resolutions[0], 0.
+                    for i, dl in enumerate(self.all_resolutions):
                         ap_list = []
                         for dist_th in self.dist_thresholds[2:]: # NOTE 2: appears to give best result
                             datas_all_dist = datas_all[dist_th]
@@ -331,12 +329,12 @@ class SegInfo:
                 return
 
             progress_bar.close()
-            print('Deadlines of each segment:')
+            print('Resolutions of each segment:')
             print(best_perm)
             print('Upper bound mAP:', max_mAP)
-            print('Deadline stats:')
-            deadlines, occurances = np.unique(np.array(best_perm), return_counts=True)
-            print(deadlines)
+            print('Resolution stats:')
+            resolutions, occurances = np.unique(np.array(best_perm), return_counts=True)
+            print(resolutions)
             print(occurances)
             print(np.round(occurances / np.sum(occurances), 2))
 
@@ -353,15 +351,15 @@ class SegInfo:
                 print('Duplicates are not removed')
                 # dump the tuples
                 print(f'Dumping {len(dataset_tuples)} samples as dataset')
-                with open('deadline_dataset.pkl', 'wb') as f:
+                with open('resolution_dataset.pkl', 'wb') as f:
                     pickle.dump({
-                        'fields': ('coords', 'features', 'deadline', 'sample_tkn'),
+                        'fields': ('coords', 'features', 'resolution', 'sample_tkn'),
                         'data':dataset_tuples}, f)
             return max_mAP
         else:
             seg_eval_dict = {}
             for key, datas in self.seg_eval_data_dict.items():
-                seg_eval_dict[key] = get_dl_data(datas, deadline_ms)
+                seg_eval_dict[key] = get_dl_data(datas, resolution)
             mAP = self.calc_mAP(seg_eval_dict)
             print('mAP:', mAP)
             return mAP
@@ -374,7 +372,7 @@ class SegInfo:
         for key, data in seg_eval_dict.items():
             tokens = key.split('=')
             stats = ap_targets[(tokens[2], tokens[3])]
-            deadline_ms, tp_arr, scr_arr, num_gt_seg = data
+            resolution, tp_arr, scr_arr, num_gt_seg = data
             stats[0].append(tp_arr)
             stats[1].append(scr_arr)
             stats[2] += num_gt_seg
@@ -414,7 +412,7 @@ class SegInfo:
         return mAP
 
     def get_seg_prec_recall(self, eval_data_tpl):
-        deadline_ms, tp_arr, scr_arr, num_gt_seg = eval_data_tpl
+        resolution, tp_arr, scr_arr, num_gt_seg = eval_data_tpl
 
         if num_gt_seg == 0:
             return 0., 0.
@@ -442,7 +440,7 @@ class SegInfo:
         if use_dist_th:
             key += str(tpl[self.dist_th_idx]) +  '='
         if use_dl:
-            key += str(tpl[self.deadline_ms_idx]) + '='
+            key += str(tpl[self.resolution_idx]) + '='
         return key[:-1]
 
 #    def get_keyidx(self, tpl_idx):
@@ -456,27 +454,27 @@ class SegInfo:
 #        num_time_seg_in_scene = 20
 #        return self.scene_to_idx[scene] * num_time_seg_in_scene + t[fi['time_segment']]
 #
-    def do_eval_all_deadlines(self):
+    def do_eval_all_resolutions(self):
         #VALO
         mAPs = []
         global_worst_mAP = 1.
-        deadlines_sorted = sorted(seg_info.all_deadlines)
-        for dl in deadlines_sorted:
-            print('Deadline', dl)
+        resolutions_sorted = sorted(seg_info.all_resolutions)
+        for dl in resolutions_sorted:
+            print('Resolution', dl)
             mAPs.append(seg_info.do_eval(dl))
             if mAPs[-1] < global_worst_mAP:
                 self.global_worst_dl = dl
                 global_worst_mAP = mAPs[-1]
 
-        print('Deadline(ms) mAP')
-        for mAP, dl in zip(mAPs, deadlines_sorted):
+        print('Resolutions mAP')
+        for mAP, dl in zip(mAPs, resolutions_sorted):
             print(f"{dl}\t{mAP}")
 
 if __name__ == '__main__':  
     inp_dir = sys.argv[1]
     seg_info = SegInfo(inp_dir)
 
-    seg_info.do_eval_all_deadlines()
+    seg_info.do_eval_all_resolutions()
     #seg_info.do_eval(None, 'ap_based')
     seg_info.do_eval(None, 'heuristic')
     #seg_info.do_eval(None, 'exhaustive')

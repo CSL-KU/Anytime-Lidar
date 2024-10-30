@@ -36,15 +36,27 @@ def slice_tensor(down_scale_factor : int, pillar_coords : torch.Tensor, inp : to
     x_min, x_max = torch.aminmax(pillar_coords[:, 2])
     x_min, x_max = x_min.cpu() // dsf, x_max.cpu() // dsf + 1
     denom = 4 # denom is dependent on strides within the dense covs
-    rng = (x_max - x_min)
-    pad = denom - (rng % denom)
+    minsz = 16
     maxsz = inp.size(3)
+
+    rng = (x_max - x_min)
+    if rng < minsz:
+        diff = minsz - rng
+        if x_max + diff <= maxsz:
+            x_max += diff
+        elif x_min - diff >= 0:
+            x_min -= diff
+        #else: # very unlikely
+        #    pass
+        rng = (x_max - x_min)
+
+    pad = denom - (rng % denom)
     if pad == denom:
         inp = inp[..., x_min:x_max]
     elif x_min >= pad: # pad from left
         x_min -= pad
         inp = inp[..., x_min:x_max]
-    elif (inp.size(3) - x_max) >= pad: # pad from right
+    elif (maxsz - x_max) >= pad: # pad from right
         x_max += pad
         inp = inp[..., x_min:x_max]
     else: # don't slice
