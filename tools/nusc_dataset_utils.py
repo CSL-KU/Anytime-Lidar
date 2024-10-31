@@ -7,15 +7,49 @@ import copy
 import random
 import uuid
 import numpy as np
+import notebooks.res_pred_utils as res_pred_utils
+from alive_progress import alive_bar
 
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 from pyquaternion import Quaternion
+import matplotlib.pyplot as plt
 
 from nuscenes.utils.splits import train, val, mini_train, mini_val
 
 all_scenes = set(train + val + mini_train + mini_val)
 nusc = None
+
+
+map_name_from_general_to_detection = {
+    'human.pedestrian.adult': 'pedestrian',
+    'human.pedestrian.child': 'pedestrian',
+    'human.pedestrian.wheelchair': 'ignore',
+    'human.pedestrian.stroller': 'ignore',
+    'human.pedestrian.personal_mobility': 'ignore',
+    'human.pedestrian.police_officer': 'pedestrian',
+    'human.pedestrian.construction_worker': 'pedestrian',
+    'animal': 'ignore',
+    'vehicle.car': 'car',
+    'vehicle.motorcycle': 'motorcycle',
+    'vehicle.bicycle': 'bicycle',
+    'vehicle.bus.bendy': 'bus',
+    'vehicle.bus.rigid': 'bus',
+    'vehicle.truck': 'truck',
+    'vehicle.construction': 'construction_vehicle',
+    'vehicle.emergency.ambulance': 'ignore',
+    'vehicle.emergency.police': 'ignore',
+    'vehicle.trailer': 'trailer',
+    'movable_object.barrier': 'barrier',
+    'movable_object.trafficcone': 'traffic_cone',
+    'movable_object.pushable_pullable': 'ignore',
+    'movable_object.debris': 'ignore',
+    'static_object.bicycle_rack': 'ignore',
+}
+
+classes = ['car', 'truck', 'construction_vehicle', 'bus', 'trailer',
+        'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+
 
 def read_nusc():
     global nusc
@@ -70,39 +104,12 @@ def generate_pose_dict():
 def generate_anns_dict():
     print('generating annotations dict')
     global nusc
-
-    map_name_from_general_to_detection = {
-        'human.pedestrian.adult': 'pedestrian',
-        'human.pedestrian.child': 'pedestrian',
-        'human.pedestrian.wheelchair': 'ignore',
-        'human.pedestrian.stroller': 'ignore',
-        'human.pedestrian.personal_mobility': 'ignore',
-        'human.pedestrian.police_officer': 'pedestrian',
-        'human.pedestrian.construction_worker': 'pedestrian',
-        'animal': 'ignore',
-        'vehicle.car': 'car',
-        'vehicle.motorcycle': 'motorcycle',
-        'vehicle.bicycle': 'bicycle',
-        'vehicle.bus.bendy': 'bus',
-        'vehicle.bus.rigid': 'bus',
-        'vehicle.truck': 'truck',
-        'vehicle.construction': 'construction_vehicle',
-        'vehicle.emergency.ambulance': 'ignore',
-        'vehicle.emergency.police': 'ignore',
-        'vehicle.trailer': 'trailer',
-        'movable_object.barrier': 'barrier',
-        'movable_object.trafficcone': 'traffic_cone',
-        'movable_object.pushable_pullable': 'ignore',
-        'movable_object.debris': 'ignore',
-        'static_object.bicycle_rack': 'ignore',
-    }
-
-    classes = ['car', 'truck', 'construction_vehicle', 'bus', 'trailer',
-            'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+    global all_scenes
+    global map_name_from_general_to_detection
+    global classes
 
     token_to_anns = {}
 
-    global all_scenes
     for scene in nusc.scene:
         if scene['name'] not in all_scenes:
             #print(f'Skipping {scene["name"]}')
@@ -485,53 +492,97 @@ def prune_annos(step):
 
 def calc_scene_velos():
     global nusc
+    global train
+    global map_name_from_general_to_detection
+    global classes
 
-    scene_to_velos={}
-    sample_to_egovel={}
-    for sample in nusc.sample:
-        # Get egovel
-        sd_tkn = sample['data']['LIDAR_TOP']
-        sample_data = nusc.get('sample_data', sd_tkn)
-        ep = nusc.get('ego_pose', sample_data['ego_pose_token'])
-        # timestamps are in microseconds
-        ts = sample_data['timestamp']
-        if sample_data['prev'] == '':
-            #No prev data, calc speed w.r.t next
-            next_sample_data = nusc.get('sample_data', sample_data['next'])
-            next_ep = nusc.get('ego_pose', next_sample_data['ego_pose_token'])
-            next_ts = next_sample_data['timestamp']
-            trnsl = np.array(ep['translation'])
-            next_trnsl = np.array(next_ep['translation'])
-            egovel = (next_trnsl - trnsl)[:2] / ((next_ts - ts) / 1000000.)
-        else:
-            prev_sample_data = nusc.get('sample_data', sample_data['prev'])
-            prev_ep = nusc.get('ego_pose', prev_sample_data['ego_pose_token'])
-            prev_ts = prev_sample_data['timestamp']
-            trnsl = np.array(ep['translation'])
-            prev_trnsl = np.array(prev_ep['translation'])
-            egovel = (trnsl - prev_trnsl)[:2] / ((ts - prev_ts) / 1000000.)
+    scene_to_fp={}
 
-        st = sample['scene_token']
-        if st not in scene_to_velos:
-            scene_to_velos[st] = []
+    visualize=False
+    if visualize:
+        fig, ax = plt.subplots(1, 1, figsize=(9, 9))
 
-        for sa_tkn in sample['anns']:
-            velo = nusc.box_velocity(sa_tkn)[:2]
-            if np.any(np.isnan(velo)):
+    with alive_bar(len(nusc.sample), force_tty=True, max_cols=160) as bar:
+        for sample_idx, sample in enumerate(nusc.sample):
+            # Only use train scenes
+            #if nusc.get('scene', sample['scene_token'])['name'] not in train:
+            #    continue
+
+            sample_tkn = sample['token']
+            ep, egovel = res_pred_utils.get_egopose_and_egovel(nusc, sample_tkn)
+
+            sd_tkn = sample['data']['LIDAR_TOP']
+            sample_data = nusc.get('sample_data', sd_tkn)
+            cs = nusc.get('calibrated_sensor', sample_data['calibrated_sensor_token'])
+            boxes = nusc.get_boxes(sample['data']['LIDAR_TOP']) # annos
+            good_boxes = []
+            for box in boxes:
+                box.name = map_name_from_general_to_detection[box.name]
+                if box.name != 'ignore':
+                    box.velocity = nusc.box_velocity(box.token)
+                    # Move box to ego vehicle coord system
+                    box.translate(-np.array(ep['translation']))
+                    box.rotate(Quaternion(ep['rotation']).inverse)
+                    #  Move box to sensor coord system
+                    box.translate(-np.array(cs['translation']))
+                    box.rotate(Quaternion(cs['rotation']).inverse)
+
+                    if np.isnan(box.velocity).any():
+                        continue
+
+                    good_boxes.append(box)
+
+            if len(good_boxes) == 0:
                 continue
 
-            # Calculate the relative velocity
-            relv = np.linalg.norm(velo - egovel)
-            scene_to_velos[st].append(relv)
+            coords = np.array([box.center for box in good_boxes])
+            velos = np.array([box.velocity for box in good_boxes])
+            labels = [classes.index(box.name) for box in good_boxes]
+            rel_velos = velos  - egovel
+
+            if visualize and sample_idx % 100 == 0:
+                ax.clear()
+                nusc.render_sample_data(sd_tkn, nsweeps=1, axes_limit=60,
+                    use_flat_vehicle_coordinates=False, underlay_map=False,
+                    ax=ax, verbose=False)
+                for relvel, coord in zip(rel_velos, coords):
+                    # Relative velos
+                    ax.arrow(coord[0], coord[1], relvel[0], relvel[1],
+                    #ax.arrow(coord[0], coord[1], vel[0], vel[1],
+                         head_width=0.9, head_length=0.7, fc='red', ec='red')
+
+                # Egovel
+                ax.arrow(0, 0, egovel[0], egovel[1],
+                         head_width=0.9, head_length=0.7, fc='red', ec='red')
+                plt.savefig(f"visualized_samples/{sample_idx}.jpg")
+
+            st = sample['scene_token']
+            if st not in scene_to_fp:
+                scene_to_fp[st] = 0.
+
+            total_fp = 0
+            for tdiff_sec in [0.1, 0.2, 0.3]:
+                total_fp += res_pred_utils.calc_falsepos_when_shifted(tdiff_sec, \
+                        coords, rel_velos, labels)
+
+            scene_to_fp[st] += total_fp
+            bar()
 
     scene_tuples = []
-    for scene_tkn, velos in scene_to_velos.items():
+    for scene_tkn, all_fp in scene_to_fp.items():
         scene = nusc.get('scene', scene_tkn)
-        scene_tuples.append((scene['name'], sum(velos), scene['description']))
+        scene_tuples.append((scene['name'], all_fp, scene['description']))
         #print(scene['name'], sum(velos), scene['description'])
     scene_tuples = sorted(scene_tuples, key=lambda x: x[1])
-    for t in scene_tuples:
+    names = []
+    for i, t in enumerate(scene_tuples):
+        if i < 30:
+            names.append(t[0])
+
         print('VAL' if t[0] in val else 'TRAIN' , t[0], t[1], t[2])
+
+    print('You can copy the following to your splits.py file:')
+    print("train = [\'" + "\',\'".join(names) + "\']")
 
 def prune_training_data_from_tables():
     global nusc
