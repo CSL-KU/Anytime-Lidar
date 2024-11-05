@@ -2,7 +2,7 @@ from pyquaternion import Quaternion
 import numpy as np
 
 def get_2d_egovel(prev_ts, prev_egopose, cur_ts, cur_egopose):
-    tdiff_sec = (cur_ts - prev_ts) / 1000000. # musec to sec
+    tdiff_sec = (cur_ts - prev_ts) * 1e-6 # musec to sec
 
     cur_transl = cur_egopose[7:10]
     prev_transl = prev_egopose[7:10]
@@ -14,7 +14,8 @@ def get_2d_egovel(prev_ts, prev_egopose, cur_ts, cur_egopose):
 
     return egovel[[1,0]] # return x y vel
 
-def get_egopose_and_egovel(nusc, sample_tkn, norm=False):
+# NOTE This is noisy!
+def get_egopose_and_egovel(nusc, sample_tkn, norm=False, global_coords=False):
     sample = nusc.get('sample', sample_tkn)
     sd_tkn = sample['data']['LIDAR_TOP']
     sample_data = nusc.get('sample_data', sd_tkn)
@@ -28,24 +29,49 @@ def get_egopose_and_egovel(nusc, sample_tkn, norm=False):
         next_ts = next_sample_data['timestamp']
         trnsl = np.array(ep['translation'])
         next_trnsl = np.array(next_ep['translation'])
-        egovel = (next_trnsl - trnsl) / ((next_ts - ts) / 1000000.)
+        egovel = (next_trnsl - trnsl) / ((next_ts - ts) * 1e-6)
     else:
         prev_sample_data = nusc.get('sample_data', sample_data['prev'])
         prev_ep = nusc.get('ego_pose', prev_sample_data['ego_pose_token'])
         prev_ts = prev_sample_data['timestamp']
         trnsl = np.array(ep['translation'])
         prev_trnsl = np.array(prev_ep['translation'])
-        egovel = (trnsl - prev_trnsl) / ((ts - prev_ts) / 1000000.)
+        egovel = (trnsl - prev_trnsl) / ((ts - prev_ts) * 1e-6)
 
-    rotation = Quaternion(ep['rotation'])
-
-    # Convert the global velocity to ego frame
-    egovel = rotation.inverse.rotate(egovel)
+    if not global_coords:
+        rotation = Quaternion(ep['rotation'])
+        # Convert the global velocity to ego frame
+        egovel = rotation.inverse.rotate(egovel)
     
     if norm:
         egovel = np.linalg.norm(egovel)
 
     return ep, egovel[[1,0,2]]
+
+def get_smooth_egovel(nusc, sample_tkn, target_time_diff_ms=250, global_coords=False):
+    sample = nusc.get('sample', sample_tkn)
+    sd_tkn = sample['data']['LIDAR_TOP']
+    sample_data = nusc.get('sample_data', sd_tkn)
+    ts = sample_data['timestamp'] # microseconds
+
+    past_sample_data = sample_data
+    past_ts = ts
+    while past_sample_data['prev'] != '' and (ts-past_ts) < target_time_diff_ms*1000:
+        past_sample_data = nusc.get('sample_data', past_sample_data['prev'])
+        past_ts = past_sample_data['timestamp']
+
+    ep = nusc.get('ego_pose', sample_data['ego_pose_token'])
+    past_ep = nusc.get('ego_pose', past_sample_data['ego_pose_token'])
+    trnsl = np.array(ep['translation'])
+    past_trnsl = np.array(past_ep['translation'])
+    egovel = (trnsl - past_trnsl) / ((ts - past_ts) * 1e-6)
+
+    if not global_coords:
+        rotation = Quaternion(ep['rotation'])
+        # Convert the global velocity to ego frame
+        egovel = rotation.inverse.rotate(egovel)
+
+    return ep, egovel
 
 def calc_falsepos_when_shifted(time_diff_sec, coords, rel_velos, labels,
                                dist_thresholds=[0.5, 1.0, 2.0, 4.0],
