@@ -49,7 +49,7 @@ DATA_CONFIG:
           }
 
         - NAME: transform_points_to_voxels_placeholder
-          VOXEL_SIZE: [0.24, 0.24, 0.2]
+          VOXEL_SIZE: [0.15, 0.15, 0.2]
 
 MODEL:
     NAME: PillarNetOpt
@@ -131,7 +131,7 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-    ONNX_PATH: deploy_files/onnx_files/pillarnet024_dense_convs
+    ONNX_PATH: deploy_files/onnx_files/pillarnet015_dense_convs
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
     METHOD: 0
