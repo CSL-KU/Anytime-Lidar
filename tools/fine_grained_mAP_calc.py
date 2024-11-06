@@ -31,19 +31,27 @@ def get_dl_data(datas, dl):
             return d
     return datas[0]
 
-def gen_features(bboxes, scores, labels):
+def gen_features(bboxes, scores, labels, use_raw_data=True):
     #bboxes = det_annos['boxes_lidar']
-    #TODO, consider duplicated feature coords
-    feature_coords = (bboxes[:, :2] + 57.6)
 
-     # sizes(3), heading(1), vel(2), score(1), label(1)
-    features = np.empty((bboxes.shape[0], 8), dtype=float)
-    features[:, :3] = bboxes[:, 3:6] / np.array([40., 10., 15.]) # max sizes x y z
-    features[:, 3] = bboxes[:, 6] / 3.14
-    # assuming max vel is 15 meters per second 
-    features[:, 4:6] = bboxes[:, 7:9] / 15.0
-    features[:, 6] = scores
-    features[:, 7] = (labels-1) / 10.
+    if use_raw_data:
+        feature_coords = bboxes[:, :2]
+        features = np.empty((bboxes.shape[0], 8), dtype=float)
+        features[:, :3] = bboxes[:, 3:6]
+        features[:, 3] = bboxes[:, 6]
+        features[:, 4:6] = bboxes[:, 7:9]
+        features[:, 6] = scores
+        features[:, 7] = labels
+    else:
+        feature_coords = (bboxes[:, :2] + 57.6)
+         # sizes(3), heading(1), vel(2), score(1), label(1)
+        features = np.empty((bboxes.shape[0], 8), dtype=float)
+        features[:, :3] = bboxes[:, 3:6] / np.array([40., 10., 15.]) # max sizes x y z
+        features[:, 3] = bboxes[:, 6] / 3.14
+        # assuming max vel is 15 meters per second
+        features[:, 4:6] = bboxes[:, 7:9] / 15.0
+        features[:, 6] = scores
+        features[:, 7] = (labels-1) / 10.
 
     return feature_coords, features
 
@@ -90,7 +98,7 @@ class SegInfo:
 
         self.dataset_dict = {}
 
-        eval_path_list = glob.glob(inp_dir + "/eval_data_*.pkl")
+        eval_path_list = glob.glob(inp_dir + "/sampled_dets_*.pkl")
         for path in eval_path_list:
             print('Loading', path)
             with open(path, 'rb') as handle:
@@ -288,6 +296,9 @@ class SegInfo:
             elif upper_bound_calc_method == 'ap_based':
                 num_iters = len(self.all_segments)
                 progress_bar = tqdm(total=num_iters, leave=True, dynamic_ncols=True)
+
+                cur_seg_dls = {} #seg:[] for seg in self.all_segments}
+
                 seg_dls, best_seg_eval_dict, best_perm = {}, {}, []
                 for j, seg in enumerate(self.all_segments):
                     datas_all = {dist_th:[] for dist_th in self.dist_thresholds}
@@ -300,9 +311,10 @@ class SegInfo:
                             datas_all[dist_th].extend(datas)
                             keys_all.append(key)
                     best_dl, max_ap = self.all_resolutions[0], 0.
+                    seg_ap_scores = [0.] * len(self.all_resolutions)
                     for i, dl in enumerate(self.all_resolutions):
                         ap_list = []
-                        for dist_th in self.dist_thresholds[2:]: # NOTE 2: appears to give best result
+                        for dist_th in self.dist_thresholds:
                             datas_all_dist = datas_all[dist_th]
                             dl_datas = [d for d in datas_all_dist if d[0] == dl]
                             assert len(dl_datas) > 0
@@ -311,7 +323,9 @@ class SegInfo:
                                 np.concatenate([d[2] for d in dl_datas]), # scr
                                 np.sum([d[3] for d in dl_datas]).item() # gt
                             ))
+
                         new_ap = np.mean(ap_list)
+                        seg_ap_scores[i] = new_ap
 
                         if new_ap > max_ap:
                             best_dl = dl
@@ -321,6 +335,7 @@ class SegInfo:
                         datas = get_dl_data(self.seg_eval_data_dict[key], best_dl)
                         best_seg_eval_dict[key] = datas
                     best_perm.append(best_dl)
+                    cur_seg_dls[seg] = seg_ap_scores
 
                     progress_bar.update()
                 max_mAP = self.calc_mAP(best_seg_eval_dict, False)
@@ -338,15 +353,22 @@ class SegInfo:
             print(occurances)
             print(np.round(occurances / np.sum(occurances), 2))
 
-            if len(self.dataset_dict) > 0 and upper_bound_calc_method == 'heuristic':
+            if len(self.dataset_dict) > 0 and (upper_bound_calc_method == 'heuristic' or \
+                    upper_bound_calc_method == 'ap_based'):
                 dataset_tuples=[]
 
                 for sample_tkn, inout_list in self.dataset_dict.items():
                     segkey = self.sample_token_to_seg_dict[sample_tkn]
-                    dl = cur_seg_dls[segkey]
-                    idx = [l[-1] for l in inout_list].index(dl)
-                    dataset_tuples.append(inout_list[idx] + [sample_tkn])
+                    if upper_bound_calc_method == 'heuristic':
+                        dl = cur_seg_dls[segkey]
+                        idx = [l[-1] for l in inout_list].index(dl)
+                        dataset_tuples.append(inout_list[idx] + [sample_tkn])
 #                            [self.sample_token_to_egovel[sample_tkn]]
+                    else:
+                        # Use all resolution data for train
+                        seg_ap_scores = cur_seg_dls[segkey]
+                        for l in inout_list:
+                            dataset_tuples.append((l[0], l[1], seg_ap_scores, sample_tkn))
 
                 print('Duplicates are not removed')
                 # dump the tuples
@@ -354,6 +376,7 @@ class SegInfo:
                 with open('resolution_dataset.pkl', 'wb') as f:
                     pickle.dump({
                         'fields': ('coords', 'features', 'resolution', 'sample_tkn'),
+                        'upper_bound_calc_method': upper_bound_calc_method,
                         'data':dataset_tuples}, f)
             return max_mAP
         else:
@@ -475,6 +498,6 @@ if __name__ == '__main__':
     seg_info = SegInfo(inp_dir)
 
     seg_info.do_eval_all_resolutions()
-    #seg_info.do_eval(None, 'ap_based')
-    seg_info.do_eval(None, 'heuristic')
+    seg_info.do_eval(None, 'ap_based')
+    #seg_info.do_eval(None, 'heuristic')
     #seg_info.do_eval(None, 'exhaustive')
