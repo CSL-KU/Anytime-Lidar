@@ -261,13 +261,9 @@ class NuScenesDataset(DatasetTemplate):
 
         output_path = Path(kwargs['output_path'])
         output_path.mkdir(exist_ok=True, parents=True)
-        res_path = str(output_path / 'results_nusc.json')
-        with open(res_path, 'w') as f:
-            json.dump(nusc_annos, f)
 
         if not hasattr(self, 'logger'):
             self.logger=common_utils.create_logger()
-        self.logger.info(f'The predictions of NuScenes have been saved to {res_path}')
 
         if self.dataset_cfg.VERSION == 'v1.0-test':
             return 'No ground-truth annotations for evaluation', {}
@@ -294,11 +290,12 @@ class NuScenesDataset(DatasetTemplate):
         nusc_eval = NuScenesEval(
             nusc,
             config=eval_config,
-            result_path=res_path,
+            result_path='', #res_path,
             eval_set=es,
             output_dir=str(output_path),
             verbose=True,
             det_elapsed_musec=dt,
+            data_dict=nusc_annos
         )
         metrics_summary = nusc_eval.main(plot_examples=0, render_curves=False)
 

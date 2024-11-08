@@ -123,37 +123,44 @@ class SegInfo:
                         else:
                             self.dataset_dict[sample_token] = [tpl]
 
+        self.tuple_fields = ('resolution_idx', 'class', 'dist_th', 'scene', 'start_time',
+                'sample_tokens', 'num_gt_arr', 'tp_arr', 'scr_arr')
+
         self.seg_info_tuples = []
         seg_info_path_list = glob.glob(inp_dir + "/segment_*.json")
         for path in seg_info_path_list:
             print('Loading', path)
+
             with open(path, 'r') as handle:
                 seg_info = json.load(handle)
-                seg_info_fields = seg_info['fields']
-                self.seg_info_tuples += seg_info['tuples']
+                res_idx = seg_info['resolution_idx']
+                tuples_dict = seg_info['tuples']
+                for cls_name in seg_info['class_names']:
+                    for dist_th in seg_info['distance_thresholds']:
+                        cur_tuples = tuples_dict[cls_name][str(dist_th)]
+                        for scene_idx, msec, sample_tokens, num_gt, pred_data in cur_tuples:
+                            pred_data = [np.array(pd) for pd in pred_data]
+                            tp_arr = [(pd > 0.).astype(int) for pd in pred_data]
+                            scr_arr = [np.abs(pd).astype(float) for pd in pred_data]
+                            self.seg_info_tuples.append((res_idx, cls_name, dist_th, \
+                                    scene_idx, msec, sample_tokens, num_gt, \
+                                    tp_arr, scr_arr))
 
         print(f'All files loaded.')
 
-        for i, f in enumerate(seg_info_fields):
-            self.__setattr__(f+'_idx', i)
-
-#        if dist_th is not None:
-#        self.seg_info_tuples = [t for t in self.seg_info_tuples \
-#                 if t[self.dist_th_idx] == 2.0]
-
-#        if class_name is not None:
-#        self.seg_info_tuples = [t for t in self.seg_info_tuples \
-#                 if t[self.class_idx] == 'car']
-        
-        self.scene_to_idx={}
-        self.scene_to_idx_counter=0
+        self.resolution_idx = self.tuple_fields.index('resolution_idx')
+        self.class_idx = self.tuple_fields.index('class')
+        self.dist_th_idx = self.tuple_fields.index('dist_th')
+        self.scene_idx = self.tuple_fields.index('scene')
+        self.time_segment_idx = self.tuple_fields.index('start_time')
+        self.sample_tokens_idx = self.tuple_fields.index('sample_tokens')
+        self.num_gt_arr_idx = self.tuple_fields.index('num_gt_arr')
+        self.tp_arr_idx = self.tuple_fields.index('tp_arr')
+        self.scr_arr_idx = self.tuple_fields.index('scr_arr')
 
         # turn time segs into ints
-        seg = self.seg_info_tuples[0][self.time_segment_idx]
-        seg_len = seg[1] - seg[0] # assume all segments have the same length
+        seg_len = seg_info['segment_time_length_ms']
         print(f'Time segment length: {seg_len}')
-        for t in self.seg_info_tuples:
-            t[self.time_segment_idx] = int(t[self.time_segment_idx][0] / seg_len)
 
         # each value of this dict holds eval data of same scene, time, dist_th and class 
         # but different resolutions
@@ -166,26 +173,12 @@ class SegInfo:
         all_resolutions = set()
         all_segments = set()
         for i, tpl in enumerate(self.seg_info_tuples):
-            seg_sample_stats = tpl[self.seg_sample_stats_idx] # list of dicts
-            num_gt_seg, tp_arr, scr_arr = 0, [], []
             # these segments were inserted considering cls scores, from high to low
-            for sample in seg_sample_stats: # all samples in the segment
-                num_gt_seg += sample['num_gt']
-                #sample['egopose_translation_xy']
-                #sample_token_to_egovel[sample['sample_token']] = sample['egovel_xy']
-                predictions = sample['pred_data']
-                if len(predictions) > 0:
-                    if isinstance(predictions[0], dict):
-                        tp_arr += [p['is_true_pos'] for p in predictions]
-                        scr_arr += [p['detection_score'] for p in predictions]
-                    else:
-                        tp_arr += [p[0] for p in predictions]
-                        scr_arr += [p[1] for p in predictions]
+            num_gt_seg = np.sum(tpl[self.num_gt_arr_idx])
+            tp_arr = np.concatenate(tpl[self.tp_arr_idx])
+            scr_arr = np.concatenate(tpl[self.scr_arr_idx])
 
-            tp_arr = np.array(tp_arr, dtype=int)
-            scr_arr = np.array(scr_arr, dtype=float)
-
-            resolution = int(float(tpl[self.resolution_idx]))
+            resolution = int(tpl[self.resolution_idx])
             all_resolutions.add(resolution)
             data = [resolution, tp_arr, scr_arr, num_gt_seg]
 
@@ -195,7 +188,7 @@ class SegInfo:
             seg_eval_data_dict[key].append(data)
 
             key = self.get_key(i, use_cls=False, use_dist_th=False, use_dl=False)
-            tokens = [s['sample_token'] for s in seg_sample_stats]
+            tokens = tpl[self.sample_tokens_idx]
             for tkn in tokens:
                 if tkn in sample_token_to_seg_dict:
                     assert sample_token_to_seg_dict[tkn] == key
@@ -466,17 +459,6 @@ class SegInfo:
             key += str(tpl[self.resolution_idx]) + '='
         return key[:-1]
 
-#    def get_keyidx(self, tpl_idx):
-#        t = self.seg_info_tuples[tpl_idx]
-#
-#        scene = t[self.scene_idx]
-#        if scene not in self.scene_to_idx:
-#            self.scene_to_idx[scene] = self.scene_to_idx_counter
-#            self.scene_to_idx_counter += 1
-#
-#        num_time_seg_in_scene = 20
-#        return self.scene_to_idx[scene] * num_time_seg_in_scene + t[fi['time_segment']]
-#
     def do_eval_all_resolutions(self):
         #VALO
         mAPs = []
