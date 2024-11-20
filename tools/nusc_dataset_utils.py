@@ -696,7 +696,7 @@ def main():
         prune_annos(step)
         dump_data()
     elif len(sys.argv) == 2 and sys.argv[1] == 'generate_dicts':
-        generate_anns_dict()
+        #generate_anns_dict()
         generate_pose_dict()
     elif len(sys.argv) == 2 and sys.argv[1] == 'calc_velos':
         calc_scene_velos()

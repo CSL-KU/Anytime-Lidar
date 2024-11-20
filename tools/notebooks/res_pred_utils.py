@@ -1,5 +1,6 @@
 from pyquaternion import Quaternion
 import numpy as np
+import torch
 
 def get_2d_egovel(prev_ts, prev_egopose, cur_ts, cur_egopose):
     tdiff_sec = (cur_ts - prev_ts) * 1e-6 # musec to sec
@@ -138,3 +139,39 @@ def pick_best_resolution(res_exec_times_sec, egovel, pred_dict, score_thr=.5):
         chosen_res -= 1
 
     return chosen_res
+
+
+
+@torch.jit.script
+def get_tp_fp_gt(pred_boxes, pred_scores, pred_labels, gt_boxes, gt_labels, num_class : int):
+    inds = torch.argsort(pred_scores, descending=True)
+    pred_labels = pred_labels[inds]
+    pred_xyz = pred_boxes[inds, :3]
+    gt_xyz = gt_boxes[:, :3]
+
+    distance_thresholds = [0.5, 1.0, 2.0, 4.0]
+    tp_fp_gt = torch.zeros((num_class, len(distance_thresholds), 3))
+    for cls in range(1, num_class+1):
+        pred_mask = (pred_labels == cls)
+        pred_xyz_l = pred_xyz[pred_mask]
+        gt_xyz_l = gt_xyz[gt_labels == cls]
+
+        cls_i = cls-1
+        tp_fp_gt[cls_i, :, 2] = len(gt_xyz_l)
+        if len(pred_xyz_l) == 0:
+            continue
+
+        if len(gt_xyz_l) == 0:
+            tp_fp_gt[cls_i, :, 1] += len(pred_xyz_l)
+            continue
+
+        dists = torch.cdist(pred_xyz_l, gt_xyz_l)
+        for d, dist_th in enumerate(distance_thresholds):
+            for row in dists:
+                min_dist, gt_idx = torch.min(row, dim=0)
+                if (min_dist <= dist_th):
+                    tp_fp_gt[cls_i, d, 0] += 1
+                    dists[:, gt_idx] = 5.0 # can't match with anything now
+                else:
+                    tp_fp_gt[cls_i, d, 1] += 1
+    return tp_fp_gt

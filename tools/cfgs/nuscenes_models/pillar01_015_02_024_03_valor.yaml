@@ -139,7 +139,7 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-    ONNX_PATH: deploy_files/onnx_files/pillarnet01_valo_dense_convs
+    ONNX_PATH: deploy_files/onnx_files/pillarnet_5res_valor_dense_convs
     DEADLINE_SEC: 9999.9
     STREAMING_EVAL: False
     METHOD: 4

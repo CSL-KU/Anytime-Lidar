@@ -25,7 +25,7 @@ if [ $period != 50 ]; then
 fi
 
 python nusc_dataset_utils.py generate_dicts
-mv -f token_to_anns.json token_to_pos.json $TABLES_PATH
+mv -f token_to_pos.json $TABLES_PATH
 
 # now generate data as well
 gen_data
