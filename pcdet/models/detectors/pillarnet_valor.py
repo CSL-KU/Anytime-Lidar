@@ -222,7 +222,7 @@ class PillarNetVALOR(Detector3DTemplate):
             self.measure_time_start('DenseOps')
             x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
                     batch_dict['pillar_coords'], x_conv4)
-            batch_dict['x_lims'] = [x_min, x_max]
+            batch_dict['tensor_slice_inds'] = (x_min, x_max)
 
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
@@ -286,7 +286,7 @@ class PillarNetVALOR(Detector3DTemplate):
 
             torch.onnx.export(
                     self.opt_dense_convs,
-                    fwd_data.requires_grad_(False),
+                    fwd_data.detach(),
                     onnx_path,
                     input_names=input_names,
                     output_names=self.opt_outp_names,
