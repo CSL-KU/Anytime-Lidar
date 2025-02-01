@@ -248,6 +248,17 @@ class Detector3DTemplate(nn.Module):
         #num_det_heads : int = 1,
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
 
+    def get_model_size_MB(self):
+        size_model = 0
+        for module in self.module_list:
+            for param in module.parameters():
+                if param.data.is_floating_point():
+                    size_model += param.numel() * torch.finfo(param.data.dtype).bits
+                else:
+                    size_model += param.numel() * torch.iinfo(param.data.dtype).bits
+        return round(size_model / 8e6, 3)
+
+
     def initialize(self, latest_token : str) -> (float, bool):
         scene_token = self.token_to_scene[latest_token]
         if scene_token != self.prev_scene_token:

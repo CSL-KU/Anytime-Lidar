@@ -53,7 +53,7 @@ DATA_CONFIG:
 
 MODEL:
     NAME: PillarNetVALO
-    NAME_POSTFIX: sp01
+    NAME_POSTFIX: p010
 
     VFE:
         NAME: DynamicPillarVFESimple2D

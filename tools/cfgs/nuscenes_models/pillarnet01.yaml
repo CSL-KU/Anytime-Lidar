@@ -68,7 +68,7 @@ MODEL:
     BACKBONE_2D:
         NAME: BaseBEVBackboneV1
 
-        USE_DUMMY_LAYER: False
+        USE_DUMMY_LAYER: True
         LAYER_NUMS: [ 5, 5 ]
         LAYER_STRIDES: [ 1, 2 ]
         NUM_FILTERS: [ 256, 256 ]
@@ -119,7 +119,7 @@ MODEL:
         POST_PROCESSING:
             SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 128
+            MAX_OBJ_PER_SAMPLE: 196
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2

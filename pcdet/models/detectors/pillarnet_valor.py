@@ -121,6 +121,7 @@ class PillarNetVALOR(Detector3DTemplate):
         })
 
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
+        print('Model size is:', self.get_model_size_MB(), 'MB')
 
         self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1.0])
         self.num_res = len(self.resolution_dividers)

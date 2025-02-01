@@ -51,7 +51,7 @@ def get_voxel_x_coords_from_points(points_coords : torch.Tensor,
 @torch.jit.script
 def tile_calculations(coords_x : torch.Tensor, tile_size_voxels: float, tcount : int):
     tile_coords = torch.div(coords_x, tile_size_voxels, rounding_mode='trunc').long()
-    counts_area = torch.bincount(tile_coords, minlength=tcount).cpu()
+    counts_area = torch.bincount(tile_coords, minlength=tcount).cpu()[:tcount]
     netc = torch.arange(tcount, dtype=torch.long)[counts_area > 0] # shouldn't take noticable time
     return tile_coords, netc, counts_area
 

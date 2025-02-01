@@ -108,6 +108,7 @@ class PillarNetVALO(AnytimeTemplateV2):
         })
 
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
+        print('Model size is:', self.get_model_size_MB(), 'MB')
 
         # training with multiple resolution
         self.latest_losses = [0.] * self.num_res

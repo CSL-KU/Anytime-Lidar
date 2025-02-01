@@ -46,9 +46,11 @@ class PillarNetOpt(Detector3DTemplate):
         })
 
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
+        print('Model size is:', self.get_model_size_MB(), 'MB')
         self.inf_stream = torch.cuda.Stream()
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
+
 
     def forward(self, batch_dict):
         if self.training:
