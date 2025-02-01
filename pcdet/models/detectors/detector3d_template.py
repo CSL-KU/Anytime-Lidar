@@ -1,4 +1,5 @@
 import os
+import sys
 import copy
 import time
 import json
@@ -736,19 +737,19 @@ class Detector3DTemplate(nn.Module):
         for name, vals in self._time_dict.items():
             print('1D_LIST', name, vals)
 
-    def print_time_stats(self):
+    def print_time_stats(self, outfile=sys.stdout):
         # Print these for humans
         max_len=0
         for name in self.get_time_dict_stats().keys():
             max_len = max(len(name), max_len)
         #print((" " * max_len),"Min,Avrg,95perc,99perc,Max,Std_dev")
-        print(" ,Min,Avrg,95perc,99perc,Max,Std_dev")
+        print(" ,Min,Avrg,95perc,99perc,Max,Std_dev", file=outfile)
         for name, val in self.get_time_dict_stats().items():
             spaces = " " * (max_len - len(name)+1)
             #print(f"{name}{spaces}{val[0]:.2f},{val[1]:.2f}"
             print(f"{name},{val[0]:.2f},{val[1]:.2f}"
-                    f",{val[2]:.2f},{val[3]:.2f},{val[4]:.2f},{val[5]:.2f}")
-        print('All numbers are in milliseconds')
+                    f",{val[2]:.2f},{val[3]:.2f},{val[4]:.2f},{val[5]:.2f}", file=outfile)
+        print('All numbers are in milliseconds', file=outfile)
 
     # Does not allow same events to be nested
     def measure_time_start(self, event_name_str, cuda_event=True):

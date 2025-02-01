@@ -5,13 +5,13 @@
 
 
 import os
-os.chdir("/root/shared/Anytime-Lidar/tools")
 os.environ["DATASET_PERIOD"] = "50"
-os.environ["PMODE"] = "pmode_0003" # same as jetson orin
+#os.environ["PMODE"] = "pmode_0003" # same as jetson orin
 os.environ["CALIBRATION"] = "0"
 os.environ["PCDET_PATH"] = os.environ["HOME"] + "/shared/Anytime-Lidar"
 
 import _init_path
+import sys
 import datetime
 import time
 import json
@@ -32,9 +32,9 @@ from pcdet.models import build_network, load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.models.model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from nuscenes import NuScenes
+from eval_utils.res_pred_utils import get_2d_egovel
 
 import matplotlib.pyplot as plt
-import res_pred_utils
 import nuscenes
 import importlib
 # import numba
@@ -54,12 +54,13 @@ def get_dataset(cfg):
 def calc_tail_ms(cur_time_point_ms, data_period_ms):
     return cur_time_point_ms - math.floor(cur_time_point_ms / data_period_ms) * data_period_ms
 
-def build_model(cfg_file, ckpt_file, default_deadline_sec=100.0):
+def build_model(cfg_file, ckpt_file, default_deadline_sec):
     cfg_from_yaml_file(cfg_file, cfg)
     
-    set_cfgs = ['MODEL.METHOD', '0', 'MODEL.DEADLINE_SEC', str(default_deadline_sec),
+    set_cfgs = ['MODEL.METHOD', '0',
+            'MODEL.DEADLINE_SEC', str(default_deadline_sec),
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
-                'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
+            'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
     cfg_from_list(set_cfgs, cfg)
     logger, test_set, test_loader, sampler = get_dataset(cfg)
     print(f'Loaded dataset with {len(test_set)} samples')
@@ -148,7 +149,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             sample_tkn = batch_dict['metadata'][0]['token']
             if lbd is not None and not batch_dict['scene_reset']:
                 prev_sample_tkn = lbd['metadata'][0]['token']
-                egovel = res_pred_utils.get_2d_egovel(
+                egovel = get_2d_egovel(
                         model.token_to_ts[prev_sample_tkn],
                         model.token_to_pose[prev_sample_tkn],
                         model.token_to_ts[sample_tkn],
@@ -226,21 +227,17 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
     if do_res_sched:
         model.res_idx = -1
-    model.print_time_stats()
-    print('Resolution selection stats:')
-    print(resolution_stats)
 
     exec_times_musec = {st:(et*1000) for st, et in exec_times_ms}
 
-    with open(f'tmp_results/detdata_res{model.res_idx}.pkl', 'wb') as f:
-        pickle.dump([sampled_dets, exec_times_musec, resolution_stats], f)
+    #with open(f'tmp_results/detdata_res{model.res_idx}.pkl', 'wb') as f:
+    #    pickle.dump([sampled_dets, exec_times_musec, resolution_stats], f)
 
     print(f'Sampled {len(sampled_dets)} objects')
     return sampled_dets, exec_times_musec, resolution_stats
 
 def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None):
-    #Convert them to openpcdet format
     os.environ["RESOLUTION_IDX"] = str(resolution_idx)
 
     det_annos = []
@@ -288,7 +285,6 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             pickle.dump(eval_d, f)
     return result_str
 
-
 def load_dataset():
     dataset_version = 'v1.0-trainval'
     root_path = "../data/nuscenes/" + dataset_version
@@ -297,20 +293,27 @@ def load_dataset():
 if __name__ == "__main__":
     loaded_nusc = load_dataset()
 
-    #Baseline Pillarnet 01
-    cfg_file  = "./cfgs/nuscenes_models/pillarnet01.yaml"
-    ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
-    num_res = 1
+    chosen_method = sys.argv[1]
+    default_deadline_sec = sys.argv[2] if len(sys.argv) > 2 else 100.0
 
-    # VALO Pillarnet 01
-    #cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
-    #ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
-    #num_res = 1
-
-    # VALOR Pillarnet 5 res
-    #cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-    #ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
-    #num_res = 5
+    if chosen_method == 'Pillarnet01':
+        #Baseline Pillarnet 01
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet01.yaml"
+        ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
+        num_res = 1
+    elif chosen_method == 'VALO':
+        # VALO Pillarnet 01
+        cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
+        ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
+        num_res = 1
+    elif chosen_method == 'VALOR':
+        # VALOR Pillarnet 5 res
+        cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
+        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
+        num_res = 5
+    else:
+        print('Unknown method, exiting.')
+        sys.exit()
 
     sim_exec_time = False # Only VALOR supports it
 
@@ -320,39 +323,40 @@ if __name__ == "__main__":
     forecasting = False # ignored if offline
 
     results = []
-    for resolution_idx in range(num_res):
-        # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
-        t1 = time.time()
-        model = build_model(cfg_file, ckpt_file)
-        sampled_objects, exec_times_musec, resolution_stats = run_test(model, resolution_idx,
-                                                                    streaming=streaming,
-                                                                    forecasting=forecasting,
-                                                                    simulate_exec_time=sim_exec_time)
-        if not skip_eval:
-            # fname = f'tmp_results/detdata_res{resolution_idx}.pkl'
-            # with open(fname, 'rb') as f:
-            #     sampled_objects, exec_times_musec, resolution_stats = pickle.load(f)
-            #     print(f'Loaded {len(sampled_objects)} objects from {fname}')
+    current_date_time = datetime.datetime.today()
+    dt_string = current_date_time.strftime('%d-%m-%y-%I-%M-%p')
+    with open(f"evalres_{chosen_method}_{dt_string}.txt", "w") as fw:
+        for resolution_idx in range(num_res):
+            # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
+            t1 = time.time()
+            model = build_model(cfg_file, ckpt_file, default_deadline_sec)
+            sampled_objects, exec_times_musec, resolution_stats = run_test(model, resolution_idx,
+                                                                        streaming=streaming,
+                                                                        forecasting=forecasting,
+                                                                        simulate_exec_time=sim_exec_time)
+            for outf in (fw, sys.stdout):
+                print(f'Method:           {chosen_method}', file=outf)
+                print(f'Power mode:       {os.environ["PMODE"]}', file=outf)
+                print(f'Streaming:        {streaming}', file=outf)
+                print(f'Forecasting:      {forecasting}', file=outf)
+                print(f'Resolution stats: {resolution_stats}', file=outf)
+                print(f'Latency stats:', file=outf)
+                model.print_time_stats(outfile=outf)
 
-            dataset = model.dataset
-            del model
-            result_str = do_eval(sampled_objects, resolution_idx, dataset, streaming,
-                                 exec_times_musec=exec_times_musec,
-                                 dump_eval_dict=True, loaded_nusc=loaded_nusc)
-            results.append([resolution_idx, forecasting, resolution_stats, result_str])
-            result = results[-1]
-            print(f'Resolution index: {result[0]}')
-            print(f'Forecasting: {forecasting}')
-            print(f'Resolution stats: {result[2]}')
-            print(result[3])
-        t2 = time.time()
-        print('Time passed (seconds):', t2-t1)
+            if not skip_eval:
+                # fname = f'tmp_results/detdata_res{resolution_idx}.pkl'
+                # with open(fname, 'rb') as f:
+                #     sampled_objects, exec_times_musec, resolution_stats = pickle.load(f)
+                #     print(f'Loaded {len(sampled_objects)} objects from {fname}')
 
-    if not skip_eval:
-        with open(f"output_streaming{streaming}_forecasting{forecasting}.txt", "w") as f:
-            for resolution_idx, forecasting, resolution_stats, result_str in results:
-                if forecasting:
-                    f.write('FORECASTING WAS UTILIZED\n')
-                f.write(f'{resolution_stats}\n')
-                f.write(result_str)
-                f.write('\n')
+                dataset = model.dataset
+                del model
+                result_str = do_eval(sampled_objects, resolution_idx, dataset, streaming,
+                                     exec_times_musec=exec_times_musec,
+                                     dump_eval_dict=False, loaded_nusc=loaded_nusc)
+
+                for outf in (fw, sys.stdout):
+                    print(result_str + '\n\n', file=outf)
+
+            t2 = time.time()
+            print('Time passed (seconds):', t2-t1)
