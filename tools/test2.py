@@ -112,7 +112,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
         res_pred_trt = TRTWrapper(trt_path, ['objcount_and_egovel'], ['res_scores'])
         res_pred_out_buf = None
 
-    resolution_stats = [0] * model.num_res if do_res_sched else [0]
+    resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
 
     model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
@@ -203,7 +203,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
                 #NOTE I need to consider the sched time as well and add to sim cur time ms
                 target_sched_time_ms += sched_period_ms
-                resolution_stats[model.res_idx] += 1
+            resolution_stats[model.res_idx] += 1
 
             if streaming and last_exec_time_ms > data_period_ms:
                 #Dynamic scheduling
@@ -323,7 +323,8 @@ if __name__ == "__main__":
         ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
     elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
+        #ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
+        ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     else:
         print('Unknown method, exiting.')
@@ -346,6 +347,8 @@ if __name__ == "__main__":
                                                                         simulate_exec_time=sim_exec_time)
             for outf in (fw, sys.stdout):
                 print(f'Method:           {chosen_method}\n'
+                      f'Config file:      {cfg_file}\n'
+                      f'Checkpoint file:  {ckpt_file}\n'
                       f'Default deadline: {default_deadline_sec} seconds\n'
                       f'Power mode:       {os.environ["PMODE"]}\n'
                       f'Streaming:        {streaming}\n'
