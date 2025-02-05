@@ -339,7 +339,7 @@ class PillarNetVALO(AnytimeTemplateV2):
 
             torch.onnx.export(
                     self.opt_dense_convs,
-                    fwd_data.requires_grad_(False),
+                    fwd_data.detach(),
                     onnx_path,
                     input_names=input_names,
                     output_names=self.opt_outp_names,

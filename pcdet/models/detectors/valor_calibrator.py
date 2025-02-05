@@ -62,17 +62,16 @@ class ValorCalibrator():
             self.treat_bb3d_as_single_l_group = False
             if self.treat_bb3d_as_single_l_group:
                 self.bb3d_num_l_groups = 1
-                self.time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
-                self.time_reg_intercepts = np.ones((1,), dtype=float)
+                self.bb3d_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
+                self.bb3d_time_reg_intercepts = np.ones((1,), dtype=float)
             else:
                 self.bb3d_num_l_groups = self.model.backbone_3d.num_layer_groups
-                self.time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
-                self.time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
+                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
+                self.bb3d_time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
 
-        self.dense_ops_times_ms = [] # key is wsize, value is ms
-
+        # key is wsize, value is ms
+        self.dense_ops_times_ms = np.arange(4,512,4).repeat(2).reshape(-1, 2)
         self.postprocess_wcet_ms = .0
-
         self.calib_data_dict = None
 
     # NOTE batch size has to be 1 !

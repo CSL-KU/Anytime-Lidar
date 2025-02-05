@@ -113,7 +113,7 @@ class MultiPillarCounter(torch.nn.Module):
         # store minx max pillar_count
         mpc_out = torch.empty((3, self.pillar_sizes.size(0)), device=points_xy.device, dtype=torch.int)
         for i, (ps, grid_sz) in enumerate(zip(self.pillar_sizes, self.grid_sizes)):
-            point_coords = torch.floor((points_xy - self.pc_range_min) / ps).int()
+            point_coords = torch.floor((points_xy - self.pc_range_min) / ps).long()
             grid = torch.zeros((grid_sz[0], grid_sz[1]), device=points_xy.device, dtype=torch.int)
             grid[point_coords[:, 0], point_coords[:, 1]] = 1
             mpc_out[0, i] = grid.sum()
@@ -178,11 +178,12 @@ class PillarNetVALOR(Detector3DTemplate):
         #            self.dense_head.cls_id_to_det_head_idx_map))
 
         self.dense_head_scrpt = None
-        self.calibrators = [None] * self.num_res
+        self.calibrators = [ValorCalibrator(self) for _ in range(self.num_res)]
         self.calib_pc_range = torch.tensor(self.dataset.point_cloud_range).cuda()
         self.mpc_optimized = False
         self.mpc_trt = None
         self.mpc_outp = None
+        self.inp_tensor_widths = [0] * self.num_res
 
     def forward(self, batch_dict):
         if self.training:
@@ -235,6 +236,24 @@ class PillarNetVALOR(Detector3DTemplate):
             else:
                 self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
                 mpc_out = self.mpc_outp['counts'].cpu()
+
+            # Schedule by calculating the exec time of all resolutions
+            dsf =  self.backbone_3d.sparse_outp_downscale_factor()
+            predicted_exec_times_ms = np.empty(self.num_res)
+            num_points = batch_dict['points'].size(0)
+            for i in range(self.num_res):
+                x_minmax = mpc_out[1:, i]
+                num_voxels = mpc_out[0, i].item()
+                num_voxels = [num_voxels // div for div in (1, 2, 4, 8)] #NOTE this is not the best way
+                xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
+                predicted_exec_times_ms[i] = self.calibrators[i].pred_exec_time_ms(
+                   num_points, num_voxels, xmax - xmin)
+
+            deadline_ms = 150.0
+            time_passed = batch_dict['start_time_sec'] - time.time()
+            time_left_ms = deadline_ms - (time_passed * 1e3)
+            if not self.is_calibrating():
+                self.res_idx = (predicted_exec_times_ms < time_left_ms).tolist().index(True)
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -292,6 +311,8 @@ class PillarNetVALOR(Detector3DTemplate):
 
     def optimize(self, fwd_data):
         optimize_start = time.time()
+
+        self.inp_tensor_widths[self.res_idx] = fwd_data.size(3)
 
         if self.dense_head_scrpt is None:
             self.dense_head.instancenorm_mode()
@@ -455,7 +476,6 @@ class PillarNetVALOR(Detector3DTemplate):
         calib_fnames = [""] * self.num_res
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
-            self.calibrators[res_idx] = ValorCalibrator(self)
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
             calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_res{res_idx}.json"
             try:
