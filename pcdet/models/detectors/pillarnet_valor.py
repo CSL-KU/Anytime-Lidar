@@ -31,11 +31,11 @@ def get_all_resawarebn(model):
     return resawarebns
 
 @torch.jit.script
-def slice_tensor(down_scale_factor : int, pillar_coords : torch.Tensor, inp : torch.Tensor) \
+def slice_tensor(down_scale_factor : int, x_min: int, x_max: int, inp : torch.Tensor) \
         -> Tuple[torch.Tensor, int, int]:
     dsf = down_scale_factor
-    x_min, x_max = torch.aminmax(pillar_coords[:, 2])
-    x_min, x_max = x_min.cpu() // dsf, x_max.cpu() // dsf + 1
+    #x_min, x_max = torch.aminmax(pillar_coords[:, 2])
+    x_min, x_max = x_min // dsf, x_max // dsf + 1
     denom = 4 # denom is dependent on strides within the dense covs
     minsz = 16
     maxsz = inp.size(3)
@@ -62,7 +62,7 @@ def slice_tensor(down_scale_factor : int, pillar_coords : torch.Tensor, inp : to
         inp = inp[..., x_min:x_max]
     else: # don't slice
         return inp.contiguous(), 0, inp.size(3)
-    return inp.contiguous(), x_min.item(), x_max.item()
+    return inp.contiguous(), x_min, x_max
 
 # This will be used to generate the onnx
 class DenseConvsPipeline(torch.nn.Module):
@@ -92,6 +92,34 @@ class DenseConvsPipeline(torch.nn.Module):
             outputs += topk_output
 
         return outputs
+
+class MultiPillarCounter(torch.nn.Module):
+    # Pass the args in cpu , pillar sizes should be Nx2, pc_range should be [6]
+    def __init__(self, pillar_sizes : torch.Tensor, pc_range : torch.Tensor):
+        super().__init__()
+
+        xy_length = pc_range[[3,4]] - pc_range[[0,1]]
+        self.grid_sizes = torch.empty((pillar_sizes.size(0), 2), dtype=torch.int) # cpu
+        for i, ps in enumerate(pillar_sizes):
+            self.grid_sizes[i] = torch.round(xy_length / ps)
+
+        self.pillar_sizes = pillar_sizes.cuda()
+        self.pc_range_min = pc_range[[0,1]].cuda()
+
+    def forward(self, points_xy : torch.Tensor) -> torch.Tensor:
+        # store minx max pillar_count
+        mpc_out = torch.empty((3, self.pillar_sizes.size(0)), device=points_xy.device, dtype=torch.int)
+        for i, (ps, grid_sz) in enumerate(zip(self.pillar_sizes, self.grid_sizes)):
+            point_coords = torch.floor((points_xy - self.pc_range_min) / ps).int()
+            grid = torch.zeros((grid_sz[0], grid_sz[1]), device=points_xy.device, dtype=torch.int)
+            grid[point_coords[:, 0], point_coords[:, 1]] = 1
+            mpc_out[0, i] = grid.sum()
+
+            xmin, xmax = torch.aminmax(point_coords[:, 0])
+            mpc_out[1, i] = xmin
+            mpc_out[2, i] = xmax
+
+        return mpc_out
 
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -149,6 +177,9 @@ class PillarNetVALOR(Detector3DTemplate):
         self.dense_head_scrpt = None
         self.calibrators = [None] * self.num_res
         self.calib_pc_range = torch.tensor(self.dataset.point_cloud_range).cuda()
+        self.mpc_optimized = False
+        self.mpc_trt = None
+        self.mpc_outp = None
 
     def forward(self, batch_dict):
         if self.training:
@@ -192,10 +223,15 @@ class PillarNetVALOR(Detector3DTemplate):
             self.measure_time_start('Sched')
             batch_dict = self.vfe.range_filter(batch_dict, self.calib_pc_range \
                     if self.is_calibrating() else None)
-            # NOTE use neural network based resolution prediction
-            #if not self.is_calibrating(): # maintain res_idx if calibrating
-            #    pass
-            #    # self.res_idx = 
+
+            points_xy = batch_dict['points'][:, 1:3].contiguous()
+            if not self.mpc_optimized:
+                self.optimize_mpc(points_xy)
+            if self.mpc_trt is None:
+                mpc_out = self.mpc(points_xy).cpu()
+            else:
+                self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
+                mpc_out = self.mpc_outp['counts'].cpu()
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -221,8 +257,9 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
+            x_minmax = mpc_out[1:, self.res_idx]
             x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
-                    batch_dict['pillar_coords'], x_conv4)
+                    x_minmax[0], x_minmax[1], x_conv4)
             batch_dict['tensor_slice_inds'] = (x_min, x_max)
 
             if self.fused_convs_trt[self.res_idx] is not None:
@@ -320,6 +357,44 @@ class PillarNetVALOR(Detector3DTemplate):
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
 
         self.optimization_done[self.res_idx] = True
+
+    def optimize_mpc(self, points_xy):
+        #TODO, set pillar sizes programmatically
+        pillar_sizes = torch.tensor([[0.1, 0.1], [0.15, 0.15], [0.2, 0.2], [0.24, 0.24], [0.30, 0.30]])
+        self.mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
+        self.mpc.eval()
+
+        # Create a onnx and tensorrt file for each resolution
+        onnx_path = 'deploy_files/onnx_files/mpc.onnx'
+        input_names = ['points_xy']
+        outp_names = ['counts']
+        if not os.path.exists(onnx_path):
+            torch.onnx.export(
+                self.mpc,
+                points_xy.detach(),
+                onnx_path,
+                input_names=input_names,
+                output_names=outp_names,
+                dynamic_axes={"points_xy": {0: 'num_points'}},
+                opset_version=17,
+            )
+
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        if power_mode == 'UNKNOWN_POWER_MODE':
+            print('WARNING! Power mode is unknown. Please export PMODE.')
+
+        trt_path = f'./deploy_files/trt_engines/{power_mode}/mpc.engine'
+        print('Trying to load trt engine at', trt_path)
+        try:
+            self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
+        except:
+            print('TensorRT wrapper for mpc throwed exception, building the engine')
+            min_shape, opt_shape, max_shape = (10000,2), (250000,2), (350000,2) # num points
+            create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
+
+        #self.mpc_trt = None
+        self.mpc_optimized = True
 
     def convert_trt_outputs(self, out_tensors):
         pred_dicts = [dict() for i in range(self.dense_head.num_det_heads)]
