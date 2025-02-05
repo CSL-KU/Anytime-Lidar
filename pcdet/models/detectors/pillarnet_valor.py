@@ -98,8 +98,9 @@ class DenseConvsPipeline(torch.nn.Module):
 
 class MultiPillarCounter(torch.nn.Module):
     # Pass the args in cpu , pillar sizes should be Nx2, pc_range should be [6]
-    def __init__(self, pillar_sizes : torch.Tensor, pc_range : torch.Tensor):
+    def __init__(self, backbone_3d, pillar_sizes : torch.Tensor, pc_range : torch.Tensor):
         super().__init__()
+        self.backbone_3d = backbone_3d
 
         xy_length = pc_range[[3,4]] - pc_range[[0,1]]
         self.grid_sizes = torch.empty((pillar_sizes.size(0), 2), dtype=torch.int) # cpu
@@ -109,18 +110,19 @@ class MultiPillarCounter(torch.nn.Module):
         self.pillar_sizes = pillar_sizes.cuda()
         self.pc_range_min = pc_range[[0,1]].cuda()
 
+    #TODO try using most recent point cloud only, this can speed up a lot
     def forward(self, points_xy : torch.Tensor) -> torch.Tensor:
-        # store minx max pillar_count
-        mpc_out = torch.empty((3, self.pillar_sizes.size(0)), device=points_xy.device, dtype=torch.int)
+        # store pillar_counts and minx and maxx
+        mpc_out = torch.empty((self.backbone_3d.num_layer_groups + 2, self.pillar_sizes.size(0)), device=points_xy.device)
         for i, (ps, grid_sz) in enumerate(zip(self.pillar_sizes, self.grid_sizes)):
             point_coords = torch.floor((points_xy - self.pc_range_min) / ps).long()
-            grid = torch.zeros((grid_sz[0], grid_sz[1]), device=points_xy.device, dtype=torch.int)
-            grid[point_coords[:, 0], point_coords[:, 1]] = 1
-            mpc_out[0, i] = grid.sum()
+            grid = torch.zeros((1, 1, grid_sz[0], grid_sz[1]), device=points_xy.device)
+            grid[:, :, point_coords[:, 0], point_coords[:, 1]] = 1.
+            mpc_out[:self.backbone_3d.num_layer_groups, i] = self.backbone_3d.sparse_convs_num_pillars_calc(grid)
 
-            xmin, xmax = torch.aminmax(point_coords[:, 0])
-            mpc_out[1, i] = xmin
-            mpc_out[2, i] = xmax
+            xmin, xmax = torch.aminmax(point_coords[:, 0]) # converting to int might make it faster?
+            mpc_out[-2, i] = xmin
+            mpc_out[-1, i] = xmax
 
         return mpc_out
 
@@ -232,19 +234,18 @@ class PillarNetVALOR(Detector3DTemplate):
             if not self.mpc_optimized:
                 self.optimize_mpc(points_xy)
             if self.mpc_trt is None:
-                mpc_out = self.mpc(points_xy).cpu()
+                mpc_out = self.mpc(points_xy).cpu().int()
             else:
                 self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
-                mpc_out = self.mpc_outp['counts'].cpu()
+                mpc_out = self.mpc_outp['counts'].cpu().int()
 
             # Schedule by calculating the exec time of all resolutions
             dsf =  self.backbone_3d.sparse_outp_downscale_factor()
             predicted_exec_times_ms = np.empty(self.num_res)
             num_points = batch_dict['points'].size(0)
             for i in range(self.num_res):
-                x_minmax = mpc_out[1:, i]
-                num_voxels = mpc_out[0, i].item()
-                num_voxels = [num_voxels // div for div in (1, 2, 4, 8)] #NOTE this is not the best way
+                x_minmax = mpc_out[-2:, i]
+                num_voxels = mpc_out[:-2, i]
                 xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
                 predicted_exec_times_ms[i] = self.calibrators[i].pred_exec_time_ms(
                    num_points, num_voxels, xmax - xmin)
@@ -254,6 +255,7 @@ class PillarNetVALOR(Detector3DTemplate):
             time_left_ms = deadline_ms - (time_passed * 1e3)
             if not self.is_calibrating():
                 self.res_idx = (predicted_exec_times_ms < time_left_ms).tolist().index(True)
+                #print(f'res {self.res_idx}, predicted time:', predicted_exec_times_ms[self.res_idx]) 
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -279,7 +281,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
-            x_minmax = mpc_out[1:, self.res_idx]
+            x_minmax = mpc_out[-2:, self.res_idx]
             x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
                     x_minmax[0], x_minmax[1], x_conv4)
             batch_dict['tensor_slice_inds'] = (x_min, x_max)
@@ -385,7 +387,7 @@ class PillarNetVALOR(Detector3DTemplate):
     def optimize_mpc(self, points_xy):
         #TODO, set pillar sizes programmatically
         pillar_sizes = torch.tensor([[0.1, 0.1], [0.15, 0.15], [0.2, 0.2], [0.24, 0.24], [0.30, 0.30]])
-        self.mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
+        self.mpc = MultiPillarCounter(self.backbone_3d, pillar_sizes, self.calib_pc_range.cpu())
         self.mpc.eval()
 
         # Create a onnx and tensorrt file for each resolution
