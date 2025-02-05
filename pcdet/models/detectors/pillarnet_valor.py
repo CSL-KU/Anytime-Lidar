@@ -30,15 +30,14 @@ def get_all_resawarebn(model):
             resawarebns.append(module)
     return resawarebns
 
+
 @torch.jit.script
-def slice_tensor(down_scale_factor : int, x_min: int, x_max: int, inp : torch.Tensor) \
-        -> Tuple[torch.Tensor, int, int]:
+def get_slice_range(down_scale_factor : int, x_min: int, x_max: int, maxsz: int) \
+        -> Tuple[int, int]:
     dsf = down_scale_factor
-    #x_min, x_max = torch.aminmax(pillar_coords[:, 2])
     x_min, x_max = x_min // dsf, x_max // dsf + 1
     denom = 4 # denom is dependent on strides within the dense covs
     minsz = 16
-    maxsz = inp.size(3)
 
     rng = (x_max - x_min)
     if rng < minsz:
@@ -53,16 +52,20 @@ def slice_tensor(down_scale_factor : int, x_min: int, x_max: int, inp : torch.Te
 
     pad = denom - (rng % denom)
     if pad == denom:
-        inp = inp[..., x_min:x_max]
+        pass
     elif x_min >= pad: # pad from left
         x_min -= pad
-        inp = inp[..., x_min:x_max]
     elif (maxsz - x_max) >= pad: # pad from right
         x_max += pad
-        inp = inp[..., x_min:x_max]
     else: # don't slice
-        return inp.contiguous(), 0, inp.size(3)
-    return inp.contiguous(), x_min, x_max
+        x_min, x_max = 0 , maxsz
+    return x_min, x_max
+
+@torch.jit.script
+def slice_tensor(down_scale_factor : int, x_min: int, x_max: int, inp : torch.Tensor) \
+        -> Tuple[torch.Tensor, int, int]:
+    x_min, x_max = get_slice_range(down_scale_factor, x_min, x_max, inp.size(3))
+    return inp[..., x_min:x_max].contiguous(), x_min, x_max
 
 # This will be used to generate the onnx
 class DenseConvsPipeline(torch.nn.Module):
