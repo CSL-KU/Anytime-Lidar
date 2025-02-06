@@ -256,6 +256,7 @@ class PillarNetVALOR(Detector3DTemplate):
 
             # the following scheduling part of the code is considered part of VFE
             # to make things easier
+            start_time = batch_dict['start_time_sec']
             deadline_ms = batch_dict['deadline_sec'] * 1e3
             dsf =  self.backbone_3d.sparse_outp_downscale_factor()
             num_points = batch_dict['points'].size(0)
@@ -267,7 +268,8 @@ class PillarNetVALOR(Detector3DTemplate):
                 xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
                 predicted_exec_time_ms = self.calibrators[i].pred_exec_time_ms(
                    num_points, num_voxels, xmax - xmin)
-                if not self.is_calibrating() and (predicted_exec_time_ms < deadline_ms):
+                time_passed_ms = (time.time() - start_time) * 1e3
+                if not self.is_calibrating() and (predicted_exec_time_ms < (deadline_ms - time_passed_ms)):
                     self.res_idx = i
                     break
 
