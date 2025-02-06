@@ -44,7 +44,7 @@ def pre_forward_hook(module, inp_args):
         dr = module.deadline_range
         deadline_sec = ((dr[1] - dr[0]) * dl_scale + dr[0]) / 1000.0
     else:
-        deadline_sec = module._eval_dict['deadline_sec']
+        deadline_sec = module._default_deadline_sec
 
     # NOTE The following prevents orin from spending unnecessary 50 ms
     # for tensor initialization, seems like a BUG
@@ -173,10 +173,9 @@ class Detector3DTemplate(nn.Module):
 
         if self.model_cfg.get('DEADLINE_SEC', None) is not None:
             self._default_deadline_sec = float(model_cfg.DEADLINE_SEC)
-            self._eval_dict['deadline_sec'] = self._default_deadline_sec
         else:
-            self._default_deadline_sec = 10.0
-            self._eval_dict['deadline_sec'] = 10.0  # loong deadline
+            self._default_deadline_sec = 100.0
+        self._eval_dict['deadline_sec'] = self._default_deadline_sec
 
         if 'DEADLINE_RANGE_MS' in os.environ:
             drange = os.getenv('DEADLINE_RANGE_MS').split('-')
@@ -211,7 +210,7 @@ class Detector3DTemplate(nn.Module):
         if self.do_streaming_eval:
             print('Doing streaming evaluation!')
 
-        print('Default deadline is:', self._eval_dict['deadline_sec'])
+        print('Default deadline is:', self._default_deadline_sec)
 
         self._det_dict_copy = None
         self.pre_hook_handle = self.register_forward_pre_hook(pre_forward_hook)
@@ -851,11 +850,12 @@ class Detector3DTemplate(nn.Module):
 
         enable_forc = self.enable_forecasting
         self.enable_forecasting = False
-        self._eval_dict['deadline_sec'] = 10.0
+        deadline_backup = self._default_deadline_sec
+        self._default_deadline_sec = 100.0
         for j in range(5):
             pred_dicts, recall_dict = self([j*batch_size+i for i in range(batch_size)])
         self.enable_forecasting = enable_forc
-        self._eval_dict['deadline_sec'] = self._default_deadline_sec
+        self._default_deadline_sec = deadline_backup
         self.prev_scene_token = '' 
 
         if isinstance(pred_dicts, list):

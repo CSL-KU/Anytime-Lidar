@@ -73,6 +73,7 @@ class ValorCalibrator():
         self.dense_ops_times_ms = np.arange(4,512,4).repeat(2).reshape(-1, 2)
         self.postprocess_wcet_ms = .0
         self.calib_data_dict = None
+        self.last_pred = np.zeros(5)
 
     # NOTE batch size has to be 1 !
     # Call like this:
@@ -80,7 +81,8 @@ class ValorCalibrator():
     #        batch_dict['points'].size(0),
     #        np.array([batch_dict['bb3d_num_voxels']]),
     #        batch_dict['x_lims'][1] - batch_dict['x_lims'][0])
-    def pred_exec_time_ms(self, num_points : int, num_voxels : np.ndarray, dense_wsize : int):
+    def pred_exec_time_ms(self, num_points : int, num_voxels : np.ndarray, dense_wsize : int,
+                          consider_prep_time=False):
         vfe_time_pred = self.quadratic_time_pred(num_points, self.vfe_time_reg_coeffs,
                 self.vfe_time_reg_intercepts, self.num_points_normalizer)
 
@@ -94,8 +96,9 @@ class ValorCalibrator():
         idx = find_index_or_next_largest(self.dense_ops_times_ms[:, 0], dense_wsize)
         dense_ops_time_pred = self.dense_ops_times_ms[idx, 1]
 
-        return (self.preprocess_wcet_ms + vfe_time_pred + bb3d_time_pred + \
-                dense_ops_time_pred + self.postprocess_wcet_ms).item()
+        self.last_pred = np.array([self.preprocess_wcet_ms, vfe_time_pred[0], bb3d_time_pred,
+                                   dense_ops_time_pred, self.postprocess_wcet_ms])
+        return np.sum(self.last_pred if consider_prep_time else self.last_pred[1:]).item()
 
     # fit to quadratic function
     def fit_data(self, input_data, times_data, num_l_groups, normalizer):
@@ -246,6 +249,8 @@ class ValorCalibrator():
         e2e_ms_arr = np.empty(num_samples, dtype=float)
 
         gc.disable()
+        deadline_backup = self.model._default_deadline_sec
+        self.model._default_deadline_sec = 100.0
         sample_idx, tile_num = 0, 1
         time_begin = time.time()
         pc_xwidth = pc_range[3] - pc_range[0]
@@ -296,6 +301,7 @@ class ValorCalibrator():
             sample_idx += 1
             if sample_idx % 100 == 0:
                 gc.collect()
+        self.model._default_deadline_sec = deadline_backup
         gc.enable()
 
         self.calib_data_dict = {

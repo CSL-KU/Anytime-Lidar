@@ -33,6 +33,7 @@ from pcdet.utils import common_utils
 from pcdet.models.model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from nuscenes import NuScenes
 from eval_utils.res_pred_utils import get_2d_egovel
+from pcdet.models.detectors.valor_calibrator import get_stats
 
 import matplotlib.pyplot as plt
 import nuscenes
@@ -85,8 +86,20 @@ def move_bounding_boxes(bboxes, egovel, time_diffs_sec):
 
     return outp_bboxes
 
-def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulate_exec_time=False,
-        sched_period_ms=2000):
+def get_lastest_exec_time(model):
+    pp_ms =  model._time_dict['PreProcess'][-1]
+    sched_ms =  model._time_dict['Sched'][-1]
+    preprocess_ms = pp_ms + sched_ms
+    vfe_ms = model._time_dict['VFE'][-1]
+    bb3d_ms = model._time_dict['Backbone3D'][-1]
+    dense_ops_ms = float(model._time_dict['DenseOps'][-1])
+    genbox_ms =  model._time_dict['CenterHead-GenBox'][-1]
+    postp_ms =  model._time_dict['PostProcess'][-1]
+    postprocess_ms = postp_ms + genbox_ms
+
+    return np.array([preprocess_ms, vfe_ms, bb3d_ms, dense_ops_ms, postprocess_ms])
+
+def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulate_exec_time=False):
     print('***********************')
     print(f'***RESOLUTION INDEX {resolution_idx}**')
     print('***********************')
@@ -103,16 +116,9 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     # sample_tokens = []
 
     model.calibrate()
-    do_res_sched = (resolution_idx == -1)
-    model.res_idx = 0 if do_res_sched else resolution_idx
-
-    if do_res_sched:
-        trt_path = f"./deploy_files/trt_engines/pmode_0000/resolution_pred_mdl.engine"
-        print('Trying to load trt engine at', trt_path)
-        res_pred_trt = TRTWrapper(trt_path, ['objcount_and_egovel'], ['res_scores'])
-        res_pred_out_buf = None
 
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
+    time_pred_diffs = []
 
     model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
@@ -136,15 +142,18 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             # Predict the execution time as if the DNN were to be executed on target platform
             batch_dict = model.latest_batch_dict
+            xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
             if simulate_exec_time:
                 num_points = batch_dict['points'].size(0)
                 num_voxels = np.array([batch_dict['bb3d_num_voxels']])
-                xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
                 last_exec_time_ms = model.calibrators[model.res_idx].pred_exec_time_ms(
-                   num_points, num_voxels, xlen)
+                   num_points, num_voxels, xlen, consider_prep_time=True)
             else:
                 last_exec_time_ms = model.last_elapsed_time_musec * 1e-3
 
+            predicted = model.calibrators[model.res_idx].last_pred
+            orig = get_lastest_exec_time(model)
+            time_pred_diffs.append(predicted - orig)
 
             sample_tkn = batch_dict['metadata'][0]['token']
             if lbd is not None and not batch_dict['scene_reset']:
@@ -164,6 +173,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                 # the sampled_dets can be overwritten, which is okay
                 sim_cur_time_ms += last_exec_time_ms
                 num_to_forecast = 500 // data_period_ms
+                #NOTE the inds here are calculated without considering forecasting overhead
+                # which is not a big deal for now
                 future_sample_inds = [(sim_cur_time_ms+(i*data_period_ms))//data_period_ms \
                         for i in range(1,num_to_forecast+1)]
                 future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
@@ -189,20 +200,6 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             exec_times_ms.append((sample_tkn, last_exec_time_ms))
 
-            if do_res_sched and sim_cur_time_ms >= target_sched_time_ms:
-                lbl_dist = torch.bincount(pred_dicts[0]['pred_labels'] - 1, minlength=10).float() / 100.0
-                inp_tensor = torch.tensor(lbl_dist.tolist() + \
-                        [np.linalg.norm(egovel).item()/15.0], dtype=torch.float).unsqueeze(0)
-                inp_tensor[torch.isnan(inp_tensor)] = 0.
-                res_pred_out_buf = res_pred_trt({'objcount_and_egovel': inp_tensor.cuda()},
-                    res_pred_out_buf) 
-                res_scores = res_pred_out_buf['res_scores'].cpu()
-
-                _, chosen_res = torch.max(res_scores, 1)
-                model.res_idx = chosen_res.item()
-
-                #NOTE I need to consider the sched time as well and add to sim cur time ms
-                target_sched_time_ms += sched_period_ms
             resolution_stats[model.res_idx] += 1
 
             if streaming and last_exec_time_ms > data_period_ms:
@@ -225,8 +222,15 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             cur_sample_idx = next_sample_idx
             bar(cur_sample_idx / num_samples)
 
-    if do_res_sched:
-        model.res_idx = -1
+    # ignore preprocessing time prediction since it happens prior to scheduling
+    tpred_diffs = np.array(time_pred_diffs)[:, 1:]
+
+    e2e_diffs = tpred_diffs.sum(1)
+    print('E2E execution time prediction error:')
+    get_stats(e2e_diffs)
+    print('Other time prediction errors:')
+    for i in range(tpred_diffs.shape[1]):
+        get_stats(tpred_diffs[:, i])
 
     exec_times_musec = {st:(et*1000) for st, et in exec_times_ms}
 
@@ -238,7 +242,6 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
 def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None):
-    os.environ["RESOLUTION_IDX"] = str(resolution_idx)
 
     det_annos = []
     num_ds_elems = len(dataset)
@@ -319,12 +322,12 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/pillarnet030.yaml"
         ckpt_file = "../models/pillarnet030_epoch20.pth"
     elif chosen_method == 'VALO': # VALO Pillarnet 01
-        cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
-        ckpt_file = "../models/cbgs_pillar01_res2d_centerpoint_nds_6585.pth"
+        cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar015_res2d_centerpoint_valo.yaml"
+        ckpt_file = "../models/pillarnet015_epoch20.pth"
     elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        #ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
-        ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
+        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch25.pth"
+        #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     else:
         print('Unknown method, exiting.')
@@ -334,10 +337,8 @@ if __name__ == "__main__":
     skip_eval = False
 
     results = []
-    current_date_time = datetime.datetime.today()
-    dt_string = current_date_time.strftime('%d-%m-%y-%I-%M-%p')
-    with open(f"evalres_{chosen_method}_{dt_string}.txt", "w") as fw:
-        for resolution_idx in range(num_res):
+    with open(f"evalres_{chosen_method}_{int(time.time())}.txt", "w") as fw:
+        for resolution_idx in range(1): #num_res):
             # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
             t1 = time.time()
             model = build_model(cfg_file, ckpt_file, default_deadline_sec)

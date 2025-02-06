@@ -96,8 +96,9 @@ class DenseConvsPipeline(torch.nn.Module):
 
         return outputs
 
+#NOTE I dont have to calculate the exec time for the smallest model I guess
 class MultiPillarCounter(torch.nn.Module):
-    # Pass the args in cpu , pillar sizes should be Nx2, pc_range should be [6]
+    # Pass the args in cpu , pillar sizes should be [N,2], pc_range should be [6]
     def __init__(self, backbone_3d, pillar_sizes : torch.Tensor, pc_range : torch.Tensor):
         super().__init__()
         self.backbone_3d = backbone_3d
@@ -107,24 +108,31 @@ class MultiPillarCounter(torch.nn.Module):
         for i, ps in enumerate(pillar_sizes):
             self.grid_sizes[i] = torch.round(xy_length / ps)
 
+        self.pillar_sizes_cpu = pillar_sizes
         self.pillar_sizes = pillar_sizes.cuda()
         self.pc_range_min = pc_range[[0,1]].cuda()
+        self.pc_range_minx_cpu = pc_range[0]
 
-    #TODO try using most recent point cloud only, this can speed up a lot
     def forward(self, points_xy : torch.Tensor) -> torch.Tensor:
         # store pillar_counts and minx and maxx
-        mpc_out = torch.empty((self.backbone_3d.num_layer_groups + 2, self.pillar_sizes.size(0)), device=points_xy.device)
+        mpc_out = torch.empty((self.backbone_3d.num_layer_groups, self.pillar_sizes.size(0)), \
+                device=points_xy.device)
         for i, (ps, grid_sz) in enumerate(zip(self.pillar_sizes, self.grid_sizes)):
             point_coords = torch.floor((points_xy - self.pc_range_min) / ps).long()
             grid = torch.zeros((1, 1, grid_sz[0], grid_sz[1]), device=points_xy.device)
             grid[:, :, point_coords[:, 0], point_coords[:, 1]] = 1.
-            mpc_out[:self.backbone_3d.num_layer_groups, i] = self.backbone_3d.sparse_convs_num_pillars_calc(grid)
-
-            xmin, xmax = torch.aminmax(point_coords[:, 0]) # converting to int might make it faster?
-            mpc_out[-2, i] = xmin
-            mpc_out[-1, i] = xmax
+            mpc_out[:self.backbone_3d.num_layer_groups, i] = \
+                    self.backbone_3d.sparse_convs_num_pillars_calc(grid)
 
         return mpc_out
+
+    def get_minmax(self, points_x):
+        xminmax_out = torch.empty((2, self.pillar_sizes_cpu.size(0)), dtype=torch.long)
+        xmin, xmax = torch.aminmax(points_x)
+        xminmax = torch.stack((xmin, xmax)).cpu()
+        for i, ps in enumerate(self.pillar_sizes_cpu):
+            xminmax_out[:, i] = torch.floor((xminmax - self.pc_range_minx_cpu) / ps[0]).long()
+        return xminmax_out
 
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -225,46 +233,50 @@ class PillarNetVALOR(Detector3DTemplate):
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
-
             self.measure_time_start('Sched')
             batch_dict = self.vfe.range_filter(batch_dict, self.calib_pc_range \
                     if self.is_calibrating() else None)
 
-            points_xy = batch_dict['points'][:, 1:3].contiguous()
+            pts = batch_dict['points']
+            points_xy = pts[:, 1:3].contiguous()
+            mask = (pts[:, -1] == 0.)
+            cur_points_xy = points_xy[mask].contiguous()
             if not self.mpc_optimized:
                 self.optimize_mpc(points_xy)
             if self.mpc_trt is None:
-                mpc_out = self.mpc(points_xy).cpu().int()
+                mpc_out = self.mpc(points_xy, cur_points_xy).cpu().int()
             else:
                 self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
                 mpc_out = self.mpc_outp['counts'].cpu().int()
+            minmax_out = self.mpc.get_minmax(points_xy[:, 0].contiguous())
 
             # Schedule by calculating the exec time of all resolutions
-            dsf =  self.backbone_3d.sparse_outp_downscale_factor()
-            predicted_exec_times_ms = np.empty(self.num_res)
-            num_points = batch_dict['points'].size(0)
-            for i in range(self.num_res):
-                x_minmax = mpc_out[-2:, i]
-                num_voxels = mpc_out[:-2, i]
-                xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
-                predicted_exec_times_ms[i] = self.calibrators[i].pred_exec_time_ms(
-                   num_points, num_voxels, xmax - xmin)
+            self.measure_time_end('Sched')
+            self.measure_time_start('VFE')
 
-            deadline_ms = 150.0
-            time_passed = batch_dict['start_time_sec'] - time.time()
-            time_left_ms = deadline_ms - (time_passed * 1e3)
+            # the following scheduling part of the code is considered part of VFE
+            # to make things easier
+            deadline_ms = batch_dict['deadline_sec'] * 1e3
+            dsf =  self.backbone_3d.sparse_outp_downscale_factor()
+            num_points = batch_dict['points'].size(0)
             if not self.is_calibrating():
-                self.res_idx = (predicted_exec_times_ms < time_left_ms).tolist().index(True)
-                #print(f'res {self.res_idx}, predicted time:', predicted_exec_times_ms[self.res_idx]) 
+                self.res_idx = self.num_res - 1
+            for i in range(self.num_res):
+                x_minmax = minmax_out[:, i]
+                num_voxels = mpc_out[:, i]
+                xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
+                predicted_exec_time_ms = self.calibrators[i].pred_exec_time_ms(
+                   num_points, num_voxels, xmax - xmin)
+                if not self.is_calibrating() and (predicted_exec_time_ms < deadline_ms):
+                    self.res_idx = i
+                    break
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
 
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
             set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
-            self.measure_time_end('Sched')
 
-            self.measure_time_start('VFE')
             points = batch_dict['points']
             batch_dict['pillar_coords'], batch_dict['pillar_features'] = self.vfe(points)
             self.measure_time_end('VFE')
@@ -281,7 +293,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
-            x_minmax = mpc_out[-2:, self.res_idx]
+            x_minmax = minmax_out[:, self.res_idx]
             x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
                     x_minmax[0], x_minmax[1], x_conv4)
             batch_dict['tensor_slice_inds'] = (x_min, x_max)
@@ -308,7 +320,6 @@ class PillarNetVALOR(Detector3DTemplate):
                     topk_outputs, forecasted_dets)
 
             self.measure_time_end('CenterHead-GenBox')
-
             return batch_dict
 
     def optimize(self, fwd_data):
