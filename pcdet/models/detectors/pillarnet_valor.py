@@ -118,8 +118,8 @@ class MultiPillarCounter(torch.nn.Module):
         mpc_out = torch.empty((self.backbone_3d.num_layer_groups, self.pillar_sizes.size(0)), \
                 device=points_xy.device)
         for i, (ps, grid_sz) in enumerate(zip(self.pillar_sizes, self.grid_sizes)):
-            point_coords = torch.floor((points_xy - self.pc_range_min) / ps).long()
             grid = torch.zeros((1, 1, grid_sz[0], grid_sz[1]), device=points_xy.device)
+            point_coords = torch.floor((points_xy - self.pc_range_min) / ps).long()
             grid[:, :, point_coords[:, 0], point_coords[:, 1]] = 1.
             mpc_out[:self.backbone_3d.num_layer_groups, i] = \
                     self.backbone_3d.sparse_convs_num_pillars_calc(grid)
@@ -240,16 +240,16 @@ class PillarNetVALOR(Detector3DTemplate):
             pts = batch_dict['points']
             points_xy = pts[:, 1:3].contiguous()
             mask = (pts[:, -1] == 0.)
-            cur_points_xy = points_xy[mask].contiguous()
+            cur_points_x = points_xy[mask, 0].contiguous()
             if not self.mpc_optimized:
                 self.optimize_mpc(points_xy)
             if self.mpc_trt is None:
-                mpc_out = self.mpc(points_xy, cur_points_xy).cpu().int()
+                mpc_out = self.mpc(points_xy)
             else:
                 self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
-                mpc_out = self.mpc_outp['counts'].cpu().int()
-            minmax_out = self.mpc.get_minmax(points_xy[:, 0].contiguous())
-
+                mpc_out = self.mpc_outp['counts']
+            minmax_out = self.mpc.get_minmax(cur_points_x)
+            mpc_out = mpc_out.cpu().int()
             # Schedule by calculating the exec time of all resolutions
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
@@ -398,8 +398,10 @@ class PillarNetVALOR(Detector3DTemplate):
         self.optimization_done[self.res_idx] = True
 
     def optimize_mpc(self, points_xy):
-        #TODO, set pillar sizes programmatically
-        pillar_sizes = torch.tensor([[0.1, 0.1], [0.15, 0.15], [0.2, 0.2], [0.24, 0.24], [0.30, 0.30]])
+        #NOTE, this seems to work but I am not absolute
+        t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
+        pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
+        print('pillar sizes:', pillar_sizes)
         self.mpc = MultiPillarCounter(self.backbone_3d, pillar_sizes, self.calib_pc_range.cpu())
         self.mpc.eval()
 
