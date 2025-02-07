@@ -237,41 +237,50 @@ class PillarNetVALOR(Detector3DTemplate):
             batch_dict = self.vfe.range_filter(batch_dict, self.calib_pc_range \
                     if self.is_calibrating() else None)
 
+            fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
+            if self.is_calibrating():
+                fixed_res_idx = -1 # enforce to calculate wcet
             pts = batch_dict['points']
-            points_xy = pts[:, 1:3].contiguous()
+            points_xy = pts[:, 1:3]
             mask = (pts[:, -1] == 0.)
             cur_points_x = points_xy[mask, 0].contiguous()
             if not self.mpc_optimized:
-                self.optimize_mpc(points_xy)
-            if self.mpc_trt is None:
-                mpc_out = self.mpc(points_xy)
-            else:
-                self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
-                mpc_out = self.mpc_outp['counts']
+                self.optimize_mpc(points_xy.contiguous())
             minmax_out = self.mpc.get_minmax(cur_points_x)
-            mpc_out = mpc_out.cpu().int()
+            if fixed_res_idx == -1:
+                points_xy = points_xy.contiguous()
+                if self.mpc_trt is None:
+                    mpc_out = self.mpc(points_xy)
+                else:
+                    self.mpc_outp = self.mpc_trt({'points_xy':points_xy}, self.mpc_outp)
+                    mpc_out = self.mpc_outp['counts']
+                mpc_out = mpc_out.cpu().int()
+            else:
+                self.res_idx = fixed_res_idx
+
             # Schedule by calculating the exec time of all resolutions
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
 
-            # the following scheduling part of the code is considered part of VFE
-            # to make things easier
-            start_time = batch_dict['start_time_sec']
-            deadline_ms = batch_dict['deadline_sec'] * 1e3
-            dsf =  self.backbone_3d.sparse_outp_downscale_factor()
-            num_points = batch_dict['points'].size(0)
-            if not self.is_calibrating():
-                self.res_idx = self.num_res - 1
-            for i in range(self.num_res):
-                x_minmax = minmax_out[:, i]
-                num_voxels = mpc_out[:, i]
-                xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
-                predicted_exec_time_ms = self.calibrators[i].pred_exec_time_ms(
-                   num_points, num_voxels, xmax - xmin)
-                time_passed_ms = (time.time() - start_time) * 1e3
-                if not self.is_calibrating() and (predicted_exec_time_ms < (deadline_ms - time_passed_ms)):
-                    self.res_idx = i
-                    break
+            if fixed_res_idx == -1:
+                # the following scheduling part of the code is considered part of VFE
+                # to make things easier
+                start_time = batch_dict['start_time_sec']
+                deadline_ms = batch_dict['deadline_sec'] * 1e3
+                dsf =  self.backbone_3d.sparse_outp_downscale_factor()
+                num_points = batch_dict['points'].size(0)
+                if not self.is_calibrating():
+                    self.res_idx = self.num_res - 1
+                for i in range(self.num_res):
+                    x_minmax = minmax_out[:, i]
+                    num_voxels = mpc_out[:, i]
+                    xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
+                    predicted_exec_time_ms = self.calibrators[i].pred_exec_time_ms(
+                       num_points, num_voxels, xmax - xmin)
+                    time_passed_ms = (time.time() - start_time) * 1e3
+                    if not self.is_calibrating() and (predicted_exec_time_ms < (deadline_ms - time_passed_ms)):
+                        self.res_idx = i
+                        break
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
