@@ -224,6 +224,7 @@ class Detector3DTemplate(nn.Module):
         self.calibrating = 0
         self.prev_scene_token = ''
         self.data_period_ms = int(os.getenv('DATASET_PERIOD', 500))
+        self.sim_cur_time_ms = 0.
 
         # Poses include [cst(3) csr(4) ept(3) epr(4)]
         self.pc_range = torch.tensor(self.dataset.point_cloud_range)
@@ -244,7 +245,6 @@ class Detector3DTemplate(nn.Module):
             self.score_thresh = 0.1
         else:
             self.score_thresh = dh_cfg.POST_PROCESSING.SCORE_THRESH
-
         #num_det_heads : int = 1,
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
 

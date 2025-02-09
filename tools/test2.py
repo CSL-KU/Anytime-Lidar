@@ -121,6 +121,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     time_pred_diffs = []
 
     model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
+    total_executed_time_ms = 0.
+
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
         while cur_sample_idx < num_samples:
             # Check if we are in a new scene, reset if we are
@@ -202,14 +204,19 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             resolution_stats[model.res_idx] += 1
 
+            sched_algo = 'closer'
+            #sched_algo = 'dynamic'
             if streaming and last_exec_time_ms > data_period_ms:
-                #Dynamic scheduling
                 cur_tail = calc_tail_ms(sim_cur_time_ms, data_period_ms)
-                pred_finish_time = sim_cur_time_ms + last_exec_time_ms
-                next_tail = calc_tail_ms(pred_finish_time, data_period_ms)
-                if next_tail < cur_tail:
-                    # Sleep, extra 1 ms is added to make sure sleep time is enough
-                    sim_cur_time_ms += data_period_ms - cur_tail + 1
+                if sched_algo == 'closer':
+                    if cur_tail > data_period_ms / 2:
+                        sim_cur_time_ms += data_period_ms - cur_tail + 0.1
+                elif sched_algo == 'dynamic':
+                    #Dynamic scheduling
+                    pred_finish_time = sim_cur_time_ms + last_exec_time_ms
+                    next_tail = calc_tail_ms(pred_finish_time, data_period_ms)
+                    if next_tail < cur_tail:
+                        sim_cur_time_ms += data_period_ms - cur_tail + 0.1
 
                 next_sample_idx = int(sim_cur_time_ms / data_period_ms)
             else:
@@ -218,7 +225,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             if cur_sample_idx == next_sample_idx:
                 print(f'ERROR, trying to process already processed sample {next_sample_idx}')
-
+            model.sim_cur_time_ms = sim_cur_time_ms
             cur_sample_idx = next_sample_idx
             bar(cur_sample_idx / num_samples)
 
@@ -232,6 +239,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     for i in range(tpred_diffs.shape[1]):
         get_stats(tpred_diffs[:, i])
 
+    util = sum([t[1] for t in exec_times_ms]) / (num_samples*data_period_ms)
+    print(f'Utilization: %{util:.2f}')
     exec_times_musec = {st:(et*1000) for st, et in exec_times_ms}
 
     #with open(f'tmp_results/detdata_res{model.res_idx}.pkl', 'wb') as f:
@@ -328,6 +337,10 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
         ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch25.pth"
         #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
+        num_res = 5
+    elif chosen_method == 'VALOR2': # VALOR Pillarnet LS 5res
+        cfg_file  = "./cfgs/nuscenes_models/pillar01_01125_01285_016_0225_valor.yaml"
+        ckpt_file = "../models/pillar01_01125_01285_016_0225_valor_e30.pth"
         num_res = 5
     else:
         print('Unknown method, exiting.')

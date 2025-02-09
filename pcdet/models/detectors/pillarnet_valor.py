@@ -188,12 +188,12 @@ class PillarNetVALOR(Detector3DTemplate):
         #            self.dense_head.cls_id_to_det_head_idx_map))
 
         self.dense_head_scrpt = None
-        self.calibrators = [ValorCalibrator(self) for _ in range(self.num_res)]
+        self.calibrators = [ValorCalibrator(self, ri) for ri in range(self.num_res)]
         self.calib_pc_range = torch.tensor(self.dataset.point_cloud_range).cuda()
         self.mpc_optimized = False
         self.mpc_trt = None
         self.mpc_outp = None
-        self.inp_tensor_widths = [0] * self.num_res
+        self.inp_tensor_sizes = [np.ones(4, dtype=int)] * self.num_res
 
     def forward(self, batch_dict):
         if self.training:
@@ -271,16 +271,25 @@ class PillarNetVALOR(Detector3DTemplate):
                 num_points = batch_dict['points'].size(0)
                 if not self.is_calibrating():
                     self.res_idx = self.num_res - 1
+                exec_times = np.empty(self.num_res)
+                time_passed_ms = (time.time() - start_time) * 1e3
                 for i in range(self.num_res):
                     x_minmax = minmax_out[:, i]
                     num_voxels = mpc_out[:, i]
-                    xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_widths[i])
+                    xmin, xmax = get_slice_range(dsf, x_minmax[0], x_minmax[1], self.inp_tensor_sizes[i][3])
                     predicted_exec_time_ms = self.calibrators[i].pred_exec_time_ms(
                        num_points, num_voxels, xmax - xmin)
-                    time_passed_ms = (time.time() - start_time) * 1e3
-                    if not self.is_calibrating() and (predicted_exec_time_ms < (deadline_ms - time_passed_ms)):
+                    exec_times[i] = time_passed_ms + predicted_exec_time_ms
+                    if not self.is_calibrating() and (predicted_exec_time_ms < \
+                            (deadline_ms - time_passed_ms)):
                         self.res_idx = i
                         break
+
+                #if not self.is_calibrating():
+                #    exec_times += self.sim_cur_time_ms
+                #    meets_deadline = (exec_times < deadline_ms).astype(int)
+                #    self.res_idx = ((int(self.sim_cur_time_ms + exec_times) % int(self.data_period_ms)) * \
+                #            meets_deadline).argsort()[-1]
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -305,18 +314,10 @@ class PillarNetVALOR(Detector3DTemplate):
 
             self.measure_time_start('DenseOps')
             x_minmax = minmax_out[:, self.res_idx]
-            x_conv4, x_min, x_max= slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
+            x_conv4, x_min, x_max = slice_tensor(self.backbone_3d.sparse_outp_downscale_factor(),
                     x_minmax[0], x_minmax[1], x_conv4)
             batch_dict['tensor_slice_inds'] = (x_min, x_max)
-
-            if self.fused_convs_trt[self.res_idx] is not None:
-                self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
-                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
-                pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
-            else:
-                outputs = self.opt_dense_convs(x_conv4)
-                out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
-                pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
+            pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
             self.measure_time_end('DenseOps')
 
             self.measure_time_start('CenterHead-GenBox')
@@ -333,10 +334,23 @@ class PillarNetVALOR(Detector3DTemplate):
             self.measure_time_end('CenterHead-GenBox')
             return batch_dict
 
+    # takes already sliced input
+    def forward_eval_dense(self, x_conv4):
+        if self.fused_convs_trt[self.res_idx] is not None:
+            self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
+                    {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
+            pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
+        else:
+            outputs = self.opt_dense_convs(x_conv4)
+            out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
+            pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
+
+        return pred_dicts, topk_outputs
+
     def optimize(self, fwd_data):
         optimize_start = time.time()
 
-        self.inp_tensor_widths[self.res_idx] = fwd_data.size(3)
+        self.inp_tensor_sizes[self.res_idx] = fwd_data.shape
 
         if self.dense_head_scrpt is None:
             self.dense_head.instancenorm_mode()

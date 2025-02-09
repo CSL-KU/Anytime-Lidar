@@ -39,11 +39,11 @@ def expand_dim_if_one(arr):
     return arr
 
 class ValorCalibrator():
-    def __init__(self, model):
+    def __init__(self, model, res_idx):
         self.model = model
         self.dataset = model.dataset
 
-        self.res_idx = model.res_idx
+        self.res_idx = res_idx
         self.resdiv = model.resolution_dividers[self.res_idx]
 
         self.time_reg_degree = 2 # if 2, quadratic func
@@ -286,7 +286,7 @@ class ValorCalibrator():
 
             dense_ops_ms = float(self.model._time_dict['DenseOps'][-1])
             x_min, x_max = lbd['tensor_slice_inds']
-            tensor_width = int(x_max - x_min)
+            tensor_width = str(int(x_max - x_min))
             if tensor_width in dense_ops_ms_dict:
                 dense_ops_ms_dict[tensor_width].append(dense_ops_ms)
             else:
@@ -301,6 +301,28 @@ class ValorCalibrator():
             sample_idx += 1
             if sample_idx % 100 == 0:
                 gc.collect()
+
+
+        # Calculate DenseOps times that were not calculated
+        dense_ops_inp_sz = self.model.inp_tensor_sizes[self.res_idx]
+        dummy_inp = torch.rand(dense_ops_inp_sz).cuda()
+        max_width = dense_ops_inp_sz[3]
+        denom = 4
+        #print(sorted(list(dense_ops_ms_dict.keys())))
+        for target_width in range(max(16,max_width//4), max_width+1, denom):
+            if str(target_width) not in dense_ops_ms_dict:
+                dense_ops_ms_dict[str(target_width)] = []
+                print('Calibrating dense ops for missing slice width:', target_width)
+                torch.cuda.synchronize()
+                for i in range(10):
+                    cevents = [torch.cuda.Event(enable_timing=True) for e in range(2)]
+                    cevents[0].record()
+                    dummy_inp_slice = dummy_inp[..., :target_width].contiguous()
+                    self.model.forward_eval_dense(dummy_inp_slice)
+                    cevents[1].record()
+                    torch.cuda.synchronize()
+                    dense_ops_ms_dict[str(target_width)].append(cevents[0].elapsed_time(cevents[1]))
+
         self.model._default_deadline_sec = deadline_backup
         gc.enable()
 
