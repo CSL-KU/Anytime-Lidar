@@ -39,7 +39,7 @@ def expand_dim_if_one(arr):
     return arr
 
 class ValorCalibrator():
-    def __init__(self, model, res_idx):
+    def __init__(self, model, res_idx, num_slices):
         self.model = model
         self.dataset = model.dataset
 
@@ -70,19 +70,16 @@ class ValorCalibrator():
                 self.bb3d_time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
 
         # key is wsize, value is ms
-        self.dense_ops_times_ms = np.arange(4,512,4).repeat(2).reshape(-1, 2)
+        self.dense_inp_slice_sz = self.model.dense_inp_slice_sz
+        self.num_slices = num_slices
+        self.dense_ops_times_ms = np.zeros(num_slices).astype(float)
         self.postprocess_wcet_ms = .0
         self.calib_data_dict = None
         self.last_pred = np.zeros(5)
 
     # NOTE batch size has to be 1 !
-    # Call like this:
-    # pred_time = module.calibrators[module.res_idx].pred_exec_time_ms(
-    #        batch_dict['points'].size(0),
-    #        np.array([batch_dict['bb3d_num_voxels']]),
-    #        batch_dict['x_lims'][1] - batch_dict['x_lims'][0])
-    def pred_exec_time_ms(self, num_points : int, num_voxels : np.ndarray, dense_wsize : int,
-                          consider_prep_time=False):
+    def pred_exec_time_ms(self, num_points : int, num_voxels : np.ndarray, num_slices: int,
+                          consider_prep_time=False) -> float:
         vfe_time_pred = self.quadratic_time_pred(num_points, self.vfe_time_reg_coeffs,
                 self.vfe_time_reg_intercepts, self.num_points_normalizer)
 
@@ -93,12 +90,48 @@ class ValorCalibrator():
             if not self.treat_bb3d_as_single_l_group:
                 bb3d_time_pred = bb3d_time_pred.sum()
 
-        idx = find_index_or_next_largest(self.dense_ops_times_ms[:, 0], dense_wsize)
-        dense_ops_time_pred = self.dense_ops_times_ms[idx, 1]
+        dense_ops_time_pred = self.dense_ops_times_ms[num_slices - 1]
 
         self.last_pred = np.array([self.preprocess_wcet_ms, vfe_time_pred[0], bb3d_time_pred,
                                    dense_ops_time_pred, self.postprocess_wcet_ms])
         return np.sum(self.last_pred if consider_prep_time else self.last_pred[1:]).item()
+
+    def find_config_to_meet_dl(self,
+                            num_points : int,
+                            pillar_counts : np.ndarray,
+                            slc_bgn_idx: int,
+                            slc_end_idx: int,
+                            deadline_ms: float,
+                            ): # -> Tuple[float, int, int]:
+        vfe_time_pred = self.quadratic_time_pred(num_points, self.vfe_time_reg_coeffs,
+                self.vfe_time_reg_intercepts, self.num_points_normalizer)
+
+        assert self.bb3d_exist
+
+        pillar_counts_cs = np.cumsum(pillar_counts, 1).T
+        bb3d_time_preds = self.quadratic_time_pred(pillar_counts_cs, self.bb3d_time_reg_coeffs,
+                self.bb3d_time_reg_intercepts, self.num_voxels_normalizer)
+        if not self.treat_bb3d_as_single_l_group:
+            bb3d_time_preds = bb3d_time_preds.sum(1)
+
+        num_chosen_slices = slc_end_idx - slc_bgn_idx + 1
+        time_pred = vfe_time_pred[0] + self.postprocess_wcet_ms
+        bb3d_t = bb3d_time_preds[slc_end_idx]
+        dense_t = self.dense_ops_times_ms[num_chosen_slices-1]
+        total_time_pred = time_pred + bb3d_t + dense_t
+
+        while total_time_pred > deadline_ms and num_chosen_slices > 3*self.num_slices//4:
+            slc_end_idx -= 1
+            num_chosen_slices -= 1
+            bb3d_t = bb3d_time_preds[slc_end_idx]
+            dense_t = self.dense_ops_times_ms[num_chosen_slices]
+            total_time_pred = time_pred + bb3d_t + dense_t
+
+        if total_time_pred < deadline_ms:
+            self.last_pred = np.array([self.preprocess_wcet_ms, vfe_time_pred[0], bb3d_t,
+                                   dense_t, self.postprocess_wcet_ms])
+
+        return (total_time_pred, slc_bgn_idx, slc_end_idx)
 
     # fit to quadratic function
     def fit_data(self, input_data, times_data, num_l_groups, normalizer):
@@ -206,13 +239,9 @@ class ValorCalibrator():
             plt.clf()
 
         self.dense_ops_times_dict = self.calib_data_dict['dense_ops_ms_dict']
-        dense_ops_times_tuples = []
-        for k,v in self.dense_ops_times_dict.items():
-            tmp  = np.percentile(v, 99)
-            dense_ops_times_tuples.append((float(k), tmp))
-        dense_ops_times_arr = np.array(dense_ops_times_tuples)
-        inds = np.argsort(dense_ops_times_arr[:, 0])
-        self.dense_ops_times_ms = dense_ops_times_arr[inds]
+        for sz, latency in self.dense_ops_times_dict.items():
+            latency99perc = np.percentile(latency, 99)
+            self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency99perc
 
         self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 99)
         if False:
@@ -286,7 +315,7 @@ class ValorCalibrator():
 
             dense_ops_ms = float(self.model._time_dict['DenseOps'][-1])
             x_min, x_max = lbd['tensor_slice_inds']
-            tensor_width = str(int(x_max - x_min))
+            tensor_width = str(int(x_max - x_min + 1) * self.dense_inp_slice_sz)
             if tensor_width in dense_ops_ms_dict:
                 dense_ops_ms_dict[tensor_width].append(dense_ops_ms)
             else:
@@ -307,9 +336,10 @@ class ValorCalibrator():
         dense_ops_inp_sz = self.model.inp_tensor_sizes[self.res_idx]
         dummy_inp = torch.rand(dense_ops_inp_sz).cuda()
         max_width = dense_ops_inp_sz[3]
-        denom = 4
         #print(sorted(list(dense_ops_ms_dict.keys())))
-        for target_width in range(max(16,max_width//4), max_width+1, denom):
+        slc_sz = self.dense_inp_slice_sz
+        min_inp_width = 16
+        for target_width in range(min_inp_width, max_width+1, slc_sz):
             if str(target_width) not in dense_ops_ms_dict:
                 dense_ops_ms_dict[str(target_width)] = []
                 print('Calibrating dense ops for missing slice width:', target_width)

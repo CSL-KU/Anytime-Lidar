@@ -233,7 +233,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     tpred_diffs = np.array(time_pred_diffs)[:, 1:]
 
     e2e_diffs = tpred_diffs.sum(1)
-    print('E2E execution time prediction error:')
+    print('E2E execution time prediction error is below.')
+    print('If number is positive, then finished earlier then predicted.')
     get_stats(e2e_diffs)
     print('Other time prediction errors:')
     for i in range(tpred_diffs.shape[1]):

@@ -205,6 +205,21 @@ class PillarBackBone8x(nn.Module):
 
         return batch_dict
 
+#static method
+def PillarRes18BackBone8x_pillar_calc(bev_img : torch.Tensor, num_slices: int) -> torch.Tensor:
+    x1 = torch.nn.functional.max_pool2d(bev_img, kernel_size=3, stride=2, padding=1)
+    x2 = torch.nn.functional.max_pool2d(x1, kernel_size=3, stride=2, padding=1)
+    x3 = torch.nn.functional.max_pool2d(x2, kernel_size=3, stride=2, padding=1)
+    bi_sz = bev_img.shape
+    p0 = bev_img.view(bi_sz[0], bi_sz[1], bi_sz[2], num_slices, bi_sz[3]//num_slices).sum(dim=(0,1,2,4))
+    x1_sz = x1.shape
+    p1 = x1.view(x1_sz[0], x1_sz[1], x1_sz[2], num_slices, x1_sz[3]//num_slices).sum(dim=(0,1,2,4))
+    x2_sz = x2.shape
+    p2 = x2.view(x2_sz[0], x2_sz[1], x2_sz[2], num_slices, x2_sz[3]//num_slices).sum(dim=(0,1,2,4))
+    x3_sz = x3.shape
+    p3 = x3.view(x3_sz[0], x3_sz[1], x3_sz[2], num_slices, x3_sz[3]//num_slices).sum(dim=(0,1,2,4))
+    return torch.stack((p0, p1, p2, p3))
+
 class PillarRes18BackBone8x(nn.Module):
     def __init__(self, model_cfg, input_channels, grid_size, **kwargs):
         super().__init__()
