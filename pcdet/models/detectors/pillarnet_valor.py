@@ -14,6 +14,7 @@ import platform
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
 from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc
 from typing import Dict, List, Tuple, Optional, Final
+from .forecaster import split_dets
 
 import ctypes
 pth = os.environ['PCDET_PATH']
@@ -203,6 +204,7 @@ class PillarNetVALOR(Detector3DTemplate):
         mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
         mpc.eval()
         self.mpc_script = torch.jit.script(mpc)
+        self.shrink_flip = False
 
         self.dense_head_scrpt = None
         #self.mpc_optimized = False
@@ -275,14 +277,16 @@ class PillarNetVALOR(Detector3DTemplate):
                     pillar_counts, nz_slice_inds = self.mpc_script(points_xy, i)
                     time_passed_ms = (time.time() - start_time) * 1e3
                     time_left = deadline_ms - time_passed_ms
-                    xmin, xmax = nz_slice_inds[0,0], nz_slice_inds[-1, 0]
+                    xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
                     x_minmax[i, 0] = xmin
                     x_minmax[i, 1] = xmax
+
                     pred_latency, new_xmin, new_xmax = self.calibrators[i].find_config_to_meet_dl(num_points,
                             pillar_counts.numpy(),
                             xmin.item(),
                             xmax.item(),
-                            time_left)
+                            time_left,
+                            self.shrink_flip)
                             # set a shrinking limit
 
                     if not self.is_calibrating() and pred_latency < time_left:
@@ -306,6 +310,7 @@ class PillarNetVALOR(Detector3DTemplate):
             set_bn_resolution(self.res_aware_batch_norms, self.res_idx)
 
             if shrink:
+                self.shrink_flip = not self.shrink_flip
                 pc_filter_lims = self.mpc_script.slice_inds_to_point_cloud_range(self.res_idx, xmin, xmax)
                 points_x = points_xy[:, 0]
                 mask = (points_x >= pc_filter_lims[0]) & (points_x <= pc_filter_lims[1])
@@ -330,25 +335,46 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
-            lim1 = xmin*self.dense_inp_slice_sz
-            lim2 = (xmax+1)*self.dense_inp_slice_sz
-            x_conv4 = x_conv4[..., lim1:lim2].contiguous()
+            if fixed_res_idx == -1:
+                lim1 = xmin*self.dense_inp_slice_sz
+                lim2 = (xmax+1)*self.dense_inp_slice_sz
+                x_conv4 = x_conv4[..., lim1:lim2].contiguous()
             batch_dict['tensor_slice_inds'] = (xmin, xmax)
             pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
             self.measure_time_end('DenseOps')
 
             self.measure_time_start('CenterHead-GenBox')
-
-            for i, topk_out in enumerate(topk_outputs):
-                topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
+            if fixed_res_idx == -1:
+                for i, topk_out in enumerate(topk_outputs):
+                    topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
 
             forecasted_dets = None
+            if self.enable_forecasting:
+                forecasted_dets = self.sampled_dets[self.dataset_indexes[0]]
+                if forecasted_dets is not None:
+                    # filter those which were forecasted already
+                    forecasted_pd = forecasted_dets[0]
+                    ps = forecasted_pd['pred_scores']
+                    mask = (ps >= self.score_thresh)
+                    for k in ('pred_boxes', 'pred_labels'):
+                        forecasted_pd[k] = forecasted_pd[k][mask]
+                    # Deprioritize the forecasted
+                    forecasted_pd['pred_scores'] = torch.full(forecasted_pd['pred_labels'].shape,
+                            self.score_thresh * 0.9, dtype=ps.dtype)
+                    # Split
+                    forecasted_dets = split_dets(
+                            self.dense_head_scrpt.cls_id_to_det_head_idx_map,
+                            self.dense_head_scrpt.num_det_heads,
+                            forecasted_pd['pred_boxes'],
+                            forecasted_pd['pred_scores'],
+                            forecasted_pd['pred_labels'] - 1,
+                            False) # moves results to gpu if true
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
-
             self.measure_time_end('CenterHead-GenBox')
+
             return batch_dict
 
     # takes already sliced input
@@ -546,4 +572,5 @@ class PillarNetVALOR(Detector3DTemplate):
 
         self.res_idx = cur_res_idx
         #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
+        self.sim_cur_time_ms = 0.
         return None

@@ -102,28 +102,34 @@ class ValorCalibrator():
                             slc_bgn_idx: int,
                             slc_end_idx: int,
                             deadline_ms: float,
-                            ): # -> Tuple[float, int, int]:
+                            flip:bool = False): # -> Tuple[float, int, int]:
         vfe_time_pred = self.quadratic_time_pred(num_points, self.vfe_time_reg_coeffs,
                 self.vfe_time_reg_intercepts, self.num_points_normalizer)
 
-        assert self.bb3d_exist
-
+        if flip:
+            pillar_counts = np.fliplr(pillar_counts)
         pillar_counts_cs = np.cumsum(pillar_counts, 1).T
         bb3d_time_preds = self.quadratic_time_pred(pillar_counts_cs, self.bb3d_time_reg_coeffs,
                 self.bb3d_time_reg_intercepts, self.num_voxels_normalizer)
         if not self.treat_bb3d_as_single_l_group:
             bb3d_time_preds = bb3d_time_preds.sum(1)
+        if flip:
+            bb3d_time_preds = np.flip(bb3d_time_preds)
 
         num_chosen_slices = slc_end_idx - slc_bgn_idx + 1
         time_pred = vfe_time_pred[0] + self.postprocess_wcet_ms
-        bb3d_t = bb3d_time_preds[slc_end_idx]
+        bb3d_t = bb3d_time_preds[slc_bgn_idx if flip else slc_end_idx]
         dense_t = self.dense_ops_times_ms[num_chosen_slices-1]
         total_time_pred = time_pred + bb3d_t + dense_t
 
-        while total_time_pred > deadline_ms and num_chosen_slices > 3*self.num_slices//4:
-            slc_end_idx -= 1
+        while total_time_pred > deadline_ms and num_chosen_slices > 3 * self.num_slices // 4:
+            if flip:
+                slc_bgn_idx += 1
+                bb3d_t = bb3d_time_preds[slc_bgn_idx]
+            else:
+                slc_end_idx -= 1
+                bb3d_t = bb3d_time_preds[slc_end_idx]
             num_chosen_slices -= 1
-            bb3d_t = bb3d_time_preds[slc_end_idx]
             dense_t = self.dense_ops_times_ms[num_chosen_slices]
             total_time_pred = time_pred + bb3d_t + dense_t
 

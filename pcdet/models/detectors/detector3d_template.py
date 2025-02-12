@@ -19,6 +19,7 @@ from .. import backbones_2d, backbones_3d, dense_heads, roi_heads, load_data_to_
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
+from ...utils.res_pred_utils import get_2d_egovel
 
 from typing import Dict, Final
 
@@ -30,9 +31,20 @@ from typing import Dict, Final
 # inside the forward function. It should only override
 # the pre and post functions, or just let base class handle post processing.
 
+@torch.jit.script
+def move_bounding_boxes(bboxes, egovel, time_diffs_sec):
+    outp_shape = (time_diffs_sec.shape[0], bboxes.shape[0], bboxes.shape[1])
+    outp_bboxes = torch.empty(outp_shape, dtype=bboxes.dtype)
+    outp_bboxes[:, :, 2:] = bboxes[:, 2:]
+
+    for t in range(time_diffs_sec.shape[0]):
+        outp_bboxes[t, :, :2] = bboxes[:, :2] + (bboxes[:, 7:9] - egovel) * time_diffs_sec[t]
+
+    return outp_bboxes
+
 def pre_forward_hook(module, inp_args):
-    dataset_indexes = inp_args[0]
-    data_dicts = [module.dataset.getitem_pre(i) for i in dataset_indexes]
+    module.dataset_indexes = inp_args[0]
+    data_dicts = [module.dataset.getitem_pre(i) for i in module.dataset_indexes]
 
     latest_token = data_dicts[0]['metadata']['token']
 
@@ -85,17 +97,35 @@ def post_forward_hook(module, inp_args, outp_args):
     elif 'batch_cls_preds' in  batch_dict:
         for arg_arr in pp_args[:3]:
             arg_arr[0].cpu()
+
+    finish_time = time.time()
+    exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
+
+    forecast_time_ms = 500 # I can play with this to reduce overhead
+    module.sim_cur_time_ms += exec_time_ms
+    num_to_forecast = forecast_time_ms // module.data_period_ms
+    future_sample_inds = [(module.sim_cur_time_ms + (i*module.data_period_ms)) // module.data_period_ms \
+            for i in range(1,num_to_forecast+1)]
+    future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
+            if ind < len(module.dataset)]).int()
+
+    # the module.sampled_dets can be overwritten, which is okay
+    if module.enable_forecasting:
+        module.forecast(future_sample_inds, exec_time_ms, batch_dict)
+    else:
+        # Needed for streaming eval
+        for sample_ind_f in future_sample_inds.tolist():
+            module.sampled_dets[sample_ind_f] = batch_dict['final_box_dicts']
+
+    #torch.cuda.synchronize() # the .cpu() calls sync anyway
     module.measure_time_end('PostProcess')
-    #torch.cuda.synchronize() # the cpu calls syncs anyway
+    module.measure_time_end('End-to-end')
 
     if module.is_calibrating() and 'bb2d_time_events' in batch_dict:
         e = torch.cuda.Event(enable_timing=True)
         e.record()
         e_prev = batch_dict['bb2d_time_events'][1]
         batch_dict['detheadpost_time_events'] = [e_prev, e]
-
-    module.finish_time = time.time()
-    module.measure_time_end('End-to-end')
 
     if 'bb3d_layer_time_events' in batch_dict:
         events = batch_dict['bb3d_layer_time_events']
@@ -106,7 +136,7 @@ def post_forward_hook(module, inp_args, outp_args):
 
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
-    tdiff = round(module.finish_time - batch_dict['abs_deadline_sec'], 3)
+    tdiff = round(finish_time - batch_dict['abs_deadline_sec'], 3)
     module._eval_dict['deadline_diffs'].append(tdiff)
 
     dl_missed = (tdiff > 0)
@@ -137,6 +167,8 @@ def post_forward_hook(module, inp_args, outp_args):
             module.latest_valid_dets = None
     else:
         module.latest_valid_dets = pred_dicts
+
+    #module.sampled_dets[cur_sample_idx] = pred_dicts
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
@@ -247,6 +279,36 @@ class Detector3DTemplate(nn.Module):
             self.score_thresh = dh_cfg.POST_PROCESSING.SCORE_THRESH
         #num_det_heads : int = 1,
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
+        self.sampled_dets = [None] * len(self.dataset)
+
+    def forecast(self, future_sample_inds, last_exec_time_ms, batch_dict):
+        t1 = time.monotonic()
+        lbd = self.latest_batch_dict
+        if lbd is not None and not batch_dict['scene_reset']:
+            sample_tkn = batch_dict['metadata'][0]['token']
+            prev_sample_tkn = lbd['metadata'][0]['token']
+            egovel = get_2d_egovel(
+                    self.token_to_ts[prev_sample_tkn],
+                    self.token_to_pose[prev_sample_tkn],
+                    self.token_to_ts[sample_tkn],
+                    self.token_to_pose[sample_tkn])
+        else: # assume its zero
+            egovel = np.zeros(2)
+
+        pred_dicts = batch_dict['final_box_dicts']
+        time_diffs_sec = (future_sample_inds * self.data_period_ms - \
+                (self.sim_cur_time_ms - last_exec_time_ms)) * 1e-3
+        outp_bboxes_all = move_bounding_boxes(pred_dicts[0]['pred_boxes'], \
+                torch.from_numpy(egovel), time_diffs_sec)
+        for outp_bboxes, sample_ind_f in zip(outp_bboxes_all, future_sample_inds.tolist()):
+            forecasted_pd = {k : pred_dicts[0][k] for k in ('pred_scores', 'pred_labels')}
+            forecasted_pd['pred_boxes'] = outp_bboxes
+            self.sampled_dets[sample_ind_f] = [forecasted_pd]
+        t2 = time.monotonic()
+        forecasting_overhead_ms = (t2 - t1) * 1e3 # 1-2 ms
+
+        self.sim_cur_time_ms += forecasting_overhead_ms
+        #last_exec_time_ms += forecasting_overhead_ms
 
     def get_model_size_MB(self):
         size_model = 0
@@ -871,4 +933,5 @@ class Detector3DTemplate(nn.Module):
             self.train()
         self.calibration_off()
         print('Detector3D calibration done')
+        self.sim_cur_time_ms = 0.
         return None

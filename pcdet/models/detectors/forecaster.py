@@ -17,6 +17,30 @@ register_custom_op_symbolic("kucsl::forecast_past_dets", forecast_past_dets, 17)
 def move_to_world_coords(pred_boxes, poses, pose_idx):
     return torch.ops.kucsl.move_to_world_coords(pred_boxes, poses, pose_idx)
 
+# Needed for multihead detection heads
+@torch.jit.script
+def split_dets(cls_id_to_det_head_idx_map: torch.Tensor,
+               num_det_heads : int,
+               pred_boxes : torch.Tensor,
+               pred_scores : torch.Tensor,
+               pred_labels: torch.Tensor,
+               move_to_gpu : bool) -> List[Dict[str,torch.Tensor]]:
+    det_head_mappings = cls_id_to_det_head_idx_map[pred_labels]
+
+    forc_dicts : List[Dict[str,torch.Tensor]] = []
+    pred_merged = torch.cat((pred_boxes, pred_scores.unsqueeze(-1),
+            pred_labels.float().unsqueeze(-1)), -1)
+    for i in range(num_det_heads):
+        pred_masked = pred_merged[det_head_mappings == i]
+        pred_masked = pred_masked.cuda() if move_to_gpu else pred_masked
+        forc_dicts.append({
+                'pred_boxes': pred_masked[:, :-2],
+                'pred_scores': pred_masked[:, -2],
+                'pred_labels': pred_masked[:, -1].long()
+        })
+
+    return forc_dicts
+
 class Forecaster(torch.nn.Module):
     pc_range : Final[Tuple[float]]
     tcount : Final[int]
@@ -123,25 +147,6 @@ class Forecaster(torch.nn.Module):
         for k in ('pred_boxes', 'pred_labels', 'pred_scores'):
             self.past_detections[k] = torch.cat((self.past_detections[k], new_dets_dict[k]))
 
-    # Needed for multihead detection heads
-    def split_dets(self, pred_boxes : torch.Tensor, pred_scores : torch.Tensor,
-            pred_labels: torch.Tensor, move_to_gpu : bool) -> List[Dict[str,torch.Tensor]]:
-        det_head_mappings = self.cls_id_to_det_head_idx_map[pred_labels]
-
-        forc_dicts : List[Dict[str,torch.Tensor]] = []
-        pred_merged = torch.cat((pred_boxes, pred_scores.unsqueeze(-1),
-                pred_labels.float().unsqueeze(-1)), -1)
-        for i in range(self.num_det_heads):
-            pred_masked = pred_merged[det_head_mappings == i]
-            pred_masked = pred_masked.cuda() if move_to_gpu else pred_masked
-            forc_dicts.append({
-                    'pred_boxes': pred_masked[:, :-2],
-                    'pred_scores': pred_masked[:, -2],
-                    'pred_labels': pred_masked[:, -1].long()
-            })
-
-        return forc_dicts
-
     @torch.jit.export
     def fork_forward(self, last_pred_dict : Dict[str,torch.Tensor], \
             last_ctc : torch.Tensor, last_pose : torch.Tensor, \
@@ -226,6 +231,8 @@ class Forecaster(torch.nn.Module):
         # This op can make nms faster
         if self.num_det_heads > 1:
             forecasted_dets = self.split_dets(
+                    self.cls_id_to_det_head_idx_map,
+                    self.num_det_heads,
                     forc_dict['pred_boxes'],
                     forc_dict['pred_scores'],
                     forc_dict['pred_labels'],

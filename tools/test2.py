@@ -32,7 +32,7 @@ from pcdet.models import build_network, load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.models.model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from nuscenes import NuScenes
-from eval_utils.res_pred_utils import get_2d_egovel
+#from eval_utils.res_pred_utils import get_2d_egovel
 from pcdet.models.detectors.valor_calibrator import get_stats
 
 import matplotlib.pyplot as plt
@@ -75,17 +75,6 @@ def build_model(cfg_file, ckpt_file, default_deadline_sec):
 
     return model
 
-@torch.jit.script
-def move_bounding_boxes(bboxes, egovel, time_diffs_sec):
-    outp_shape = (time_diffs_sec.shape[0], bboxes.shape[0], bboxes.shape[1])
-    outp_bboxes = torch.empty(outp_shape, dtype=bboxes.dtype)
-    outp_bboxes[:, :, 2:] = bboxes[:, 2:]
-
-    for t in range(time_diffs_sec.shape[0]):
-        outp_bboxes[t, :, :2] = bboxes[:, :2] + (bboxes[:, 7:9] - egovel) * time_diffs_sec[t]
-
-    return outp_bboxes
-
 def get_lastest_exec_time(model):
     pp_ms =  model._time_dict['PreProcess'][-1]
     sched_ms =  model._time_dict['Sched'][-1]
@@ -108,20 +97,15 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     num_samples = len(model.dataset)
 
     cur_sample_idx = 0
-    sim_cur_time_ms = 0.
     last_exec_time_ms = 100.
     target_sched_time_ms = 0.
-    sampled_dets = [None] * num_samples
     exec_times_ms = []
-    # sample_tokens = []
-
-    model.calibrate()
-
-    resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
     time_pred_diffs = []
-
+    # sample_tokens = []
+    model.enable_forecasting = forecasting
+    model.calibrate()
+    resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
     model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
-    total_executed_time_ms = 0.
 
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
         while cur_sample_idx < num_samples:
@@ -136,7 +120,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                         potential_sample_tkn = model.dataset.infos[cur_sample_idx]['token']
                         scene_token = model.token_to_scene[potential_sample_tkn]
                     cur_sample_idx += 1
-                    sim_cur_time_ms = cur_sample_idx * data_period_ms
+                    model.sim_cur_time_ms = cur_sample_idx * data_period_ms
 
             with torch.no_grad():
                 lbd = model.latest_batch_dict # save bef its modified
@@ -158,47 +142,10 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             time_pred_diffs.append(predicted - orig)
 
             sample_tkn = batch_dict['metadata'][0]['token']
-            if lbd is not None and not batch_dict['scene_reset']:
-                prev_sample_tkn = lbd['metadata'][0]['token']
-                egovel = get_2d_egovel(
-                        model.token_to_ts[prev_sample_tkn],
-                        model.token_to_pose[prev_sample_tkn],
-                        model.token_to_ts[sample_tkn],
-                        model.token_to_pose[sample_tkn])
-            else: # assume its zero
-                egovel = np.zeros(2)
 
             if not streaming:
-                # sim_cur_time_ms += data_period_ms # unnecessary
-                sampled_dets[cur_sample_idx] = pred_dicts
-            else:
-                # the sampled_dets can be overwritten, which is okay
-                sim_cur_time_ms += last_exec_time_ms
-                num_to_forecast = 500 // data_period_ms
-                #NOTE the inds here are calculated without considering forecasting overhead
-                # which is not a big deal for now
-                future_sample_inds = [(sim_cur_time_ms+(i*data_period_ms))//data_period_ms \
-                        for i in range(1,num_to_forecast+1)]
-                future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
-                        if ind < num_samples]).int()
-                if forecasting: # NOTE consider the overhead here
-                    t1 = time.monotonic()
-                    # Forecast for next 500 ms
-                    time_diffs_sec = (future_sample_inds * data_period_ms - \
-                            (sim_cur_time_ms - last_exec_time_ms)) * 1e-3
-                    outp_bboxes_all = move_bounding_boxes(pred_dicts[0]['pred_boxes'], \
-                            torch.from_numpy(egovel), time_diffs_sec)
-                    for outp_bboxes, sample_ind_f in zip(outp_bboxes_all, future_sample_inds.tolist()):
-                        forecasted_pd = {k : pred_dicts[0][k] for k in ('pred_scores', 'pred_labels')}
-                        forecasted_pd['pred_boxes'] = outp_bboxes
-                        sampled_dets[sample_ind_f] = [forecasted_pd]
-                    t2 = time.monotonic()
-                    forecasting_overhead_ms = (t2 - t1) * 1e3 # 1-2 ms
-                    sim_cur_time_ms += forecasting_overhead_ms
-                    last_exec_time_ms += forecasting_overhead_ms
-                else:
-                    for sample_ind_f in future_sample_inds.tolist():
-                        sampled_dets[sample_ind_f] = pred_dicts
+                # model.sim_cur_time_ms += data_period_ms # unnecessary
+                model.sampled_dets[cur_sample_idx] = pred_dicts
 
             exec_times_ms.append((sample_tkn, last_exec_time_ms))
 
@@ -207,25 +154,24 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             sched_algo = 'closer'
             #sched_algo = 'dynamic'
             if streaming and last_exec_time_ms > data_period_ms:
-                cur_tail = calc_tail_ms(sim_cur_time_ms, data_period_ms)
+                cur_tail = calc_tail_ms(model.sim_cur_time_ms, data_period_ms)
                 if sched_algo == 'closer':
                     if cur_tail > data_period_ms / 2:
-                        sim_cur_time_ms += data_period_ms - cur_tail + 0.1
+                        model.sim_cur_time_ms += data_period_ms - cur_tail + 0.1
                 elif sched_algo == 'dynamic':
                     #Dynamic scheduling
-                    pred_finish_time = sim_cur_time_ms + last_exec_time_ms
+                    pred_finish_time = model.sim_cur_time_ms + last_exec_time_ms
                     next_tail = calc_tail_ms(pred_finish_time, data_period_ms)
                     if next_tail < cur_tail:
-                        sim_cur_time_ms += data_period_ms - cur_tail + 0.1
+                        model.sim_cur_time_ms += data_period_ms - cur_tail + 0.1
 
-                next_sample_idx = int(sim_cur_time_ms / data_period_ms)
+                next_sample_idx = int(model.sim_cur_time_ms / data_period_ms)
             else:
                 next_sample_idx = cur_sample_idx + 1
-                sim_cur_time_ms = next_sample_idx * data_period_ms
+                model.sim_cur_time_ms = next_sample_idx * data_period_ms
 
             if cur_sample_idx == next_sample_idx:
                 print(f'ERROR, trying to process already processed sample {next_sample_idx}')
-            model.sim_cur_time_ms = sim_cur_time_ms
             cur_sample_idx = next_sample_idx
             bar(cur_sample_idx / num_samples)
 
@@ -247,8 +193,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     #with open(f'tmp_results/detdata_res{model.res_idx}.pkl', 'wb') as f:
     #    pickle.dump([sampled_dets, exec_times_musec, resolution_stats], f)
 
-    print(f'Sampled {len(sampled_dets)} objects')
-    return sampled_dets, exec_times_musec, resolution_stats
+    print(f'Sampled {len(model.sampled_dets)} objects')
+    return model.sampled_dets, exec_times_musec, resolution_stats
 
 def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None):
@@ -336,7 +282,7 @@ if __name__ == "__main__":
         ckpt_file = "../models/pillarnet015_epoch20.pth"
     elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch25.pth"
+        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
         #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     elif chosen_method == 'VALOR2': # VALOR Pillarnet LS 5res
