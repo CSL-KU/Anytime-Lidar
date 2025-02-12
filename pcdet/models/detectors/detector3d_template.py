@@ -111,11 +111,13 @@ def post_forward_hook(module, inp_args, outp_args):
 
     # the module.sampled_dets can be overwritten, which is okay
     if module.enable_forecasting:
-        module.forecast(future_sample_inds, exec_time_ms, batch_dict)
+        frc_latency_ms = module.forecast(future_sample_inds, exec_time_ms, batch_dict)
+        module.sim_cur_time_ms += frc_latency_ms
     else:
         # Needed for streaming eval
         for sample_ind_f in future_sample_inds.tolist():
             module.sampled_dets[sample_ind_f] = batch_dict['final_box_dicts']
+        frc_latency_ms = 0
 
     #torch.cuda.synchronize() # the .cpu() calls sync anyway
     module.measure_time_end('PostProcess')
@@ -172,7 +174,8 @@ def post_forward_hook(module, inp_args, outp_args):
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
-    module.last_elapsed_time_musec = int(module._time_dict['End-to-end'][-1] * 1000)
+    #module.last_elapsed_time_musec = int(module._time_dict['End-to-end'][-1] * 1000)
+    module.last_elapsed_time_musec = int(exec_time_ms + frc_latency_ms) * 1000
 
     module.latest_batch_dict = batch_dict
 
@@ -307,7 +310,7 @@ class Detector3DTemplate(nn.Module):
         t2 = time.monotonic()
         forecasting_overhead_ms = (t2 - t1) * 1e3 # 1-2 ms
 
-        self.sim_cur_time_ms += forecasting_overhead_ms
+        return forecasting_overhead_ms
         #last_exec_time_ms += forecasting_overhead_ms
 
     def get_model_size_MB(self):

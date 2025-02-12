@@ -282,7 +282,7 @@ class PillarNetVALOR(Detector3DTemplate):
             x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
             if fixed_res_idx > -1:
                 self.res_idx = fixed_res_idx
-                xmin, xmax = 0, (self.mpc.num_slices[self.res_idx] - 1).item()
+                xmin, xmax = 0, self.mpc.num_slices[self.res_idx] - 1
             else:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
@@ -297,7 +297,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 else:
                     all_pillar_counts = self.mpc(points_xy).int().cpu()
                 all_pillar_counts = self.mpc.split_pillar_counts(all_pillar_counts)
-                for i in range(self.num_res): # - 1, -1, -1):
+                for i in range(self.num_res):
                     pillar_counts = all_pillar_counts[i]
                     nz_slice_inds = pillar_counts[0].nonzero()
                     time_passed_ms = (time.time() - start_time) * 1e3
