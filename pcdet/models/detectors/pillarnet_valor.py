@@ -101,33 +101,31 @@ class DenseConvsPipeline(torch.nn.Module):
 class MultiPillarCounter(torch.nn.Module):
     # Pass the args in cpu , pillar sizes should be [N,2], pc_range should be [6]
     grid_sizes: Final[List[List[int]]]
+    num_slices: Final[List[int]]
     pillar_sizes : torch.Tensor
     pc_range_min: torch.Tensor
     pc_range_cpu: torch.Tensor
-    num_slices: torch.Tensor
-    num_slices_cpu: torch.Tensor
 
     def __init__(self, pillar_sizes : torch.Tensor, pc_range : torch.Tensor,
                  slice_sz: int = 32):
         super().__init__()
         xy_length = pc_range[[3,4]] - pc_range[[0,1]]
         grid_sizes = torch.empty((pillar_sizes.size(0), 2), dtype=torch.int) # cpu
-        self.num_slices = torch.empty(pillar_sizes.size(0), dtype=torch.int)
+        self.num_slices = [0] * pillar_sizes.size(0)
         for i, ps in enumerate(pillar_sizes):
             grid_sizes[i] = torch.round(xy_length / ps)
-            self.num_slices[i] = grid_sizes[i, 0] // slice_sz
+            self.num_slices[i] = (grid_sizes[i, 0] // slice_sz).item()
         self.grid_sizes = grid_sizes.tolist()
-        self.num_slices_cpu = self.num_slices
-        self.num_slices = self.num_slices.cuda()
-        print('num_slices', self.num_slices_cpu)
-        print('grid_sizes', self.grid_sizes)
 
-        self.pillar_sizes_cpu = pillar_sizes
         self.pillar_sizes = pillar_sizes.cuda()
         self.pc_range_cpu = pc_range
         self.pc_range_min = pc_range[[0,1]].cuda()
 
-    def forward(self, points_xy : torch.Tensor, res_idx : int) -> Tuple[torch.Tensor, torch.Tensor]:
+        print('num_slices', self.num_slices)
+        print('grid_sizes', self.grid_sizes)
+        print('pillar_sizes', self.pillar_sizes)
+
+    def forward_one_res(self, points_xy : torch.Tensor, res_idx : int) -> Tuple[torch.Tensor, torch.Tensor]:
         ps = self.pillar_sizes[res_idx]
         grid_sz = self.grid_sizes[res_idx]
         grid = torch.zeros([1, 1, grid_sz[0], grid_sz[1]], device=points_xy.device)
@@ -139,9 +137,28 @@ class MultiPillarCounter(torch.nn.Module):
         #return the nonzero slice inds
         return pillar_counts.int(), nz_slice_inds
 
+    def forward(self, points_xy : torch.Tensor) -> torch.Tensor:
+        all_pillar_counts = []
+        for res_idx, grid_sz in enumerate(self.grid_sizes):
+            grid = torch.zeros([1, 1, grid_sz[0], grid_sz[1]], device=points_xy.device)
+            point_coords = torch.floor((points_xy - self.pc_range_min) / self.pillar_sizes[res_idx]).long()
+            grid[:, :, point_coords[:, 0], point_coords[:, 1]] = 1.
+            pillar_counts = PillarRes18BackBone8x_pillar_calc(grid, self.num_slices[res_idx])
+            all_pillar_counts.append(pillar_counts)
+        all_pillar_counts = torch.cat(all_pillar_counts, dim=1)
+        return all_pillar_counts # later make it int
+
+    @torch.jit.export
+    def split_pillar_counts(self, all_pillar_counts : torch.Tensor) -> List[torch.Tensor]:
+        chunks, bgn = [], 0
+        for num_slice in self.num_slices:
+            chunks.append(all_pillar_counts[:, bgn:bgn+num_slice])
+            bgn+=num_slice
+        return chunks
+
     @torch.jit.export
     def slice_inds_to_point_cloud_range(self, res_idx : int, minx : torch.Tensor, maxx : torch.Tensor):
-        ns = self.num_slices_cpu[res_idx]
+        ns = self.num_slices[res_idx]
         minx_perc = minx / ns
         maxx_perc = (maxx+1) / ns
         rng = (self.pc_range_cpu[3] - self.pc_range_cpu[0])
@@ -200,19 +217,18 @@ class PillarNetVALOR(Detector3DTemplate):
         #NOTE, this seems to work but I am not absolute
         t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
         pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
-        print('pillar sizes:', pillar_sizes)
-        mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
-        mpc.eval()
-        self.mpc_script = torch.jit.script(mpc)
+        self.mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
+        self.mpc.eval()
+        #self.mpc_script = torch.jit.script(mpc)
         self.shrink_flip = False
 
         self.dense_head_scrpt = None
-        #self.mpc_optimized = False
-        #self.mpc_trt = None
-        #self.mpc_outp = None
+        self.mpc_optimized = False
+        self.mpc_trt = None
+        self.mpc_outp = None
         self.inp_tensor_sizes = [np.ones(4, dtype=int)] * self.num_res
         self.dense_inp_slice_sz = 4
-        self.calibrators = [ValorCalibrator(self, ri, mpc.num_slices_cpu[ri]) \
+        self.calibrators = [ValorCalibrator(self, ri, self.mpc.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
     def forward(self, batch_dict):
@@ -266,15 +282,24 @@ class PillarNetVALOR(Detector3DTemplate):
             x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
             if fixed_res_idx > -1:
                 self.res_idx = fixed_res_idx
-                xmin, xmax = 0, (self.mpc_script.num_slices_cpu[self.res_idx] - 1).item()
+                xmin, xmax = 0, (self.mpc.num_slices[self.res_idx] - 1).item()
             else:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
                 num_points = points_xy.size(0)
                 start_time = batch_dict['start_time_sec']
                 deadline_ms = batch_dict['deadline_sec'] * 1e3
+                if not self.mpc_optimized:
+                    self.optimize_mpc(points_xy)
+                if self.mpc_trt is not None:
+                    self.mpc_outp = self.mpc_trt({'points_xy': points_xy}, self.mpc_outp)
+                    all_pillar_counts = self.mpc_outp['counts'].int().cpu()
+                else:
+                    all_pillar_counts = self.mpc(points_xy).int().cpu()
+                all_pillar_counts = self.mpc.split_pillar_counts(all_pillar_counts)
                 for i in range(self.num_res): # - 1, -1, -1):
-                    pillar_counts, nz_slice_inds = self.mpc_script(points_xy, i)
+                    pillar_counts = all_pillar_counts[i]
+                    nz_slice_inds = pillar_counts[0].nonzero()
                     time_passed_ms = (time.time() - start_time) * 1e3
                     time_left = deadline_ms - time_passed_ms
                     xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
@@ -311,7 +336,7 @@ class PillarNetVALOR(Detector3DTemplate):
 
             if shrink:
                 self.shrink_flip = not self.shrink_flip
-                pc_filter_lims = self.mpc_script.slice_inds_to_point_cloud_range(self.res_idx, xmin, xmax)
+                pc_filter_lims = self.mpc.slice_inds_to_point_cloud_range(self.res_idx, xmin, xmax)
                 points_x = points_xy[:, 0]
                 mask = (points_x >= pc_filter_lims[0]) & (points_x <= pc_filter_lims[1])
                 points = points[mask]
@@ -465,35 +490,34 @@ class PillarNetVALOR(Detector3DTemplate):
         self.optimization_done[self.res_idx] = True
 
     def optimize_mpc(self, points_xy):
-        if False:
-            # Create a onnx and tensorrt file for each resolution
-            onnx_path = 'deploy_files/onnx_files/mpc.onnx'
-            input_names = ['points_xy']
-            outp_names = ['counts']
-            if not os.path.exists(onnx_path):
-                torch.onnx.export(
-                    self.mpc,
-                    points_xy.detach(),
-                    onnx_path,
-                    input_names=input_names,
-                    output_names=outp_names,
-                    dynamic_axes={"points_xy": {0: 'num_points'}},
-                    opset_version=17,
-                )
+        # Create a onnx and tensorrt file for each resolution
+        onnx_path = 'deploy_files/onnx_files/mpc.onnx'
+        input_names = ['points_xy']
+        outp_names = ['counts']
+        if not os.path.exists(onnx_path):
+            torch.onnx.export(
+                self.mpc,
+                points_xy.detach(),
+                onnx_path,
+                input_names=input_names,
+                output_names=outp_names,
+                dynamic_axes={"points_xy": {0: 'num_points'}},
+                opset_version=17,
+            )
 
-            power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            if power_mode == 'UNKNOWN_POWER_MODE':
-                print('WARNING! Power mode is unknown. Please export PMODE.')
+        power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
+        if power_mode == 'UNKNOWN_POWER_MODE':
+            print('WARNING! Power mode is unknown. Please export PMODE.')
 
-            trt_path = f'./deploy_files/trt_engines/{power_mode}/mpc.engine'
-            print('Trying to load trt engine at', trt_path)
-            try:
-                self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
-            except:
-                print('TensorRT wrapper for mpc throwed exception, building the engine')
-                min_shape, opt_shape, max_shape = (10000,2), (250000,2), (350000,2) # num points
-                create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
-                self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
+        trt_path = f'./deploy_files/trt_engines/{power_mode}/mpc.engine'
+        print('Trying to load trt engine at', trt_path)
+        try:
+            self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
+        except:
+            print('TensorRT wrapper for mpc throwed exception, building the engine')
+            min_shape, opt_shape, max_shape = (10000,2), (250000,2), (350000,2) # num points
+            create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            self.mpc_trt = TRTWrapper(trt_path, input_names, outp_names)
 
         #self.mpc_trt = None
         self.mpc_optimized = True
