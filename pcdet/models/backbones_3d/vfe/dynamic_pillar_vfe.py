@@ -219,6 +219,8 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
         self.set_params(0)
         self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
+        self.filter_point_cloud_range = (torch.tensor(point_cloud_range) + \
+                torch.tensor([0.2, 0.2, 0., -0.2, -0.2, 0.])).cuda()
 
     # Allows switching between different pillar sizes
     def set_params(self, idx):
@@ -236,7 +238,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
     @torch.no_grad()
     def range_filter(self, batch_dict, point_cloud_range=None):
         if  point_cloud_range is None:
-            point_cloud_range = self.point_cloud_range
+            point_cloud_range = self.filter_point_cloud_range
 
         points = batch_dict['points'] # (batch_idx, x, y, z, i, t)
         points_xyz = points[:, 1:4]

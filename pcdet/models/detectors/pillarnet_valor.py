@@ -165,6 +165,8 @@ class MultiPillarCounter(torch.nn.Module):
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+        self.enable_data_sched = False
+
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
@@ -282,33 +284,46 @@ class PillarNetVALOR(Detector3DTemplate):
                 num_points = points_xy.size(0)
                 start_time = batch_dict['start_time_sec']
                 deadline_ms = batch_dict['deadline_sec'] * 1e3
+                # This is needed in case we did not start when input arrived
+                deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
                 all_pillar_counts = self.mpc_script(points_xy).int().cpu()
                 all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
                 for i in range(self.num_res):
                     pillar_counts = all_pillar_counts[i]
                     nz_slice_inds = pillar_counts[0].nonzero()
                     time_passed_ms = (time.time() - start_time) * 1e3
+
                     time_left = deadline_ms - time_passed_ms
                     xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
                     x_minmax[i, 0] = xmin
                     x_minmax[i, 1] = xmax
 
-                    pred_latency, new_xmin, new_xmax = self.calibrators[i].find_config_to_meet_dl(num_points,
-                            pillar_counts.numpy(),
-                            xmin.item(),
-                            xmax.item(),
-                            time_left,
-                            self.shrink_flip)
-                            # set a shrinking limit
+                    if self.enable_data_sched:
+                        pred_latency, new_xmin, new_xmax = self.calibrators[i]. \
+                                find_config_to_meet_dl(num_points,
+                                pillar_counts.numpy(),
+                                xmin.item(),
+                                xmax.item(),
+                                time_left,
+                                self.shrink_flip)
+                                # set a shrinking limit
 
-                    if not self.is_calibrating() and pred_latency < time_left:
-                        self.res_idx = i
-                        conf_found = True
-                        shrink = (new_xmin > xmin) or (new_xmax < xmax)
-                        xmin, xmax = new_xmin, new_xmax
-                        x_minmax[i, 0] = xmin
-                        x_minmax[i, 1] = xmax
-                        break
+                        if not self.is_calibrating() and pred_latency < time_left:
+                            self.res_idx = i
+                            conf_found = True
+                            shrink = (new_xmin > xmin) or (new_xmax < xmax)
+                            xmin, xmax = new_xmin, new_xmax
+                            x_minmax[i, 0] = xmin
+                            x_minmax[i, 1] = xmax
+                            break
+                    else:
+                        pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
+                                pillar_counts.numpy(), (xmax - xmin + 1).item())
+                        if not self.is_calibrating() and pred_latency < time_left:
+                            self.res_idx = i
+                            conf_found = True
+                            shrink = False
+                            break
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1

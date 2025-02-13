@@ -78,14 +78,15 @@ class ValorCalibrator():
         self.last_pred = np.zeros(5)
 
     # NOTE batch size has to be 1 !
-    def pred_exec_time_ms(self, num_points : int, num_voxels : np.ndarray, num_slices: int,
+    def pred_exec_time_ms(self, num_points : int, pillar_counts: np.ndarray, num_slices: int,
                           consider_prep_time=False) -> float:
         vfe_time_pred = self.quadratic_time_pred(num_points, self.vfe_time_reg_coeffs,
                 self.vfe_time_reg_intercepts, self.num_points_normalizer)
 
         bb3d_time_pred = 0.
         if self.bb3d_exist:
-            bb3d_time_pred = self.quadratic_time_pred(num_voxels, self.bb3d_time_reg_coeffs,
+            pillar_counts = pillar_counts.sum(1)
+            bb3d_time_pred = self.quadratic_time_pred(pillar_counts, self.bb3d_time_reg_coeffs,
                     self.bb3d_time_reg_intercepts, self.num_voxels_normalizer)
             if not self.treat_bb3d_as_single_l_group:
                 bb3d_time_pred = bb3d_time_pred.sum()
