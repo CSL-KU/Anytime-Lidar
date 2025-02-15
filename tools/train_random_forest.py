@@ -27,7 +27,9 @@ def read_data(pth):
     exec_times_ms = eval_d['exec_times_ms']
     egovel_inds = [i for i, ev in enumerate(egovels) if ev is not None]
     data_tuples = []
-    for idx in range(1, len(egovel_inds)-1):
+
+    # start from 5 since first 5 sample are calibration
+    for idx in range(5, len(egovel_inds)-1):
         ev = egovels[egovel_inds[idx]]
         pred_dict = det_objects[egovel_inds[idx+1]] #[0]
         if pred_dict is None:
@@ -53,6 +55,7 @@ def read_data(pth):
         labels = pred_dict['pred_labels']
         num_objs_dist = np.bincount(labels.numpy()-1, minlength=num_class)
         etime = exec_times_ms[egovel_inds[idx]]
+        assert etime is not None
         data_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum(), etime]))
         data_tuples.append(data_tuple)
 
@@ -103,13 +106,20 @@ mAP_stats = np.zeros(numres)
 # For each calibration scene
 all_train_inputs, all_train_labels = [], []
 all_test_inputs, all_test_labels = [], []
+window_length=1
 for evals in all_evals:
     best_res, mAP = get_best_res(evals)
-    mAP_stats[best_res] += 1
+    mAP_stats[global_best_res] += 1
     #best_res, NDS = get_best_res(evals, 'NDS')
     tuples = evals[global_best_res]['tuples']
 
-    if mAP_stats[best_res] % 5 == 0: # make 80% train 20% test 
+    if window_length > 1:
+        new_tuples = []
+        for i in range(tuples.shape[0] - (window_length) + 1):
+            new_tuples.append(tuples[i:(i+window_length)].ravel())
+        tuples = np.stack(new_tuples)
+
+    if mAP_stats[best_res] % 5 == 0: # make 80% train 20% test
         all_test_inputs.append(tuples)
         all_test_labels.append(np.full(tuples.shape[0], best_res))
     else:
@@ -143,33 +153,23 @@ feature_names = ['ev', 'ov10p', 'ovmean', 'ov90p', 'ov99p',
 
 do_masking = True
 if do_masking:
-    features_to_keep = ['rv10p', 'rv99p', 'car', 'pedestrian', 'num_all_objs', 'exec_time_ms']
-    mask = [feature_names.index(f) for f in features_to_keep]
+    features_to_keep = ['rv99p', 'car', 'pedestrian', 'num_all_objs', 'exec_time_ms']
+    mask = np.array([feature_names.index(f) for f in features_to_keep])
+    mask = np.concatenate([mask+i*len(feature_names) for i in range(window_length)])
     print('mask:', mask)
     X_train = X_train[:, mask]
     X_test = X_test[:, mask]
+
+#    newfeat1 = np.expand_dims(X_train[:, 1] / X_train[:, 3], 1)
+#    X_train = np.concatenate((X_train, newfeat1), axis=1)
+#    newfeat1 = np.expand_dims(X_test[:, 1] / X_test[:, 3], 1)
+#    X_test = np.concatenate((X_test, newfeat1), axis=1)
+
 
 print('Train data shapes and labels distribution:')
 print(X_train.shape, y_train.shape, np.bincount(y_train))
 print('Test data:')
 print(X_test.shape, y_test.shape)
-
-balance_data = False
-if balance_data:
-    from imblearn.over_sampling import SMOTE
-    from imblearn.under_sampling import RandomUnderSampler
-    from imblearn.pipeline import Pipeline
-
-    # Combine SMOTE and undersampling
-    steps = [('over', SMOTE(random_state=40)),
-             ('under', RandomUnderSampler(random_state=40))]
-    pipeline = Pipeline(steps=steps)
-
-    # Resample the training data
-    X_train, y_train = pipeline.fit_resample(X_train, y_train)
-
-    print('Train data shapes and labels distribution AFTER balancing:')
-    print(X_train.shape, y_train.shape, np.bincount(y_train))
 
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -220,10 +220,11 @@ else:
         n_estimators=64,  # number of trees
         max_depth=10,    # maximum depth of trees
         max_features='sqrt',
-        min_samples_split=2,
-        min_samples_leaf=4,
+        min_samples_split=10,
+        min_samples_leaf=2,
         random_state=40
     )
+
 
 # Train the model
 rf_classifier.fit(X_train, y_train)
@@ -271,5 +272,3 @@ else:
 #cv_scores = cross_val_score(rf_classifier, X, y, cv=5)
 #print("\nCross-validation scores:", cv_scores)
 #print(f"Average CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
-
-
