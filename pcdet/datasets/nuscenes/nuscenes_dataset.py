@@ -39,7 +39,7 @@ class NuScenesDataset(DatasetTemplate):
         self.infos = []
 
         # Force using train data for calibration
-        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
+        do_calib = (int(os.getenv('CALIBRATION', '0')) > 0)
         self.include_nuscenes_data("train" if do_calib else self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
@@ -284,7 +284,7 @@ class NuScenesDataset(DatasetTemplate):
             eval_config = config_factory(eval_version)
 
         dt = kwargs['det_elapsed_musec'] if 'det_elapsed_musec' in kwargs else None
-        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
+        do_calib = (int(os.getenv('CALIBRATION', '0')) > 0)
         print('Do calibration flag is', do_calib)
         es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = NuScenesEval(
@@ -317,7 +317,7 @@ class NuScenesDataset(DatasetTemplate):
             'v1.0-test': 'test'
         }
 
-        do_calib = (int(os.getenv('CALIBRATION', False)) == 1)
+        do_calib = (int(os.getenv('CALIBRATION', '0')) > 0)
         es = "train" if do_calib else eval_set_map[self.dataset_cfg.VERSION]
         nusc_eval = TrackingEval(
             config=cfg,

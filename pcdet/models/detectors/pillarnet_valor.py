@@ -7,6 +7,7 @@ from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engin
 import torch
 import time
 import onnx
+import pickle
 import os
 import sys
 import numpy as np
@@ -166,6 +167,7 @@ class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         self.enable_data_sched = False
+        self.deadline_based_selection = False
 
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
@@ -225,6 +227,12 @@ class PillarNetVALOR(Detector3DTemplate):
         self.calibrators = [ValorCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
+        self.res_predictor = None
+        with open('random_forest_model.pkl', 'rb') as f:
+            self.res_predictor = pickle.load(f)
+            print('Loaded resolution predictor.')
+        self.sched_step = -1
+
     def forward(self, batch_dict):
         if self.training:
             batch_dict = self.vfe.range_filter(batch_dict)
@@ -275,10 +283,12 @@ class PillarNetVALOR(Detector3DTemplate):
             # Schedule by calculating the exec time of all resolutions
             conf_found, shrink = False, False
             x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+            for i in range(self.num_res):
+                x_minmax[i, 0] = 0
+                x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
             if fixed_res_idx > -1:
                 self.res_idx = fixed_res_idx
-                xmin, xmax = 0, self.mpc_script.num_slices[self.res_idx] - 1
-            else:
+            elif self.deadline_based_selection:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
                 num_points = points_xy.size(0)
@@ -327,6 +337,45 @@ class PillarNetVALOR(Detector3DTemplate):
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
+            elif self.res_predictor is not None and self.latest_batch_dict is not None:
+                # Sched every 10 seconds
+                new_step = int(self.sim_cur_time_ms) // 10000
+                if new_step > self.sched_step:
+                    self.sched_step = new_step
+                    pd = self.latest_batch_dict['final_box_dicts'][0]
+                    # Later do the slicing
+                    #points = batch_dict['points']
+                    #points_xy = points[:, 1].contiguous()
+
+                    # Random forest based prediction
+                    ev = self.sampled_egovels[self.dataset_indexes[0]] # current one
+
+                    obj_velos = pd['pred_boxes'][:, 7:9].numpy()
+                    rel_velos = obj_velos - ev
+                    obj_velos = np.linalg.norm(obj_velos, axis=1)
+                    rel_velos = np.linalg.norm(rel_velos, axis=1)
+
+#                    vel_10p = np.percentile(obj_velos, 10)
+#                    vel_mean = np.mean(obj_velos)
+#                    vel_90p = np.percentile(obj_velos, 90)
+#
+#                    rvel_10p = np.percentile(rel_velos, 10)
+#                    rvel_mean = np.mean(rel_velos)
+                    rvel_90p = np.percentile(rel_velos, 90)
+
+#                    vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p,
+#                                          rvel_10p, rvel_mean, rvel_90p])
+
+                    num_class = 10
+                    num_objs_dist = np.bincount(pd['pred_labels'].numpy()-1, minlength=num_class)
+#                    inp_tuple = np.concatenate((vel_data, num_objs_dist))
+                    num_cars, num_pedestrians = num_objs_dist[[0, 8]]
+                    inp_tuple = np.array([rvel_90p, num_cars, num_pedestrians])
+                    inp_tuple = np.expand_dims(inp_tuple, 0)
+                    if not self.is_calibrating():
+                        self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
+            elif not self.is_calibrating():
+                self.res_idx = 1 # global best
 
             xmin, xmax = x_minmax[self.res_idx] # must do this!
 

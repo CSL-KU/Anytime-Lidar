@@ -1,15 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
-
-# In[1]:
-
-
 import os
-#os.environ["DATASET_PERIOD"] = "500"
-#os.environ["PMODE"] = "pmode_0003" # same as jetson orin
-#os.environ["CALIBRATION"] = "1"
-#os.environ["PCDET_PATH"] = os.environ["HOME"] + "/shared/Anytime-Lidar"
-
 import _init_path
 import sys
 import datetime
@@ -106,6 +97,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     model.calibrate()
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
     model.prev_scene_token = model.token_to_scene[model.dataset.infos[cur_sample_idx]['token']]
+    sampled_exec_times_ms = [None] * num_samples
 
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
         while cur_sample_idx < num_samples:
@@ -148,6 +140,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                 model.sampled_dets[cur_sample_idx] = pred_dicts
 
             exec_times_ms.append((sample_tkn, last_exec_time_ms))
+            sampled_exec_times_ms[cur_sample_idx] = last_exec_time_ms
 
             resolution_stats[model.res_idx] += 1
 
@@ -194,10 +187,11 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     #    pickle.dump([sampled_dets, exec_times_musec, resolution_stats], f)
 
     print(f'Sampled {len(model.sampled_dets)} objects')
-    return model.sampled_dets, exec_times_musec, resolution_stats
+    return model.sampled_dets, exec_times_musec, resolution_stats, model.sampled_egovels, sampled_exec_times_ms
 
 def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
-            exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None):
+            exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None, egovels=None,
+            sampled_exec_times_ms=None):
 
     det_annos = []
     num_ds_elems = len(dataset)
@@ -229,6 +223,20 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         det_elapsed_musec=None,
         #(None if streaming else exec_times_musec)
     )
+
+    calib_id = int(os.environ.get('CALIBRATION', '0'))
+    if calib_id > 0:
+        ridx = int(os.environ.get('FIXED_RES_IDX', -1))
+        eval_d = {
+               'exec_times_ms': sampled_exec_times_ms,
+               'objects': sampled_objects,
+               'egovels': egovels,
+               'resolution': ridx,
+               'result_str': result_str
+        }
+
+        with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
+            pickle.dump(eval_d, f)
 
     if dump_eval_dict:
         eval_d = {
@@ -289,6 +297,9 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/pillar01_01125_01285_016_0225_valor.yaml"
         ckpt_file = "../models/pillar01_01125_01285_016_0225_valor_e30.pth"
         num_res = 5
+    elif chosen_method == 'VALOR4res': # VALOR Pillarnet LS 5res
+        cfg_file  = "./cfgs/nuscenes_models/pillar012_015_020_030_valor.yaml"
+        ckpt_file = "../models/pillar012_015_020_030_valor_e20.pth"
     else:
         print('Unknown method, exiting.')
         sys.exit()
@@ -302,10 +313,11 @@ if __name__ == "__main__":
             # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
             t1 = time.time()
             model = build_model(cfg_file, ckpt_file, default_deadline_sec)
-            sampled_objects, exec_times_musec, resolution_stats = run_test(model, resolution_idx,
-                                                                        streaming=streaming,
-                                                                        forecasting=forecasting,
-                                                                        simulate_exec_time=sim_exec_time)
+            sampled_objects, exec_times_musec, resolution_stats, egovels, sampled_exec_times_ms = \
+                    run_test(model, resolution_idx,
+                    streaming=streaming,
+                    forecasting=forecasting,
+                    simulate_exec_time=sim_exec_time)
             for outf in (fw, sys.stdout):
                 print(f'Method:           {chosen_method}\n'
                       f'Config file:      {cfg_file}\n'
@@ -329,7 +341,8 @@ if __name__ == "__main__":
                 loaded_nusc = load_dataset()
                 result_str = do_eval(sampled_objects, resolution_idx, dataset, streaming,
                                      exec_times_musec=exec_times_musec,
-                                     dump_eval_dict=False, loaded_nusc=loaded_nusc)
+                                     dump_eval_dict=False, loaded_nusc=loaded_nusc,
+                                     egovels=egovels, sampled_exec_times_ms=sampled_exec_times_ms)
 
                 for outf in (fw, sys.stdout):
                     print(result_str, file=outf)

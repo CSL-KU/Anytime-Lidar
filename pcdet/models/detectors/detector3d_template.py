@@ -49,7 +49,7 @@ def pre_forward_hook(module, inp_args):
     latest_token = data_dicts[0]['metadata']['token']
 
     if module.deadline_range is not None and not module.is_calibrating():
-        use_calib_dataset = os.getenv('CALIBRATION', 0)
+        use_calib_dataset = (int(os.getenv('CALIBRATION', 0)) > 0)
         scenes = train_scenes if use_calib_dataset else all_speed_scenes
         scene_name = module.token_to_scene_name[latest_token]
         dl_scale = scenes.index(scene_name) / (len(scenes) - 1)
@@ -58,12 +58,27 @@ def pre_forward_hook(module, inp_args):
     else:
         deadline_sec = module._default_deadline_sec
 
+    deadline_sec_override, reset = module.initialize(latest_token)
+
+    # the module.sampled_dets can be overwritten, which is okay
+    lbd = module.latest_batch_dict
+    if lbd is not None and not reset:
+        sample_tkn = latest_token
+        prev_sample_tkn = lbd['metadata'][0]['token']
+        egovel = get_2d_egovel(
+                module.token_to_ts[prev_sample_tkn],
+                module.token_to_pose[prev_sample_tkn],
+                module.token_to_ts[sample_tkn],
+                module.token_to_pose[sample_tkn])
+    else: # assume its zero
+        egovel = np.zeros(2)
+    module.sampled_egovels[module.dataset_indexes[0]] = egovel
+
     # NOTE The following prevents orin from spending unnecessary 50 ms
     # for tensor initialization, seems like a BUG
     dummy_tensor = torch.zeros(1024*1024, device='cuda')
     torch.cuda.synchronize()
 
-    deadline_sec_override, reset = module.initialize(latest_token)
     if reset:
         module.latest_batch_dict = None
         module.latest_valid_dets = None
@@ -109,9 +124,9 @@ def post_forward_hook(module, inp_args, outp_args):
     future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
             if ind < len(module.dataset)]).int()
 
-    # the module.sampled_dets can be overwritten, which is okay
     if module.enable_forecasting:
-        frc_latency_ms = module.forecast(future_sample_inds, exec_time_ms, batch_dict)
+        egovel = module.sampled_egovels[module.dataset_indexes[0]]
+        frc_latency_ms = module.forecast(egovel, future_sample_inds, exec_time_ms, batch_dict)
         module.sim_cur_time_ms += frc_latency_ms
     else:
         # Needed for streaming eval
@@ -283,21 +298,10 @@ class Detector3DTemplate(nn.Module):
         #num_det_heads : int = 1,
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
         self.sampled_dets = [None] * len(self.dataset)
+        self.sampled_egovels= [None] * len(self.dataset)
 
-    def forecast(self, future_sample_inds, last_exec_time_ms, batch_dict):
+    def forecast(self, egovel, future_sample_inds, last_exec_time_ms, batch_dict):
         t1 = time.monotonic()
-        lbd = self.latest_batch_dict
-        if lbd is not None and not batch_dict['scene_reset']:
-            sample_tkn = batch_dict['metadata'][0]['token']
-            prev_sample_tkn = lbd['metadata'][0]['token']
-            egovel = get_2d_egovel(
-                    self.token_to_ts[prev_sample_tkn],
-                    self.token_to_pose[prev_sample_tkn],
-                    self.token_to_ts[sample_tkn],
-                    self.token_to_pose[sample_tkn])
-        else: # assume its zero
-            egovel = np.zeros(2)
-
         pred_dicts = batch_dict['final_box_dicts']
         time_diffs_sec = (future_sample_inds * self.data_period_ms - \
                 (self.sim_cur_time_ms - last_exec_time_ms)) * 1e-3
@@ -311,7 +315,6 @@ class Detector3DTemplate(nn.Module):
         forecasting_overhead_ms = (t2 - t1) * 1e3 # 1-2 ms
 
         return forecasting_overhead_ms
-        #last_exec_time_ms += forecasting_overhead_ms
 
     def get_model_size_MB(self):
         size_model = 0
