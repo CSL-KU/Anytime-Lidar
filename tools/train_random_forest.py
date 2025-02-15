@@ -24,6 +24,7 @@ def read_data(pth):
     # dataset can be generated only with global best resolution objects
     det_objects = eval_d['objects']
     egovels = eval_d['egovels']
+    exec_times_ms = eval_d['exec_times_ms']
     egovel_inds = [i for i, ev in enumerate(egovels) if ev is not None]
     data_tuples = []
     for idx in range(1, len(egovel_inds)-1):
@@ -55,7 +56,8 @@ def read_data(pth):
                 rvel_10p, rvel_mean, rvel_90p, rvel_99p])
         labels = pred_dict['pred_labels']
         num_objs_dist = np.bincount(labels.numpy()-1, minlength=num_class)
-        data_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum()]))
+        etime = exec_times_ms[egovel_inds[idx]]
+        data_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum(), etime]))
         data_tuples.append(data_tuple)
 
     data_tuples = np.array(data_tuples)
@@ -68,7 +70,7 @@ def get_best_res(evals, metric='mAP'):
     
 numres = 5
 num_calibs_scenes = 75
-merge_evals=True
+merge_evals=False
 
 if merge_evals:
     all_evals = [[None for r in range(numres)] for c in range(num_calibs_scenes)]
@@ -133,9 +135,9 @@ feature_names = ['ev', 'ov10p', 'ovmean', 'ov90p', 'ov99p',
                  'rv10p', 'rvmean', 'rv90p', 'rv99p',
                  'car','truck', 'construction_vehicle', 'bus', 'trailer',
                  'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
-                 'num_all_objs']
+                 'num_all_objs', 'exec_time_ms']
 
-features_to_keep = ['rv90p', 'car', 'pedestrian'] #, 'num_all_objs'] #, 'traffic_cone']
+features_to_keep = ['rv90p', 'car', 'pedestrian', 'exec_time_ms']
 mask = [feature_names.index(f) for f in features_to_keep]
 
 print('mask:', mask)

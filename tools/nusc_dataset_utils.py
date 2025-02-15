@@ -7,7 +7,7 @@ import copy
 import random
 import uuid
 import numpy as np
-import notebooks.res_pred_utils as res_pred_utils
+import pcdet.utils.res_pred_utils as res_pred_utils
 from alive_progress import alive_bar
 
 from nuscenes.nuscenes import NuScenes

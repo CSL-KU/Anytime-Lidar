@@ -370,7 +370,8 @@ class PillarNetVALOR(Detector3DTemplate):
                     num_objs_dist = np.bincount(pd['pred_labels'].numpy()-1, minlength=num_class)
 #                    inp_tuple = np.concatenate((vel_data, num_objs_dist))
                     num_cars, num_pedestrians = num_objs_dist[[0, 8]]
-                    inp_tuple = np.array([rvel_90p, num_cars, num_pedestrians])
+                    exec_time_ms = self.last_elapsed_time_musec / 1000
+                    inp_tuple = np.array([rvel_90p, num_cars, num_pedestrians, exec_time_ms])
                     inp_tuple = np.expand_dims(inp_tuple, 0)
                     if not self.is_calibrating():
                         self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
