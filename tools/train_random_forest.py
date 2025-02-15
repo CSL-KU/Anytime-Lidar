@@ -42,15 +42,11 @@ def read_data(pth):
         obj_velos = np.linalg.norm(obj_velos, axis=1)
         rel_velos = np.linalg.norm(rel_velos, axis=1)
 
-        vel_10p = np.percentile(obj_velos, 10)
+        vel_10p, vel_90p, vel_99p = np.percentile(obj_velos, [10, 90, 99])
         vel_mean = np.mean(obj_velos)
-        vel_90p = np.percentile(obj_velos, 90)
-        vel_99p = np.percentile(obj_velos, 99)
 
-        rvel_10p = np.percentile(rel_velos, 10)
+        rvel_10p, rvel_90p, rvel_99p = np.percentile(rel_velos, [10, 90, 99])
         rvel_mean = np.mean(rel_velos)
-        rvel_90p = np.percentile(rel_velos, 90)
-        rvel_99p = np.percentile(rel_velos, 99)
 
         vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p, vel_99p,
                 rvel_10p, rvel_mean, rvel_90p, rvel_99p])
@@ -125,10 +121,18 @@ for evals in all_evals:
 print('Best resolution stats:')
 print(mAP_stats)
 
-X_train = np.concatenate(all_train_inputs, axis=0)
-X_test = np.concatenate(all_test_inputs, axis=0)
-y_train = np.concatenate(all_train_labels, axis=0)
-y_test = np.concatenate(all_test_labels, axis=0)
+X_train = np.concatenate(all_train_inputs, axis=0).astype(float)
+X_test = np.concatenate(all_test_inputs, axis=0).astype(float)
+y_train = np.concatenate(all_train_labels, axis=0).astype(int)
+y_test = np.concatenate(all_test_labels, axis=0).astype(int)
+
+#Filter nans
+mask = np.logical_not(np.isnan(X_train).any(1))
+X_train = X_train[mask]
+y_train = y_train[mask]
+mask = np.logical_not(np.isnan(X_test).any(1))
+X_test = X_test[mask]
+y_test = y_test[mask]
 
 # Using relvel 90th percentile, num cars, num peds, num barriers, num tcones works ok!
 feature_names = ['ev', 'ov10p', 'ovmean', 'ov90p', 'ov99p',
@@ -137,17 +141,35 @@ feature_names = ['ev', 'ov10p', 'ovmean', 'ov90p', 'ov99p',
                  'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
                  'num_all_objs', 'exec_time_ms']
 
-features_to_keep = ['rv90p', 'car', 'pedestrian', 'exec_time_ms']
-mask = [feature_names.index(f) for f in features_to_keep]
+do_masking = True
+if do_masking:
+    features_to_keep = ['rv10p', 'rv99p', 'car', 'pedestrian', 'num_all_objs', 'exec_time_ms']
+    mask = [feature_names.index(f) for f in features_to_keep]
+    print('mask:', mask)
+    X_train = X_train[:, mask]
+    X_test = X_test[:, mask]
 
-print('mask:', mask)
-X_train = X_train[:, mask]
-X_test = X_test[:, mask]
-
-print('Train data:')
-print(X_train.shape, y_train.shape)
+print('Train data shapes and labels distribution:')
+print(X_train.shape, y_train.shape, np.bincount(y_train))
 print('Test data:')
 print(X_test.shape, y_test.shape)
+
+balance_data = False
+if balance_data:
+    from imblearn.over_sampling import SMOTE
+    from imblearn.under_sampling import RandomUnderSampler
+    from imblearn.pipeline import Pipeline
+
+    # Combine SMOTE and undersampling
+    steps = [('over', SMOTE(random_state=40)),
+             ('under', RandomUnderSampler(random_state=40))]
+    pipeline = Pipeline(steps=steps)
+
+    # Resample the training data
+    X_train, y_train = pipeline.fit_resample(X_train, y_train)
+
+    print('Train data shapes and labels distribution AFTER balancing:')
+    print(X_train.shape, y_train.shape, np.bincount(y_train))
 
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -158,13 +180,50 @@ import pandas as pd
 #X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 #X_train, X_test, y_train, y_test = X, X, y, y
 # Create and train the Random Forest classifier
-rf_classifier = RandomForestClassifier(
-    n_estimators=64,  # number of trees
-    max_depth=None,    # maximum depth of trees
-    min_samples_split=2,
-    min_samples_leaf=1,
-    random_state=40
-)
+use_RFECV = False
+use_grid_search = False
+if use_RFECV:
+    # Perform RFECV on all features
+    from sklearn.feature_selection import RFECV
+    base_rf = RandomForestClassifier(n_estimators=64, random_state=40)
+    rf_classifier= RFECV(
+        estimator=base_rf,
+        step=1,
+        cv=5,
+        scoring='accuracy'
+    )
+elif use_grid_search:
+    from sklearn.model_selection import GridSearchCV
+
+    param_grid = {
+        'n_estimators': [64, 100, 200],
+        'max_depth': [None, 10, 20, 30],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4],
+        'max_features': ['sqrt', 'log2', None]
+    }
+
+    grid_search = GridSearchCV(
+        RandomForestClassifier(random_state=40),
+        param_grid,
+        cv=5,
+        scoring='accuracy',
+        n_jobs=-1
+    )
+
+    grid_search.fit(X_train, y_train)
+    print("Best parameters:", grid_search.best_params_)
+    rf_classifier = grid_search
+
+else:
+    rf_classifier = RandomForestClassifier(
+        n_estimators=64,  # number of trees
+        max_depth=10,    # maximum depth of trees
+        max_features='sqrt',
+        min_samples_split=2,
+        min_samples_leaf=4,
+        random_state=40
+    )
 
 # Train the model
 rf_classifier.fit(X_train, y_train)
@@ -194,13 +253,17 @@ print(classification_report(y_test, y_pred))
 print("\nConfusion Matrix:")
 print(confusion_matrix(y_test, y_pred))
 
-# Feature importance
-feature_importance = pd.DataFrame({
-    'feature': range(X_train.shape[1]),
-    'importance': rf_classifier.feature_importances_
-})
-print("\nFeature Importance:")
-print(feature_importance.sort_values('importance', ascending=False))
+if use_RFECV:
+    print("Optimal number of features:", rf_classifier.n_features_)
+    print("Selected features:", [feature_names[i] for i in range(len(feature_names)) if rf_classifier.support_[i]])
+else:
+    # Feature importance
+    feature_importance = pd.DataFrame({
+        'feature': range(X_train.shape[1]),
+        'importance': rf_classifier.feature_importances_
+    })
+    print("\nFeature Importance:")
+    print(feature_importance.sort_values('importance', ascending=False))
 
 #from sklearn.model_selection import cross_val_score
 #

@@ -339,7 +339,7 @@ class PillarNetVALOR(Detector3DTemplate):
                     self.res_idx = self.num_res - 1
             elif self.res_predictor is not None and self.latest_batch_dict is not None:
                 # Sched every 10 seconds
-                new_step = int(self.sim_cur_time_ms) // 10000
+                new_step = int(self.sim_cur_time_ms) // 20000
                 if new_step > self.sched_step:
                     self.sched_step = new_step
                     pd = self.latest_batch_dict['final_box_dicts'][0]
@@ -355,28 +355,30 @@ class PillarNetVALOR(Detector3DTemplate):
                     obj_velos = np.linalg.norm(obj_velos, axis=1)
                     rel_velos = np.linalg.norm(rel_velos, axis=1)
 
-#                    vel_10p = np.percentile(obj_velos, 10)
-#                    vel_mean = np.mean(obj_velos)
-#                    vel_90p = np.percentile(obj_velos, 90)
-#
-#                    rvel_10p = np.percentile(rel_velos, 10)
-#                    rvel_mean = np.mean(rel_velos)
-                    rvel_90p = np.percentile(rel_velos, 90)
+                    #vel_10p, vel_90p, vel_99p = np.percentile(obj_velos, [10, 90, 99])
+                    #vel_mean = np.mean(obj_velos)
 
-#                    vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p,
-#                                          rvel_10p, rvel_mean, rvel_90p])
+                    rvel_10p, rvel_99p = np.percentile(rel_velos, [10, 99])
+                    #rvel_mean = np.mean(rel_velos)
+
+                    #vel_data = np.array([np.linalg.norm(ev), vel_10p, vel_mean, vel_90p, vel_99p,
+                    #                      rvel_10p, rvel_mean, rvel_90p, rvel_99p])
 
                     num_class = 10
                     num_objs_dist = np.bincount(pd['pred_labels'].numpy()-1, minlength=num_class)
-#                    inp_tuple = np.concatenate((vel_data, num_objs_dist))
-                    num_cars, num_pedestrians = num_objs_dist[[0, 8]]
+                    num_cars, num_peds = num_objs_dist[0], num_objs_dist[-2]
                     exec_time_ms = self.last_elapsed_time_musec / 1000
-                    inp_tuple = np.array([rvel_90p, num_cars, num_pedestrians, exec_time_ms])
+                    #inp_tuple = np.concatenate((vel_data, num_objs_dist, [num_objs_dist.sum(),
+                    #                            exec_time_ms]))
+                    inp_tuple = np.array((rvel_10p, rvel_99p, num_cars,
+                                          num_peds, num_objs_dist.sum(), exec_time_ms))
                     inp_tuple = np.expand_dims(inp_tuple, 0)
                     if not self.is_calibrating():
                         self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
+                    #print('new_resolution', self.res_idx)
             elif not self.is_calibrating():
-                self.res_idx = 1 # global best
+                self.res_idx = 1 # global best as default
+            #print('cur_resolution', self.res_idx, int(self.sim_cur_time_ms))
 
             xmin, xmax = x_minmax[self.res_idx] # must do this!
 
@@ -619,4 +621,6 @@ class PillarNetVALOR(Detector3DTemplate):
         self.res_idx = cur_res_idx
         #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
         self.sim_cur_time_ms = 0.
+        self.sched_step = -1
+        self.latest_batch_dict = None
         return None
