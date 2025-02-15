@@ -68,12 +68,20 @@ def get_best_res(evals, metric='mAP'):
     return max_idx, accs[max_idx]
     
 numres = 5
-num_calibs_scenes = 75
-merge_evals=False
+num_calibs_scenes = 80
+merge_evals=True
+
+def mask_files(path_list, num_calibs_scenes):
+    mask = [False] * len(path_list)
+    for i, pth in enumerate(path_list):
+        calib_id = int(pth.split('_')[-1].split('.')[0][5:])
+        mask[i] = (calib_id <= num_calibs_scenes)
+    return [pth for m, pth in zip(mask, path_list) if m]
 
 if merge_evals:
     all_evals = [[None for r in range(numres)] for c in range(num_calibs_scenes)]
     eval_dict_paths = glob.glob("sampled_dets/res*.pkl")
+    eval_dict_paths = mask_files(eval_dict_paths, num_calibs_scenes)
     num_procs = 8
     cur_idx = 0
     with alive_bar(len(eval_dict_paths), force_tty=True, max_cols=160, manual=True) as bar:
@@ -109,7 +117,7 @@ all_test_inputs, all_test_labels = [], []
 window_length=1
 for evals in all_evals:
     best_res, mAP = get_best_res(evals)
-    mAP_stats[global_best_res] += 1
+    mAP_stats[best_res] += 1
     #best_res, NDS = get_best_res(evals, 'NDS')
     tuples = evals[global_best_res]['tuples']
 
