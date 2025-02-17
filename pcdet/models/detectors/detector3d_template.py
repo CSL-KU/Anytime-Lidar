@@ -113,8 +113,16 @@ def post_forward_hook(module, inp_args, outp_args):
         for arg_arr in pp_args[:3]:
             arg_arr[0].cpu()
 
-    finish_time = time.time()
-    exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
+    if module.simulate_exec_time:
+        num_points = batch_dict['points'].size(0)
+        num_voxels = np.array(batch_dict['bb3d_num_voxels'])
+        xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
+        exec_time_ms = module.calibrators[module.res_idx].pred_exec_time_ms(
+                num_points, num_voxels, xlen, consider_prep_time=True)
+        finish_time = batch_dict['start_time_sec'] + (exec_time_ms / 1000)
+    else:
+        finish_time = time.time()
+        exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
 
     forecast_time_ms = 500 # I can play with this to reduce overhead
     module.sim_cur_time_ms += exec_time_ms
@@ -189,9 +197,7 @@ def post_forward_hook(module, inp_args, outp_args):
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
-    #module.last_elapsed_time_musec = int(module._time_dict['End-to-end'][-1] * 1000)
     module.last_elapsed_time_musec = int(exec_time_ms + frc_latency_ms) * 1000
-
     module.latest_batch_dict = batch_dict
 
     return pred_dicts, recall_dict
@@ -299,6 +305,7 @@ class Detector3DTemplate(nn.Module):
         #cls_id_to_det_head_idx_map : torch.Tensor = torch.zeros(1, dtype=torch.long)):
         self.sampled_dets = [None] * len(self.dataset)
         self.sampled_egovels= [None] * len(self.dataset)
+        self.simulate_exec_time = False
 
     def forecast(self, egovel, future_sample_inds, last_exec_time_ms, batch_dict):
         t1 = time.monotonic()

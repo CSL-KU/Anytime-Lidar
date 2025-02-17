@@ -93,6 +93,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     exec_times_ms = []
     time_pred_diffs = []
     # sample_tokens = []
+    model.simulate_exec_time = simulate_exec_time
     model.enable_forecasting = forecasting
     model.calibrate()
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
@@ -120,14 +121,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             # Predict the execution time as if the DNN were to be executed on target platform
             batch_dict = model.latest_batch_dict
-            xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
-            if simulate_exec_time:
-                num_points = batch_dict['points'].size(0)
-                num_voxels = np.array([batch_dict['bb3d_num_voxels']])
-                last_exec_time_ms = model.calibrators[model.res_idx].pred_exec_time_ms(
-                   num_points, num_voxels, xlen, consider_prep_time=True)
-            else:
-                last_exec_time_ms = model.last_elapsed_time_musec * 1e-3
+            last_exec_time_ms = model.last_elapsed_time_musec * 1e-3
 
             predicted = model.calibrators[model.res_idx].last_pred
             orig = get_lastest_exec_time(model)
@@ -293,9 +287,9 @@ if __name__ == "__main__":
         ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
         #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
-    elif chosen_method == 'VALOR2': # VALOR Pillarnet LS 5res
-        cfg_file  = "./cfgs/nuscenes_models/pillar01_01125_01285_016_0225_valor.yaml"
-        ckpt_file = "../models/pillar01_01125_01285_016_0225_valor_e30.pth"
+    elif chosen_method == 'VALORmew': # VALOR Pillarnet LS 5res
+        cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
+        ckpt_file = "../output/nuscenes_models/multires/pillar_010_011_012_014_016_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     elif chosen_method == 'MEW':
         cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
@@ -305,7 +299,7 @@ if __name__ == "__main__":
         print('Unknown method, exiting.')
         sys.exit()
 
-    sim_exec_time = False # Only VALOR supports it
+    sim_exec_time = True # Only VALOR supports it
     skip_eval = False
 
     results = []

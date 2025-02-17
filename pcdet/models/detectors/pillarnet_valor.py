@@ -228,9 +228,12 @@ class PillarNetVALOR(Detector3DTemplate):
                 for ri in range(self.num_res)]
 
         self.res_predictor = None
-        with open('random_forest_model.pkl', 'rb') as f:
-            self.res_predictor = pickle.load(f)
-            print('Loaded resolution predictor.')
+        try:
+            with open('random_forest_model.pkl', 'rb') as f:
+                self.res_predictor = pickle.load(f)
+                print('Loaded resolution predictor.')
+        except:
+            pass
         self.sched_step = 0
         self.sched_time_point_ms = 0
 
