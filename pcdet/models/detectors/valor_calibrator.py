@@ -85,7 +85,8 @@ class ValorCalibrator():
 
         bb3d_time_pred = 0.
         if self.bb3d_exist:
-            pillar_counts = pillar_counts.sum(1)
+            if len(pillar_counts.shape) > 1:
+                pillar_counts = pillar_counts.sum(1)
             bb3d_time_pred = self.quadratic_time_pred(pillar_counts, self.bb3d_time_reg_coeffs,
                     self.bb3d_time_reg_intercepts, self.num_voxels_normalizer)
             if not self.treat_bb3d_as_single_l_group:
