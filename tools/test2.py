@@ -53,6 +53,7 @@ def build_model(cfg_file, ckpt_file, default_deadline_sec):
             'MODEL.DEADLINE_SEC', str(default_deadline_sec),
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
+#            'MODEL.DENSE_HEAD.POST_PROCESSING.SCORE_THRESH', '0.1']
     cfg_from_list(set_cfgs, cfg)
     logger, test_set, test_loader, sampler = get_dataset(cfg)
     print(f'Loaded dataset with {len(test_set)} samples')
@@ -80,9 +81,10 @@ def get_lastest_exec_time(model):
     return np.array([preprocess_ms, vfe_ms, bb3d_ms, dense_ops_ms, postprocess_ms])
 
 def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulate_exec_time=False):
-    print('***********************')
-    print(f'***RESOLUTION INDEX {resolution_idx}**')
-    print('***********************')
+    if hasattr(model, 'res_idx'):
+        print('***********************')
+        print(f'***RESOLUTION INDEX {resolution_idx}**')
+        print('***********************')
 
     data_period_ms = int(os.environ["DATASET_PERIOD"])
     num_samples = len(model.dataset)
@@ -123,9 +125,10 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             batch_dict = model.latest_batch_dict
             last_exec_time_ms = model.last_elapsed_time_musec * 1e-3
 
-            predicted = model.calibrators[model.res_idx].last_pred
-            orig = get_lastest_exec_time(model)
-            time_pred_diffs.append(predicted - orig)
+            if hasattr(model, 'calibrators'):
+                predicted = model.calibrators[model.res_idx].last_pred
+                orig = get_lastest_exec_time(model)
+                time_pred_diffs.append(predicted - orig)
 
             sample_tkn = batch_dict['metadata'][0]['token']
 
@@ -136,7 +139,8 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             exec_times_ms.append((sample_tkn, last_exec_time_ms))
             sampled_exec_times_ms[cur_sample_idx] = last_exec_time_ms
 
-            resolution_stats[model.res_idx] += 1
+            if hasattr(model, 'res_idx'):
+                resolution_stats[model.res_idx] += 1
 
             sched_algo = 'closer'
             #sched_algo = 'dynamic'
@@ -163,15 +167,16 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
             bar(cur_sample_idx / num_samples)
 
     # ignore preprocessing time prediction since it happens prior to scheduling
-    tpred_diffs = np.array(time_pred_diffs)[:, 1:]
+    if hasattr(model, 'calibrators'):
+        tpred_diffs = np.array(time_pred_diffs)[:, 1:]
 
-    e2e_diffs = tpred_diffs.sum(1)
-    print('E2E execution time prediction error is below.')
-    print('If number is positive, then finished earlier then predicted.')
-    get_stats(e2e_diffs)
-    print('Other time prediction errors:')
-    for i in range(tpred_diffs.shape[1]):
-        get_stats(tpred_diffs[:, i])
+        e2e_diffs = tpred_diffs.sum(1)
+        print('E2E execution time prediction error is below.')
+        print('If number is positive, then finished earlier then predicted.')
+        get_stats(e2e_diffs)
+        print('Other time prediction errors:')
+        for i in range(tpred_diffs.shape[1]):
+            get_stats(tpred_diffs[:, i])
 
     util = sum([t[1] for t in exec_times_ms]) / (num_samples*data_period_ms)
     print(f'Utilization: %{util:.2f}')
@@ -218,19 +223,18 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         #(None if streaming else exec_times_musec)
     )
 
-    calib_id = int(os.environ.get('CALIBRATION', '0'))
-    if calib_id > 0:
-        ridx = int(os.environ.get('FIXED_RES_IDX', -1))
-        eval_d = {
-               'exec_times_ms': sampled_exec_times_ms,
-               'objects': sampled_objects,
-               'egovels': egovels,
-               'resolution': ridx,
-               'result_str': result_str
-        }
-
-        with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
-            pickle.dump(eval_d, f)
+    #calib_id = int(os.environ.get('CALIBRATION', '0'))
+    #if calib_id > 0:
+    #    ridx = int(os.environ.get('FIXED_RES_IDX', -1))
+    #    eval_d = {
+    #           'exec_times_ms': sampled_exec_times_ms,
+    #           'objects': sampled_objects,
+    #           'egovels': egovels,
+    #           'resolution': ridx,
+    #           'result_str': result_str
+    #    }
+    #    with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
+    #        pickle.dump(eval_d, f)
 
     if dump_eval_dict:
         eval_d = {
@@ -284,7 +288,7 @@ if __name__ == "__main__":
         ckpt_file = "../models/pillarnet015_epoch20.pth"
     elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch30.pth"
+        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch25.pth"
         #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     elif chosen_method == 'VALORmew': # VALOR Pillarnet LS 5res
@@ -299,7 +303,7 @@ if __name__ == "__main__":
         print('Unknown method, exiting.')
         sys.exit()
 
-    sim_exec_time = True # Only VALOR supports it
+    sim_exec_time = False # Only VALOR supports it
     skip_eval = False
 
     results = []
