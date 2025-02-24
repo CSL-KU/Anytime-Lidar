@@ -123,7 +123,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                     for k,v in disp_dict.items():
                         if 'loss_res' in k:
                             resolution_losses += f"{k}: {v} ,"
-                    print(resolution_losses[:-1])
+                    logger.info(resolution_losses)
 
                     if show_gpu_stat and accumulated_iter % (3 * logger_iter_interval) == 0:
                         # To show the GPU utilization, please install gpustat through "pip install gpustat"
