@@ -27,10 +27,10 @@ class PillarNetOpt(Detector3DTemplate):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        is_x86 = (platform.machine() in ['x86_64', 'AMD64', 'x86'])
 
-        torch.backends.cuda.matmul.allow_tf32 = is_x86
-        torch.backends.cudnn.allow_tf32 = is_x86
+        allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
@@ -50,6 +50,7 @@ class PillarNetOpt(Detector3DTemplate):
         self.inf_stream = torch.cuda.Stream()
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
+        self.dense_convs_trt = None
 
 
     def forward(self, batch_dict):
@@ -155,7 +156,6 @@ class PillarNetOpt(Detector3DTemplate):
         except:
             print('TensorRT wrapper for fused_ops throwed exception, using eager mode')
             eager_outputs = self.opt_dense_convs(fwd_data) # for calibration
-            self.dense_convs_trt = None
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')

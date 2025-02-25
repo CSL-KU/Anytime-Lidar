@@ -127,6 +127,7 @@ class MultiPillarCounter(torch.nn.Module):
         print('grid_sizes', self.grid_sizes)
         print('pillar_sizes', self.pillar_sizes)
 
+    @torch.jit.export
     def forward_one_res(self, points_xy_s : torch.Tensor, res_idx : int) -> torch.Tensor:
         grid_sz = self.grid_sizes[res_idx]
         point_coords = torch.floor(points_xy_s / self.pillar_sizes[res_idx]).long()
@@ -179,10 +180,9 @@ class PillarNetVALOR(Detector3DTemplate):
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
 
-        is_x86 = (platform.machine() in ['x86_64', 'AMD64', 'x86'])
-
-        torch.backends.cuda.matmul.allow_tf32 = is_x86
-        torch.backends.cudnn.allow_tf32 = is_x86
+        allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
@@ -242,7 +242,7 @@ class PillarNetVALOR(Detector3DTemplate):
             pass
         self.sched_step = 0
         self.sched_time_point_ms = 0
-        self.enable_forecasting_to_fut = False # makes it worse on hard dl
+        self.enable_forecasting_to_fut = True
 
     def forward(self, batch_dict):
         if self.training:
@@ -288,8 +288,6 @@ class PillarNetVALOR(Detector3DTemplate):
                     if self.is_calibrating() else None)
 
             fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
-            if self.is_calibrating():
-                fixed_res_idx = -1 # enforce to calculate wcet
 
             # Schedule by calculating the exec time of all resolutions
             conf_found, shrink = False, False
@@ -299,7 +297,14 @@ class PillarNetVALOR(Detector3DTemplate):
                 x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
 
             if fixed_res_idx > -1:
-                self.res_idx = fixed_res_idx
+                if not self.is_calibrating():
+                    self.res_idx = fixed_res_idx
+                points_xy_s = batch_dict['points'][:, 1:3] - self.mpc_script.pc_range_min
+                pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
+                nz_slice_inds = pillar_counts[0].cpu().nonzero()
+                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
+                x_minmax[self.res_idx, 0] = xmin
+                x_minmax[self.res_idx, 1] = xmax
             elif self.deadline_based_selection:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
@@ -448,21 +453,17 @@ class PillarNetVALOR(Detector3DTemplate):
             if self.enable_forecasting_to_fut:
                 forecasted_dets = self.sampled_dets[self.dataset_indexes[0]]
                 if forecasted_dets is not None:
-                    # filter those which were forecasted already
                     forecasted_pd = forecasted_dets[0]
-                    ps = forecasted_pd['pred_scores']
-                    mask = (ps >= self.score_thresh)
-                    for k in ('pred_boxes', 'pred_labels'):
-                        forecasted_pd[k] = forecasted_pd[k][mask]
-                    # Deprioritize the forecasted
-                    forecasted_pd['pred_scores'] = torch.full(forecasted_pd['pred_labels'].shape,
-                            self.score_thresh * 0.9, dtype=ps.dtype)
+                    # Deprioritize the forecasted for NMS
+                    scores = forecasted_pd['pred_scores']
+                    forecasted_pred_scores = torch.full(scores.shape,
+                            self.score_thresh * 0.9, dtype=scores.dtype)
                     # Split
                     forecasted_dets = split_dets(
                             self.dense_head_scrpt.cls_id_to_det_head_idx_map,
                             self.dense_head_scrpt.num_det_heads,
                             forecasted_pd['pred_boxes'],
-                            forecasted_pd['pred_scores'],
+                            forecasted_pred_scores,
                             forecasted_pd['pred_labels'] - 1,
                             False) # moves results to gpu if true
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)

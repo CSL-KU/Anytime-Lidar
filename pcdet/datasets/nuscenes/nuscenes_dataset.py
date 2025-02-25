@@ -328,7 +328,7 @@ class NuScenesDataset(DatasetTemplate):
             nusc_version=self.dataset_cfg.VERSION,
             nusc_dataroot=str(self.root_path),
         )
-        metrics_summary = nusc_eval.main()
+        metrics_summary = nusc_eval.main(render_curves=False)
 
 
     def create_groundtruth_database(self, used_classes=None, max_sweeps=10):

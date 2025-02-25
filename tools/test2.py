@@ -32,6 +32,8 @@ import importlib
 # import numba
 import concurrent.futures
 
+from eval_utils.centerpoint_tracker import CenterpointTracker as Tracker
+
 def get_dataset(cfg):
     log_file = './tmp_results/log_eval_%s' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     log_file = log_file + str(np.random.randint(0, 9999)) + '.txt'
@@ -96,10 +98,14 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     time_pred_diffs = []
     # sample_tokens = []
     model.simulate_exec_time = simulate_exec_time
-    model.enable_forecasting = forecasting
+    model.enable_forecasting_to_fut = forecasting
     model.calibrate()
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
     sampled_exec_times_ms = [None] * num_samples
+
+    sched_algo = 'closer'
+    #sched_algo = 'periodic'
+    #sched_algo = 'dynamic'
 
     with alive_bar(num_samples, force_tty=True, max_cols=160, manual=True) as bar:
         while cur_sample_idx < num_samples:
@@ -108,14 +114,13 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                 potential_sample_tkn = model.dataset.infos[cur_sample_idx]['token']
                 scene_token = model.token_to_scene[potential_sample_tkn]
                 if cur_sample_idx > 0 and model.prev_scene_token != scene_token:
-                    #print('NEW SCENE')
                     target_sched_time_ms = 0.
                     while model.prev_scene_token != scene_token:
                         cur_sample_idx -= 1
                         potential_sample_tkn = model.dataset.infos[cur_sample_idx]['token']
                         scene_token = model.token_to_scene[potential_sample_tkn]
                     cur_sample_idx += 1
-                    model.sim_cur_time_ms = cur_sample_idx * data_period_ms
+                    model.sim_cur_time_ms = float(cur_sample_idx * data_period_ms)
 
             with torch.no_grad():
                 lbd = model.latest_batch_dict # save bef its modified
@@ -137,14 +142,19 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                 model.sampled_dets[cur_sample_idx] = pred_dicts
 
             exec_times_ms.append((sample_tkn, last_exec_time_ms))
-            sampled_exec_times_ms[cur_sample_idx] = last_exec_time_ms
+            sampled_exec_times_ms[cur_sample_idx] = (last_exec_time_ms, model.sim_cur_time_ms)
 
             if hasattr(model, 'res_idx'):
                 resolution_stats[model.res_idx] += 1
 
-            sched_algo = 'closer'
-            #sched_algo = 'dynamic'
-            if streaming and last_exec_time_ms > data_period_ms:
+            if streaming and sched_algo == 'periodic':
+                # The model is assumed to be executed in a periodic manner
+                # If exec time is more than the period, it is assumed that
+                # the task was aborted with no result
+                #model.sim_cur_time_ms = int(len(exec_times_ms) * \
+                #        (model._default_deadline_sec * 1000))
+                next_sample_idx = int(model.sim_cur_time_ms / data_period_ms)
+            elif streaming and last_exec_time_ms > data_period_ms:
                 cur_tail = calc_tail_ms(model.sim_cur_time_ms, data_period_ms)
                 if sched_algo == 'closer':
                     if cur_tail > data_period_ms / 2:
@@ -201,11 +211,15 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         pred_dicts = sampled_objects[i]
 
         if pred_dicts is None:
-            pred_dicts = [{
-                'pred_boxes': torch.empty((0, 9)),
-                'pred_scores': torch.empty(0),
-                'pred_labels': torch.empty(0, dtype=torch.long)
-            }]
+            if i > 0 and sampled_objects[i-1] is not None:
+                sampled_objects[i] = sampled_objects[i-1]
+                pred_dicts = sampled_objects[i]
+            else:
+                pred_dicts = [{
+                    'pred_boxes': torch.empty((0, 9)),
+                    'pred_scores': torch.empty(0),
+                    'pred_labels': torch.empty(0, dtype=torch.long)
+                }]
         data_dict['final_box_dicts'] = pred_dicts
         det_annos += dataset.generate_prediction_dicts(
             data_dict, data_dict['final_box_dicts'], dataset.class_names, output_path=None
@@ -213,6 +227,7 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
 
     #nusc_annos = {} # not needed but keep it anyway
     print('STREAMING EVAL' if streaming else 'OFFLINE EVAL')
+    nusc_annos = {}
     result_str, result_dict = dataset.evaluation(
         det_annos, dataset.class_names,
         eval_metric='kitti', #model.model_cfg.POST_PROCESSING.EVAL_METRIC,
@@ -220,34 +235,115 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         boxes_in_global_coords=False,
         loaded_nusc=loaded_nusc,
         det_elapsed_musec=None,
+        nusc_annos_outp=nusc_annos,
         #(None if streaming else exec_times_musec)
     )
 
-    #calib_id = int(os.environ.get('CALIBRATION', '0'))
-    #if calib_id > 0:
-    #    ridx = int(os.environ.get('FIXED_RES_IDX', -1))
-    #    eval_d = {
-    #           'exec_times_ms': sampled_exec_times_ms,
-    #           'objects': sampled_objects,
-    #           'egovels': egovels,
-    #           'resolution': ridx,
-    #           'result_str': result_str
-    #    }
-    #    with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
-    #        pickle.dump(eval_d, f)
+    do_tracking=True
+    if do_tracking:
+        ## NUSC TRACKING START
+        tracker = Tracker(max_age=6, hungarian=False)
+        predictions = nusc_annos['results']
+        with open('frames/frames_meta.json', 'rb') as f:
+            frames=json.load(f)['frames']
 
-    if dump_eval_dict:
-        eval_d = {
-                'cfg': cfg,
-                'exec_times_musec': exec_times_musec,
-                'det_annos': det_annos,
-                'annos_in_glob_coords': False,
-                'resolution': resolution_idx,
-                'result_str': result_str,
+        nusc_trk_annos = {
+            "results": {},
+            "meta": None,
+        }
+        size = len(frames)
+
+        print("Begin Tracking\n")
+        start = time.time()
+        for i in range(size):
+            token = frames[i]['token']
+
+            # reset tracking after one video sequence
+            if frames[i]['first']:
+                # use this for sanity check to ensure your token order is correct
+                # print("reset ", i)
+                tracker.reset()
+                last_time_stamp = frames[i]['timestamp']
+
+            time_lag = (frames[i]['timestamp'] - last_time_stamp)
+            last_time_stamp = frames[i]['timestamp']
+
+            preds = predictions[token]
+
+            outputs = tracker.step_centertrack(preds, time_lag)
+            annos = []
+
+            for item in outputs:
+                if item['active'] == 0:
+                    continue
+                nusc_anno = {
+                    "sample_token": token,
+                    "translation": item['translation'],
+                    "size": item['size'],
+                    "rotation": item['rotation'],
+                    "velocity": item['velocity'],
+                    "tracking_id": str(item['tracking_id']),
+                    "tracking_name": item['detection_name'],
+                    "tracking_score": item['detection_score'],
+                }
+                annos.append(nusc_anno)
+            nusc_trk_annos["results"].update({token: annos})
+        end = time.time()
+        second = (end-start)
+        speed=size / second
+        print("The speed is {} FPS".format(speed))
+        nusc_trk_annos["meta"] = {
+            "use_camera": False,
+            "use_lidar": True,
+            "use_radar": False,
+            "use_map": False,
+            "use_external": False,
         }
 
-        with open(f'sampled_dets_res{resolution_idx}.pkl', 'wb') as f:
+        with open('tmp_results/tracking_result.json', "w") as f:
+            json.dump(nusc_trk_annos, f)
+
+        #result is nusc_annos
+        dataset.tracking_evaluation(
+            output_path='tmp_results',
+            res_path='tmp_results/tracking_result.json'
+        )
+        ## NUSC TRACKING END
+
+        with open('tmp_results/metrics_summary.json', 'rb') as f:
+            tracking_res=json.load(f)
+
+    calib_id = int(os.environ.get('CALIBRATION', '0'))
+    if calib_id > 0:
+        ridx = int(os.environ.get('FIXED_RES_IDX', -1))
+        eval_d = {
+               'exec_times_ms': sampled_exec_times_ms,
+               'objects': sampled_objects,
+               'egovels': egovels,
+               'resolution': ridx,
+               'result_str': result_str,
+               'tracking_result': tracking_res,
+        }
+        with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
             pickle.dump(eval_d, f)
+
+#    if dump_eval_dict:
+#        eval_d = {
+#                'cfg': cfg,
+#                'exec_times_musec': exec_times_musec,
+#                'det_annos': det_annos,
+#                'annos_in_glob_coords': False,
+#                'resolution': resolution_idx,
+#                'result_str': result_str,
+#        }
+#
+#        with open(f'sampled_dets_res{resolution_idx}.pkl', 'wb') as f:
+#            pickle.dump(eval_d, f)
+    if do_tracking:
+        for k, v in tracking_res.items():
+            if isinstance(v, str) or isinstance(v, float) or isinstance(v, int):
+                result_str += k + ': ' + str(v) + '\n'
+
     return result_str
 
 LOADED_NUSC = None
@@ -288,7 +384,7 @@ if __name__ == "__main__":
         ckpt_file = "../models/pillarnet015_epoch20.pth"
     elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
         cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch25.pth"
+        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch40.pth"
         #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
         num_res = 5
     elif chosen_method == 'VALORmew': # VALOR Pillarnet LS 5res
@@ -317,6 +413,7 @@ if __name__ == "__main__":
                     streaming=streaming,
                     forecasting=forecasting,
                     simulate_exec_time=sim_exec_time)
+            dl_misses = model._eval_dict['deadlines_missed']
             for outf in (fw, sys.stdout):
                 print(f'Method:           {chosen_method}\n'
                       f'Config file:      {cfg_file}\n'
@@ -326,6 +423,7 @@ if __name__ == "__main__":
                       f'Streaming:        {streaming}\n'
                       f'Forecasting:      {forecasting}\n'
                       f'Resolution stats: {resolution_stats}\n'
+                      f'Deadline misses:  {dl_misses}\n'
                       f'Latency stats:', file=outf)
                 model.print_time_stats(outfile=outf)
 

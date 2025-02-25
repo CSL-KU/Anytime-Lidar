@@ -21,10 +21,10 @@ from nuscenes.utils import splits
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tracking Evaluation")
-    parser.add_argument("--work_dir", type=str, default=".",
+    parser.add_argument("--work_dir", type=str, default="./frames/",
             help="the dir to save logs and tracking results")
     parser.add_argument("--root", type=str, default="../data/nuscenes")
-    parser.add_argument("--version", type=str, default='v1.0-mini')
+    parser.add_argument("--version", type=str, default='v1.0-trainval')
 
     args = parser.parse_args()
 
@@ -35,8 +35,9 @@ def save_first_frame():
     args = parse_args()
     root= os.path.join(args.root, args.version)
     nusc = NuScenes(version=args.version, dataroot=root, verbose=True)
+    do_calib = int(os.getenv('CALIBRATION', 0))
     if args.version == 'v1.0-trainval':
-        scenes = splits.val
+        scenes = splits.train if do_calib > 0 else splits.val
     elif args.version == 'v1.0-test':
         scenes = splits.test 
     elif args.version == 'v1.0-mini':

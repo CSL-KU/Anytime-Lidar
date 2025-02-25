@@ -183,6 +183,10 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         det_elapsed_musec.append(model.last_elapsed_time_musec)
         disp_dict = {}
 
+#        allocated, reserved = torch.cuda.memory_allocated(), torch.cuda.memory_reserved()
+#        allocated_MB, reserved_MB = allocated // (1024**2), reserved // (1024**2)
+#        print(f'Allocated: {allocated_MB} MB, Reserved: {reserved_MB} MB')
+
         if getattr(args, 'infer_time', False):
             inference_time = time.time() - start_time
             infer_time_meter.update(inference_time * 1000)
@@ -356,7 +360,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
                 ## NUSC TRACKING START
                 tracker = Tracker(max_age=6, hungarian=False)
                 predictions = nusc_annos['results']
-                with open('frames_meta.json', 'rb') as f:
+                with open('frames/frames_meta.json', 'rb') as f:
                     frames=json.load(f)['frames']
 
                 nusc_trk_annos = {

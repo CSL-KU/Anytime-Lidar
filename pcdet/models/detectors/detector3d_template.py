@@ -137,12 +137,24 @@ def post_forward_hook(module, inp_args, outp_args):
     future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
             if ind < len(module.dataset)]).int()
 
-    forc_bboxes_all = None
+    forecasted_objs_pd_list = []
     if module.enable_forecasting_to_fut:
         egovel = module.sampled_egovels[module.dataset_indexes[0]]
-        inp_arrival_ms = module.sim_cur_time_ms
-        forc_bboxes_all = module.forecast(egovel, future_sample_inds, inp_arrival_ms,
-                                          batch_dict['final_box_dicts'][0])
+        inp_arrival_ms = module.sim_cur_time_ms # NOTE FIX THIS FOR STREAMING, can be earlier
+
+        # Do not forecast those which are already forecasted!
+        pd_to_forecast = batch_dict['final_box_dicts'][0]
+        ps = pd_to_forecast['pred_scores']
+        mask = (ps >= module.score_thresh) # this is on cpu, shouldnt take much time
+        bboxes_to_forecast = pd_to_forecast['pred_boxes'][mask]
+        forecasted_scores = pd_to_forecast['pred_scores'][mask]
+        forecasted_labels = pd_to_forecast['pred_labels'][mask]
+        forecasted_boxes_list = module.forecast(egovel, future_sample_inds, inp_arrival_ms,
+                                          bboxes_to_forecast)
+        for fbboxes in forecasted_boxes_list:
+            forecasted_objs_pd_list.append({'pred_boxes': fbboxes,
+                              'pred_scores': forecasted_scores,
+                              'pred_labels': forecasted_labels})
 
     if module.is_calibrating() and 'bb2d_time_events' in batch_dict:
         e = torch.cuda.Event(enable_timing=True)
@@ -150,7 +162,7 @@ def post_forward_hook(module, inp_args, outp_args):
         e_prev = batch_dict['bb2d_time_events'][1]
         batch_dict['detheadpost_time_events'] = [e_prev, e]
 
-    if module.simulate_exec_time:
+    if not module.simulate_exec_time:
         finish_time = time.time()
         exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
 
@@ -161,6 +173,7 @@ def post_forward_hook(module, inp_args, outp_args):
     if ignore_dl_miss: # nonperiodic
         module.sim_cur_time_ms += exec_time_ms
     else: # periodic execution
+        #NOTE use time stamp dict instead
         module.sim_cur_time_ms += module.data_period_ms
 
     #torch.cuda.synchronize() # the .cpu() calls sync anyway
@@ -173,10 +186,8 @@ def post_forward_hook(module, inp_args, outp_args):
     if ignore_dl_miss or not dl_missed:
         if module.enable_forecasting_to_fut:
             # assign forecasting result
-            for forc_bboxes, sample_ind_f in zip(forc_bboxes_all, future_sample_inds.tolist()):
-                forecasted_pd = {k : pred_dicts[0][k] for k in ('pred_scores', 'pred_labels')}
-                forecasted_pd['pred_boxes'] = forc_bboxes
-                module.sampled_dets[sample_ind_f] = [forecasted_pd]
+            for forecasted_objs_pd, sample_ind_f in zip(forecasted_objs_pd_list, future_sample_inds.tolist()):
+                module.sampled_dets[sample_ind_f] = [forecasted_objs_pd]
         else:
             # Needed for streaming eval
             for sample_ind_f in future_sample_inds.tolist():
@@ -372,10 +383,10 @@ class Detector3DTemplate(nn.Module):
 
         return err
 
-    def forecast(self, egovel, future_sample_inds, inp_arrival_ms, pred_dict):
+    def forecast(self, egovel, future_sample_inds, inp_arrival_ms, pred_boxes):
         time_diffs_sec = (future_sample_inds * self.data_period_ms - \
                 inp_arrival_ms) * 1e-3
-        outp_bboxes_all = move_bounding_boxes(pred_dict['pred_boxes'], \
+        outp_bboxes_all = move_bounding_boxes(pred_boxes, \
                 torch.from_numpy(egovel), time_diffs_sec)
 
         return outp_bboxes_all

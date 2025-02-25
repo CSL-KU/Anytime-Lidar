@@ -21,12 +21,12 @@ def create_trt_engine(onnx_path, outp_engine_path, inp_name, min_shape, opt_shap
         f"trtexec",
         f"--onnx={onnx_path}",
         f"--saveEngine={outp_engine_path}",
-        "--noTF32",
         f"--minShapes={inp_name}:{min_shape}",
         f"--optShapes={inp_name}:{opt_shape}",
         f"--maxShapes={inp_name}:{max_shape}",
         f"--staticPlugins={plugin_path}"
     ]
+#        "--noTF32",
     print('Running command:')
     for cmd in command:
         print(cmd)

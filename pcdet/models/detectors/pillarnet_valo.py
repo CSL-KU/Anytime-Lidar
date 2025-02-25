@@ -88,10 +88,9 @@ class PillarNetVALO(AnytimeTemplateV2):
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
 
-        is_x86 = (platform.machine() in ['x86_64', 'AMD64', 'x86'])
-
-        torch.backends.cuda.matmul.allow_tf32 = is_x86
-        torch.backends.cudnn.allow_tf32 = is_x86
+        allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 

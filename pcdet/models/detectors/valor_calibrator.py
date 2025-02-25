@@ -124,7 +124,8 @@ class ValorCalibrator():
         dense_t = self.dense_ops_times_ms[num_chosen_slices-1]
         total_time_pred = time_pred + bb3d_t + dense_t
 
-        while total_time_pred > deadline_ms and num_chosen_slices > 3 * self.num_slices // 4:
+        num_slc_lower_bound = int(num_chosen_slices * 0.8)
+        while total_time_pred > deadline_ms and num_chosen_slices > num_slc_lower_bound:
             if flip:
                 slc_bgn_idx += 1
                 bb3d_t = bb3d_time_preds[slc_bgn_idx]
@@ -248,10 +249,10 @@ class ValorCalibrator():
 
         self.dense_ops_times_dict = self.calib_data_dict['dense_ops_ms_dict']
         for sz, latency in self.dense_ops_times_dict.items():
-            latency50perc = np.percentile(latency, 50)
-            self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency50perc
+            latency90perc = np.percentile(latency, 90)
+            self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency90perc
 
-        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 50)
+        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 90)
         if False:
             print('preprocess_wcet_ms', self.preprocess_wcet_ms)
             print('dense_ops_times_ms')
