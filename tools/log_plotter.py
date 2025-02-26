@@ -28,21 +28,15 @@ method_colors= [
 ]
 
 method_num_to_str = [
-        '0CenterPoint75',
-        '1CenterPoint100',
-        '2CenterPoint200',
-        '3VoxelNext75',
-        '4VALO-CP75',
-        '5VALO-BLTP-CP75',
-        '6VALO-VN75',
-        '7VALO-BLTP-VN75',
-        '8VALO-NF-CP75',
-        '9VALO-NSNF-CP75',
-        '9AnytimeLidar-CP75',
-        '9VALO-CP100',
-        '9VALO-NRD-CP75', # no tile drop
-        '9VALO-DSVT',
-        '9DSVT',
+        '0Pillarnet010',
+        '1Pillarnet015',
+        '2Pillarnet020',
+        '3Pillarnet024',
+        '4Pillarnet030',
+        '5VALO-010',
+        '6MURAL',
+        '7MURAL-NDCO-NF',
+        '8MURAL-NF',
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -80,52 +74,30 @@ if __name__ == '__main__':
 
     plot_sets=[]
 
-
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint75',
-            'AnytimeLidar-CP75',
-            'VALO-CP75',
+            'Pillarnet010',
+            'Pillarnet015',
+            'Pillarnet020',
+            'Pillarnet024',
+            'Pillarnet030',
+            'MURAL',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint75',
-            'CenterPoint100',
-            'CenterPoint200',
-            'VALO-CP75',
+            'VALO-010',
+            'MURAL',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint75',
-            'VALO-NSNF-CP75',
-            'VALO-NF-CP75',
-            #'VALO-NRD-CP75',
-            'VALO-CP75',
+            'MURAL',
+            'MURAL-NF',
+            'MURAL-NDCO-NF',
     ]})
-
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'VoxelNext75',
-            'VALO-BLTP-VN75',
-            'VALO-VN75',
-    ]})
-
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint75',
-            'VALO-CP75',
-            #'VALO-NRD-CP75',
-    ]})
-
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'CenterPoint75',
-            'VALO-CP75',
-            'DSVT',
-            'VALO-DSVT',
-    ]})
-
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]
-    out_path="/root/shared_data/exp_plots/set" + sys.argv[2]
-    for p in ["/root/shared_data/exp_plots", out_path]:
+    out_path="/home/humble/shared/exp_plots/set" + sys.argv[2]
+    for p in ["/home/humble/shared/exp_plots", out_path]:
         try:
             os.mkdir(p)
         except FileExistsError:
@@ -153,6 +125,12 @@ if __name__ == '__main__':
 
     # for plotting
     procs = []
+
+    #procs.append(Process(target=plot_func_baseline_eted_box, args=(out_path, exps_dict,)))
+    #procs[-1].start()
+
+    procs.append(Process(target=plot_res_select_stats, args=(out_path, exps_dict,)))
+    procs[-1].start()
 
     procs.append(Process(target=plot_func_dm, args=(out_path, exps_dict,)))
     procs[-1].start()

@@ -297,6 +297,49 @@ def plot_func_eted(out_path, exps_dict):
     plt.savefig(out_path + "/end-to-end_deadlines.pdf")
 
 
+def plot_func_baseline_eted_box(out_path, exps_dict):
+    are_all_baseline = all(['Pillarnet' in name for name in exps_dict.keys()])
+    if not are_all_baseline:
+        return
+
+    offline_mAP_scores_30epoch = {
+        'Pillarnet010' : 0.5499,
+        'Pillarnet015' : 0.5431,
+        'Pillarnet020' : 0.5128,
+        'Pillarnet024' : 0.4804,
+        'Pillarnet030' : 0.4443,
+    }
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
+    ax_acc = ax.twinx()
+    for i, (label, eval_dicts) in enumerate(exps_dict.items()):
+        ed = eval_dicts[-1]
+        assert int(ed['deadline_msec']) == 300 # highest deadline, doesnt matter much tho
+        time_data = np.array(ed['exec_times']['End-to-end'])
+        ax.boxplot(time_data, labels=[label], positions=[i], sym=".")
+        norm_mAP = offline_mAP_scores_30epoch[label]/offline_mAP_scores_30epoch['Pillarnet010']
+        ax_acc.plot(i, norm_mAP, 'r*', markersize=5)
+        # Add text slightly to the right of the point
+        ax_acc.text(i + 0.1, norm_mAP, f'{norm_mAP:.2f}',
+                 color='red',
+                 verticalalignment='center')
+
+    # Set axis ranges and scale them to match
+    ax.set_ylim(0, 300)  # execution time range
+    ax_acc.set_ylim(0, 1.1)     # accuracy range
+
+    # Make the axis scales match visually
+    #ax1_range = 300
+    #ax2_range = 1
+    #ax2.set_ylim(0, 1)
+
+    # Optional: add grid for easier comparison
+    ax.grid(True, alpha=0.3)
+
+    ax.set_ylabel('Execution time (msec)', fontsize='x-large')
+    ax_acc.set_ylabel('Normalized Accuracy', color='red', fontsize='x-large')
+    plt.savefig(out_path + f"/baselines_e2e_boxplot.pdf")
+
 # box plan can be cdf as well
 def plot_func_component_time(out_path, exps_dict, plot_type='boxplot'):
     # compare three different cases
@@ -581,60 +624,84 @@ def plot_instance_data(out_path, merged_exps_dict):
 
 
 def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
-    max_NDS = 0.
-    for exp_name, evals in exps_dict.items():
-        NDS_arr = [e['mAP']['NDS'] for e in evals]
-        max_NDS = max(max(NDS_arr), max_NDS)
-    
-    #max_NDS = 0.67
-    #print('USING HARDCODED MAX NDS!')
-    for exp_name, evals in merged_exps_dict.items():
-        evals['mAP']['normalized_NDS'] = np.array(evals['mAP']['NDS']) / max_NDS * 100.
- 
-    #Add normalized accuracy
-    i = 0
+    for metric in ('mAP', 'NDS'):
+        max_NDS = 0.
+        for exp_name, evals in exps_dict.items():
+            NDS_arr = [e['mAP'][metric] for e in evals]
+            max_NDS = max(max(NDS_arr), max_NDS)
+
+        for exp_name, evals in merged_exps_dict.items():
+            evals['mAP']['normalized'] = np.array(evals['mAP'][metric]) / max_NDS * 100.
+
+        #Add normalized accuracy
+        i = 0
+        fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
+        for exp_name, evals in merged_exps_dict.items():
+            x = evals['deadline_msec']
+            y = evals['mAP']['normalized']
+            l2d = ax.plot(x, y, label=exp_name,
+                    marker='.', markersize=10, markeredgewidth=0.7,
+                    c=evals['color'][0], linestyle=evals['lnstyle'][0])
+            i+=1
+        ax.set_xticks(x)
+        ax.invert_xaxis()
+        ax.legend(fontsize='medium')
+        ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
+        ax.set_xlabel('Deadline (msec)', fontsize='x-large')
+        ax.grid('True', ls='--')
+        ax.set_ylim(-5.0, 110.)
+
+        plt.savefig(out_path + f"/normalized_{metric}_deadlines.pdf")
+
+        fig, ax = plt.subplots(1, 1, figsize=(9, 3), constrained_layout=True)
+        labels = list(merged_exps_dict.keys())
+        #x_values = np.arange(len(labels))
+        x_values = labels
+        y_values = [round(sum(evals['mAP']['normalized'])/ \
+                len(evals['mAP']['normalized']),1) \
+                for evals in merged_exps_dict.values()]
+
+        rects = ax.bar(x_values, y_values, color=[v['color'][0] for v in merged_exps_dict.values()])
+        #ax.tick_params(
+        #    axis='x',          # changes apply to the x-axis
+        #    which='both',      # both major and minor ticks are affected
+        #    bottom=False,      # ticks along the bottom edge are off
+        #    top=False,         # ticks along the top edge are off
+        #    labelbottom=False) # labels along the bottom edge are off
+        autolabel(rects, ax)
+        for r, l in zip(rects, labels):
+            r.set_label(l)
+        #ax.legend(fontsize='medium', ncol=3)
+        ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
+        #ax.set_xlabel(')', fontsize='x-large')
+        #ax.grid('True', ls='--')
+        ax.set_yticks(np.arange(0, 100.1, 20))
+        ax.set_ylim(-1.0, 110.)
+
+        plt.savefig(out_path + f"/normalized_{metric}_bar.pdf")
+
+def plot_res_select_stats(out_path, exps_dict):
+    if 'MURAL' not in exps_dict:
+        return
+
     fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
-    for exp_name, evals in merged_exps_dict.items():
-        x = evals['deadline_msec']
-        y = evals['mAP']['normalized_NDS']
-        l2d = ax.plot(x, y, label=exp_name,
-                marker='.', markersize=10, markeredgewidth=0.7,
-                c=evals['color'][0], linestyle=evals['lnstyle'][0])
-        i+=1
-    ax.set_xticks(x)
-    ax.invert_xaxis()
-    ax.legend(fontsize='medium')
-    ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
-    ax.set_xlabel('Deadline (msec)', fontsize='x-large')
-    ax.grid('True', ls='--')
-    ax.set_ylim(-5.0, 110.)
+    deadlines, rsels = [], []
+    for ed in reversed(exps_dict['MURAL']):
+        deadlines.append(str(ed['deadline_msec']))
+        res_selections = np.array(ed['resolution_selections'])
+        rsels.append(res_selections / np.sum(res_selections) * 100)
 
-    plt.savefig(out_path + "/normalized_NDS_deadlines.pdf")
-
-    fig, ax = plt.subplots(1, 1, figsize=(9, 3), constrained_layout=True)
-    labels = list(merged_exps_dict.keys())
-    #x_values = np.arange(len(labels))
-    x_values = labels
-    y_values = [round(sum(evals['mAP']['normalized_NDS'])/ \
-            len(evals['mAP']['normalized_NDS']),1) \
-            for evals in merged_exps_dict.values()]
-
-    rects = ax.bar(x_values, y_values, color=[v['color'][0] for v in merged_exps_dict.values()])
-    #ax.tick_params(
-    #    axis='x',          # changes apply to the x-axis
-    #    which='both',      # both major and minor ticks are affected
-    #    bottom=False,      # ticks along the bottom edge are off
-    #    top=False,         # ticks along the top edge are off
-    #    labelbottom=False) # labels along the bottom edge are off
-    autolabel(rects, ax)
-    for r, l in zip(rects, labels):
-        r.set_label(l)
-    #ax.legend(fontsize='medium', ncol=3)
-    ax.set_ylabel('Normalized accuracy (%)', fontsize='x-large')
-    #ax.set_xlabel(')', fontsize='x-large')
-    #ax.grid('True', ls='--')
-    ax.set_yticks(np.arange(0, 100.1, 20))
-    ax.set_ylim(-1.0, 110.)
-
-    plt.savefig(out_path + "/normalized_NDS_bar.pdf")
+    rsels = np.stack(rsels).T
+    width = 0.5
+    labels = [r'$0.10^2$ m', r'$0.15^2$ m', r'$0.20^2$ m', r'$0.24^2$ m', r'$0.30^2$ m']
+    bottom = np.zeros(rsels.shape[1])
+    for i in range(len(rsels)):
+        ax.bar(np.arange(len(deadlines)), rsels[i], width, label=labels[i], bottom=bottom,
+               tick_label=deadlines)
+        bottom += rsels[i]
+    ax.set_ylim(0, 105)  # Percentage
+    ax.legend()
+    ax.set_ylabel("Pillar size\nselection rate (%)", fontsize='x-large')
+    ax.set_xlabel("Deadline (msec)", fontsize='x-large')
+    plt.savefig(out_path + f"/MURAL_res_sel_stats.pdf")
 
