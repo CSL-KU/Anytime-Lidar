@@ -77,6 +77,8 @@ class ValorCalibrator():
         self.calib_data_dict = None
         self.last_pred = np.zeros(5)
 
+        self.data_sched_thr = float(os.environ.get('DATA_SCHED_THR', 0.7))
+
     # NOTE batch size has to be 1 !
     def pred_exec_time_ms(self, num_points : int, pillar_counts: np.ndarray, num_slices: int,
                           consider_prep_time=False) -> float:
@@ -124,7 +126,7 @@ class ValorCalibrator():
         dense_t = self.dense_ops_times_ms[num_chosen_slices-1]
         total_time_pred = time_pred + bb3d_t + dense_t
 
-        num_slc_lower_bound = int(num_chosen_slices * 0.8)
+        num_slc_lower_bound = int(num_chosen_slices * self.data_sched_thr)
         while total_time_pred > deadline_ms and num_chosen_slices > num_slc_lower_bound:
             if flip:
                 slc_bgn_idx += 1
@@ -249,10 +251,10 @@ class ValorCalibrator():
 
         self.dense_ops_times_dict = self.calib_data_dict['dense_ops_ms_dict']
         for sz, latency in self.dense_ops_times_dict.items():
-            latency90perc = np.percentile(latency, 90)
-            self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency90perc
+            latency99perc = np.percentile(latency, 99)
+            self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency99perc
 
-        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 90)
+        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 99)
         if False:
             print('preprocess_wcet_ms', self.preprocess_wcet_ms)
             print('dense_ops_times_ms')
