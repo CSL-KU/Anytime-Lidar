@@ -343,26 +343,27 @@ class ValorCalibrator():
                 gc.collect()
 
 
-        # Calculate DenseOps times that were not calculated
-        dense_ops_inp_sz = self.model.inp_tensor_sizes[self.res_idx]
-        dummy_inp = torch.rand(dense_ops_inp_sz).cuda()
-        max_width = dense_ops_inp_sz[3]
-        #print(sorted(list(dense_ops_ms_dict.keys())))
-        slc_sz = self.dense_inp_slice_sz
-        min_inp_width = 16
-        for target_width in range(min_inp_width, max_width+1, slc_sz):
-            if str(target_width) not in dense_ops_ms_dict:
-                dense_ops_ms_dict[str(target_width)] = []
-                print('Calibrating dense ops for missing slice width:', target_width)
-                torch.cuda.synchronize()
-                for i in range(10):
-                    cevents = [torch.cuda.Event(enable_timing=True) for e in range(2)]
-                    cevents[0].record()
-                    dummy_inp_slice = dummy_inp[..., :target_width].contiguous()
-                    self.model.forward_eval_dense(dummy_inp_slice)
-                    cevents[1].record()
+        if self.model.valo_opt_on:
+            # Calculate DenseOps times that were not calculated
+            dense_ops_inp_sz = self.model.inp_tensor_sizes[self.res_idx]
+            dummy_inp = torch.rand(dense_ops_inp_sz).cuda()
+            max_width = dense_ops_inp_sz[3]
+            #print(sorted(list(dense_ops_ms_dict.keys())))
+            slc_sz = self.dense_inp_slice_sz
+            min_inp_width = 16
+            for target_width in range(min_inp_width, max_width+1, slc_sz):
+                if str(target_width) not in dense_ops_ms_dict:
+                    dense_ops_ms_dict[str(target_width)] = []
+                    print('Calibrating dense ops for missing slice width:', target_width)
                     torch.cuda.synchronize()
-                    dense_ops_ms_dict[str(target_width)].append(cevents[0].elapsed_time(cevents[1]))
+                    for i in range(10):
+                        cevents = [torch.cuda.Event(enable_timing=True) for e in range(2)]
+                        cevents[0].record()
+                        dummy_inp_slice = dummy_inp[..., :target_width].contiguous()
+                        self.model.forward_eval_dense(dummy_inp_slice)
+                        cevents[1].record()
+                        torch.cuda.synchronize()
+                        dense_ops_ms_dict[str(target_width)].append(cevents[0].elapsed_time(cevents[1]))
 
         self.model._default_deadline_sec = deadline_backup
         gc.enable()

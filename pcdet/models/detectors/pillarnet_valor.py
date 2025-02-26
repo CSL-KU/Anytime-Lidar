@@ -78,27 +78,31 @@ class DenseConvsPipeline(torch.nn.Module):
         self.backbone_3d = backbone_3d
         self.backbone_2d = backbone_2d
         self.dense_head = dense_head
+        self.optimize_attr_convs = dense_head.model_cfg.OPTIMIZE_ATTR_CONVS
 
     def forward(self, x_conv4 : torch.Tensor) -> List[torch.Tensor]:
         x_conv5 = self.backbone_3d.forward_dense(x_conv4)
         data_dict = self.backbone_2d({"multi_scale_2d_features" : 
             {"x_conv4": x_conv4, "x_conv5": x_conv5}})
 
-        outputs = self.dense_head.forward_pre(data_dict['spatial_features_2d'])
-        shr_conv_outp = outputs[0]
-        heatmaps = outputs[1:]
+        if self.optimize_attr_convs:
+            outputs = self.dense_head.forward_pre(data_dict['spatial_features_2d'])
+            shr_conv_outp = outputs[0]
+            heatmaps = outputs[1:]
 
-        topk_outputs = self.dense_head.forward_topk_trt(heatmaps)
+            topk_outputs = self.dense_head.forward_topk_trt(heatmaps)
 
-        ys_all = [topk_outp[2] for topk_outp in topk_outputs]
-        xs_all = [topk_outp[3] for topk_outp in topk_outputs]
+            ys_all = [topk_outp[2] for topk_outp in topk_outputs]
+            xs_all = [topk_outp[3] for topk_outp in topk_outputs]
 
-        sliced_inp = self.dense_head.slice_shr_conv_outp(shr_conv_outp, ys_all, xs_all)
-        outputs = self.dense_head.forward_sliced_inp_trt(sliced_inp)
-        for topk_output in topk_outputs:
-            outputs += topk_output
+            sliced_inp = self.dense_head.slice_shr_conv_outp(shr_conv_outp, ys_all, xs_all)
+            outputs = self.dense_head.forward_sliced_inp_trt(sliced_inp)
+            for topk_output in topk_outputs:
+                outputs += topk_output
 
-        return outputs
+            return outputs
+        else:
+            return self.dense_head.forward_up_to_topk(data_dict['spatial_features_2d'])
 
 class MultiPillarCounter(torch.nn.Module):
     # Pass the args in cpu , pillar sizes should be [N,2], pc_range should be [6]
@@ -167,6 +171,15 @@ class MultiPillarCounter(torch.nn.Module):
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+
+        VALO_OPT_ON = 6
+        VALO_OPT_OFF = 7 # no dense conv opt, no forecasting
+        VALO_OPT_WO_FORECASTING = 8 # yes dense conv opt, no forecasting
+
+        self.valo_opt_on = (int(self.model_cfg.METHOD) == VALO_OPT_ON or \
+                int(self.model_cfg.METHOD) == VALO_OPT_WO_FORECASTING)
+        self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.valo_opt_on
+        self.enable_forecasting_to_fut = (int(self.model_cfg.METHOD) == VALO_OPT_ON)
 
         self.deadline_based_selection = True
         if self.deadline_based_selection:
@@ -242,7 +255,6 @@ class PillarNetVALOR(Detector3DTemplate):
             pass
         self.sched_step = 0
         self.sched_time_point_ms = 0
-        self.enable_forecasting_to_fut = True
 
     def forward(self, batch_dict):
         if self.training:
@@ -299,12 +311,13 @@ class PillarNetVALOR(Detector3DTemplate):
             if fixed_res_idx > -1:
                 if not self.is_calibrating():
                     self.res_idx = fixed_res_idx
-                points_xy_s = batch_dict['points'][:, 1:3] - self.mpc_script.pc_range_min
-                pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
-                nz_slice_inds = pillar_counts[0].cpu().nonzero()
-                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                x_minmax[self.res_idx, 0] = xmin
-                x_minmax[self.res_idx, 1] = xmax
+                if self.valo_opt_on:
+                    points_xy_s = batch_dict['points'][:, 1:3] - self.mpc_script.pc_range_min
+                    pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
+                    nz_slice_inds = pillar_counts[0].cpu().nonzero()
+                    xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
+                    x_minmax[self.res_idx, 0] = xmin
+                    x_minmax[self.res_idx, 1] = xmax
             elif self.deadline_based_selection:
                 points = batch_dict['points']
                 points_xy = points[:, 1:3].contiguous()
@@ -318,13 +331,16 @@ class PillarNetVALOR(Detector3DTemplate):
                 all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
                 for i in range(self.num_res):
                     pillar_counts = all_pillar_counts[i]
-                    nz_slice_inds = pillar_counts[0].nonzero()
-                    #time_passed_ms = (time.time() - start_time) * 1e3
-                    #time_left = deadline_ms - time_passed_ms
+                    if self.valo_opt_on:
+                        nz_slice_inds = pillar_counts[0].nonzero()
+                        #time_passed_ms = (time.time() - start_time) * 1e3
+                        #time_left = deadline_ms - time_passed_ms
+                        xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
+                        x_minmax[i, 0] = xmin
+                        x_minmax[i, 1] = xmax
+                    else:
+                        xmin, xmax = x_minmax[i, 0], x_minmax[i, 1]
                     time_left = (abs_dl_sec - time.time()) * 1000
-                    xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                    x_minmax[i, 0] = xmin
-                    x_minmax[i, 1] = xmax
 
                     if self.enable_data_sched:
                         pred_latency, new_xmin, new_xmax = self.calibrators[i]. \
@@ -436,16 +452,20 @@ class PillarNetVALOR(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
-            if fixed_res_idx == -1:
+            if fixed_res_idx == -1 and self.valo_opt_on:
                 lim1 = xmin*self.dense_inp_slice_sz
                 lim2 = (xmax+1)*self.dense_inp_slice_sz
                 x_conv4 = x_conv4[..., lim1:lim2].contiguous()
             batch_dict['tensor_slice_inds'] = (xmin, xmax)
             pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
+
+            self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
+            if not self.valo_opt_on:
+                topk_outputs = self.dense_head_scrpt.forward_topk(pred_dicts)
             self.measure_time_end('DenseOps')
 
             self.measure_time_start('CenterHead-GenBox')
-            if fixed_res_idx == -1:
+            if fixed_res_idx == -1 and self.valo_opt_on:
                 for i, topk_out in enumerate(topk_outputs):
                     topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
 
@@ -466,7 +486,7 @@ class PillarNetVALOR(Detector3DTemplate):
                             forecasted_pred_scores,
                             forecasted_pd['pred_labels'] - 1,
                             False) # moves results to gpu if true
-            self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
+
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
@@ -476,14 +496,24 @@ class PillarNetVALOR(Detector3DTemplate):
 
     # takes already sliced input
     def forward_eval_dense(self, x_conv4):
-        if self.fused_convs_trt[self.res_idx] is not None:
-            self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
-                    {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
-            pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
+        if self.valo_opt_on:
+            if self.fused_convs_trt[self.res_idx] is not None:
+                self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
+                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
+                pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
+            else:
+                outputs = self.opt_dense_convs(x_conv4)
+                out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
+                pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
         else:
-            outputs = self.opt_dense_convs(x_conv4)
-            out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
-            pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
+            if self.fused_convs_trt[self.res_idx] is not None:
+                self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
+                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
+                outputs = [self.trt_outputs[self.res_idx][nm] for nm in self.opt_outp_names]
+            else:
+                outputs = self.opt_dense_convs(x_conv4)
+            pred_dicts = self.dense_head.convert_out_to_pred_dicts(outputs)
+            topk_outputs = None
 
         return pred_dicts, topk_outputs
 
@@ -494,7 +524,8 @@ class PillarNetVALOR(Detector3DTemplate):
         assert fwd_data.shape[-3] % self.dense_inp_slice_sz == 0
 
         if self.dense_head_scrpt is None:
-            self.dense_head.instancenorm_mode()
+            if self.valo_opt_on:
+                self.dense_head.instancenorm_mode()
             self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
         # Not necessary but its ok
@@ -506,24 +537,28 @@ class PillarNetVALOR(Detector3DTemplate):
 
         input_names = ['x_conv4']
         print('Resolution idx:', self.res_idx, 'Input:', input_names[0], fwd_data.size())
-        self.opt_dense_convs_output_names_pd = [name + str(i) for i in range(self.dense_head.num_det_heads) \
-                for name in self.dense_head.ordered_outp_names(False)]
+        if self.valo_opt_on:
+            self.opt_dense_convs_output_names_pd = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                    for name in self.dense_head.ordered_outp_names(False)]
+            self.topk_outp_names = ('scores', 'class_ids', 'xs', 'ys')
+            self.opt_dense_convs_output_names_topk = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                    for name in self.topk_outp_names]
+            self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
+        else:
+            self.opt_outp_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
+                    for name in self.dense_head.ordered_outp_names()]
 
-        self.topk_outp_names = ('scores', 'class_ids', 'xs', 'ys')
-        self.opt_dense_convs_output_names_topk = [name + str(i) for i in range(self.dense_head.num_det_heads) \
-                for name in self.topk_outp_names]
 
-        self.opt_outp_names = self.opt_dense_convs_output_names_pd + self.opt_dense_convs_output_names_topk
         #print('Fused operations output names:', self.opt_outp_names)
 
         # Create a onnx and tensorrt file for each resolution
-        onnx_path = self.model_cfg.ONNX_PATH + f'_res{self.res_idx}.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '_m' + str(self.model_cfg.METHOD) + f'_res{self.res_idx}.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "x_conv4": {
                     3: "width",
                 },
-            }
+            } if self.valo_opt_on else {}
 
             torch.onnx.export(
                     self.opt_dense_convs,
@@ -547,13 +582,16 @@ class PillarNetVALOR(Detector3DTemplate):
             self.fused_convs_trt[self.res_idx] = TRTWrapper(trt_path, input_names, self.opt_outp_names)
         except:
             print('TensorRT wrapper for fused_convs throwed exception, building the engine')
-            N, C, H, W = (int(s) for s in fwd_data.shape)
-            # NOTE assumes the point cloud range is a square H == max W
-            max_W = H
-            min_shape = (N, C, H, 16)
-            opt_shape = (N, C, H, max_W  - 16)
-            max_shape = (N, C, H, max_W)
-            create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            if self.valo_opt_on:
+                N, C, H, W = (int(s) for s in fwd_data.shape)
+                # NOTE assumes the point cloud range is a square H == max W
+                max_W = H
+                min_shape = (N, C, H, 16)
+                opt_shape = (N, C, H, max_W  - 16)
+                max_shape = (N, C, H, max_W)
+                create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            else:
+                create_trt_engine(onnx_path, trt_path, input_names[0])
             self.fused_convs_trt[self.res_idx] = TRTWrapper(trt_path, input_names, self.opt_outp_names)
 
         optimize_end = time.time()
@@ -618,7 +656,8 @@ class PillarNetVALOR(Detector3DTemplate):
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_res{res_idx}.json"
+            name = self.model_name + '_m' + str(self.model_cfg.METHOD)
+            calib_fnames[res_idx] = f"calib_files/{name}_{power_mode}_res{res_idx}.json"
             try:
                 self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])
             except OSError:

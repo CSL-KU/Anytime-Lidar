@@ -50,8 +50,25 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     # PillarNet 0.1
     #CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_valor_v5.yaml"
     #CKPT_FILE="../models/pillar01_015_02_valor_v5_epoch30.pth"
+
+    ################################
+    #CFG_FILE="./cfgs/nuscenes_models/pillarnet010.yaml"
+    #CKPT_FILE="../models/pillarnet010_epoch30.pth"
+
     CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-    CKPT_FILE="../models/pillar01_015_02_024_03_valor_epoch30.pth"
+    CKPT_FILE="../models/pillar01_015_02_024_03_valor_epoch40.pth"
+
+    # this is pillarnet valo
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/pillarnet010_epoch30.pth"
+
+    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar015_res2d_centerpoint_valo.yaml"
+    #CKPT_FILE="../models/pillarnet015_epoch20.pth"
+    ########################################
+
+    #CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_024_03_valor_awsim.yaml"
+    #CKPT_FILE="../models/pillar01_015_02_024_03_valor_awsim_epoch30.pth"
+
     # PillarNet 0.2
     #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
     #CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
@@ -59,8 +76,6 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     # DSVT - CenterHead
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"
     #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusc_chm_ep25.pth"
-
-    ########################################
  
     
     # Centerpoint-voxel02
@@ -95,8 +110,6 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusences_aw_no_iou.yaml"
     #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusences_aw_no_iou_10sweeps.pth"
     #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusences_aw_2_untrained.pth"
-
-
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -127,96 +140,75 @@ elif [ $1 == 'profilem' ]; then
     $PROF_CMD $CMD --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
     #export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
-    export IGNORE_DL_MISS=0
-    export DO_EVAL=0
-    export E2E_REL_DEADLINE_S=0.0 # not streaming
-    export CALIBRATION=0
+  export IGNORE_DL_MISS=0
+  export DO_EVAL=0
+  export E2E_REL_DEADLINE_S=0.0 # not streaming
+  export CALIBRATION=0
 
-    rm eval_dict_*
-    OUT_DIR=exp_data_nsc_${1}
-    mkdir -p $OUT_DIR
+  rm eval_dict_*
+  OUT_DIR=exp_data_nsc_${1}
+  mkdir -p $OUT_DIR
 
-    CFG_FILES=( \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel02_res3d_centerpoint.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext_anytime.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_16.yaml" \
-	"./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml" \
-	"./cfgs/nuscenes_models/dsvt_anytime.yaml" \
-	"./cfgs/nuscenes_models/dsvt.yaml" )
+  CFG_FILES=( \
+    "./cfgs/nuscenes_models/pillarnet010.yaml"
+    "./cfgs/nuscenes_models/pillarnet015.yaml"
+    "./cfgs/nuscenes_models/pillarnet020.yaml"
+    "./cfgs/nuscenes_models/pillarnet024.yaml"
+    "./cfgs/nuscenes_models/pillarnet030.yaml"
+    "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
+    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
+    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
+    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml" )
 
-    CKPT_FILES=( \
-	"../models/cbgs_voxel0075_centerpoint_5swipes.pth" \
-	"../models/cbgs_voxel01_centerpoint_5swipes.pth" \
-	"../models/cbgs_voxel02_centerpoint_5swipes.pth" \
-	"../models/voxelnext_nuscenes_kernel1.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-	"../models/voxelnext_nuscenes_kernel1.pth" \
-	"../models/voxelnext_nuscenes_kernel1.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth" \
-	"../models/cbgs_voxel01_res3d_centerpoint_anytime_16.pth" \
-	"../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"  \
-	"../models/DSVT_Nuscenes_val.pth" \
-	"../models/DSVT_Nuscenes_val.pth" )
+  CKPT_FILES=( \
+    "../models/pillarnet010_epoch30.pth"
+    "../models/pillarnet015_epoch30.pth"
+    "../models/pillarnet020_epoch30.pth"
+    "../models/pillarnet024_epoch30.pth"
+    "../models/pillarnet030_epoch30.pth"
+    "../models/pillarnet010_epoch30.pth"
+    "../models/pillar01_015_02_024_03_valor_epoch40.pth"
+    "../models/pillar01_015_02_024_03_valor_epoch40.pth"
+    "../models/pillar01_015_02_024_03_valor_epoch40.pth" )
 
-    for m in ${!CFG_FILES[@]}
-    do
-        CFG_FILE=${CFG_FILES[$m]}
-        CKPT_FILE=${CKPT_FILES[$m]}
+  for m in ${!CFG_FILES[@]}
+  do
+    CFG_FILE=${CFG_FILES[$m]}
+    CKPT_FILE=${CKPT_FILES[$m]}
 
-	if [ $m == 10 ]; then
-		# need to change test.py
-		TSKST="taskset 0x3f"
-		MTD=10
-		export OMP_NUM_THREADS=2
-		export USE_ALV1=1
-	else
-		TSKST="taskset -c 2-7"
-		MTD=$m
-		export OMP_NUM_THREADS=4
-		export USE_ALV1=0
-	fi	
-        #CMD="nice --20 $TASKSET python test.py --cfg_file=$CFG_FILE \
-        #   --ckpt $CKPT_FILE --batch_size=1 --workers 0"
-	CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
-		--ckpt $CKPT_FILE --batch_size=1 --workers 0 $AMP"
+    TSKST="taskset -c 2-7"
+    MTD=$m
+    export OMP_NUM_THREADS=4
+    export USE_ALV1=0
+    CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
+        --ckpt $CKPT_FILE --batch_size=1 --workers 0 $AMP"
 
-	if [ $1 == 'methods' ]; then
-		for s in $(seq $2 $3 $4)
-		do
-		    OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
-		    if [ -f $OUT_FILE ]; then
-			printf "Skipping $OUT_FILE test.\n"
-		    else
-			$CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
-			# rename the output and move the corresponding directory
-			mv -f eval_dict_*.json $OUT_FILE
-			mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
-		    fi
-		done
-	else
-	    OUT_FILE=$OUT_DIR/eval_dict_m"$m"_dyndl.json
-	    if [ -f $OUT_FILE ]; then
-		printf "Skipping $OUT_FILE test.\n"
-	    else
-		$CMD --set "MODEL.DEADLINE_SEC" 100.0 "MODEL.METHOD" $MTD
-		# rename the output and move the corresponding directory
-		mv -f eval_dict_*.json $OUT_FILE
-		mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
-	    fi
-	fi
-    done
+    if [ $1 == 'methods' ]; then
+      for s in $(seq $2 $3 $4)
+      do
+        OUT_FILE=$OUT_DIR/eval_dict_m"$m"_d"$s".json
+        if [ -f $OUT_FILE ]; then
+          printf "Skipping $OUT_FILE test.\n"
+        else
+          $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD \
+            "MODEL.DENSE_HEAD.NAME" CenterHeadInf
+          # rename the output and move the corresponding directory
+          mv -f eval_dict_*.json $OUT_FILE
+          mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
+        fi
+      done
+    else
+      OUT_FILE=$OUT_DIR/eval_dict_m"$m"_dyndl.json
+      if [ -f $OUT_FILE ]; then
+        printf "Skipping $OUT_FILE test.\n"
+      else
+        $CMD --set "MODEL.DEADLINE_SEC" 100.0 "MODEL.METHOD" $MTD
+        # rename the output and move the corresponding directory
+        mv -f eval_dict_*.json $OUT_FILE
+        mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
+      fi
+    fi
+  done
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
