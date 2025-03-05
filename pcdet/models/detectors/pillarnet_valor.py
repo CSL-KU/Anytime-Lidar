@@ -89,12 +89,15 @@ class PillarNetVALOR(Detector3DTemplate):
         self.target_hw = [sz // fms for sz in self.dataset.grid_size[:2]]
         self.opt_dense_convs = None
 
-        self.calib_pc_range = torch.tensor(self.dataset.point_cloud_range).cuda()
+        # narrow it a little bit to avoid numerical errors
+        self.filter_pc_range = self.vfe.point_cloud_range + \
+                torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+        self.calib_pc_range = self.filter_pc_range.clone()
 
         #NOTE, this seems to work but I am not absolute
         t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
         pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
-        mpc = MultiPillarCounter(pillar_sizes, self.calib_pc_range.cpu())
+        mpc = MultiPillarCounter(pillar_sizes, self.vfe.point_cloud_range.cpu())
         mpc.eval()
         self.mpc_script = torch.jit.script(mpc)
         self.shrink_flip = False
@@ -156,9 +159,11 @@ class PillarNetVALOR(Detector3DTemplate):
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
-            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
-                                self.vfe.point_cloud_range)
-
+            points = batch_dict['points']
+            points = common_utils.pc_range_filter(points,
+                                self.calib_pc_range if self.is_calibrating() else
+                                self.filter_pc_range)
+            batch_dict['points'] = points
             fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
 
             # Schedule by calculating the exec time of all resolutions

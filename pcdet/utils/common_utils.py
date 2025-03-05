@@ -267,10 +267,10 @@ def sa_create(name, var):
 
 @torch.jit.script
 def pc_range_filter(points, point_cloud_range):
-    mask1 = points[:, 1] >= point_cloud_range[0] # -x
-    mask3 = points[:, 1] <= point_cloud_range[3] # +x
-    mask2 = points[:, 2] >= point_cloud_range[1] # -y
-    mask4 = points[:, 2] <= point_cloud_range[4] # +y
+    mask1 = points[:, 1] > point_cloud_range[0] # -x
+    mask3 = points[:, 1] < point_cloud_range[3] # +x
+    mask2 = points[:, 2] > point_cloud_range[1] # -y
+    mask4 = points[:, 2] < point_cloud_range[4] # +y
     return points[mask1 & mask2 & mask3 & mask4]
 
 class AverageMeter(object):

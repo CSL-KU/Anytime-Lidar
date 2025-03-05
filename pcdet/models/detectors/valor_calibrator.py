@@ -273,8 +273,8 @@ class ValorCalibrator():
 
     def collect_data(self, fname="calib_data.json"):
         print('Calibration starting...')
-        pc_range = self.model.dataset.point_cloud_range
-        print('POINT_CLOUD_RANGE:', pc_range)
+        pc_range = self.model.filter_pc_range.cpu().numpy()
+        print('POINT CLOUD FILTER RANGE:', pc_range)
         print('VOXEL_SIZE:', self.model.vfe.voxel_size)
         print('GRID SIZE:', self.model.vfe.grid_size)
 
