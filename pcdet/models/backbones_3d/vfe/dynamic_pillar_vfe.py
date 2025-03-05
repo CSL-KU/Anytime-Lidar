@@ -97,27 +97,9 @@ class DynamicPillarVFE(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
-    def range_filter(self, batch_dict, filter_z=True):
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, e)
-
-        if filter_z:
-            points_z = points[:, 3]
-            mask = torch.logical_and(points_z > self.point_cloud_range[2], points_z < self.point_cloud_range[5])
-            points = points[mask]
-
-        points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
-        mask = ((points_coords >= 0) & (points_coords < self.grid_size[[0,1]])).all(dim=1)
-        batch_dict['points'] = points[mask]
-        batch_dict['points_coords'] = points_coords[mask]
-        return batch_dict
-
-    #def forward_gen_pillars(self, batch_dict, **kwargs):
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        # NOTE apply_range_filter should be executed before this
-        #if kwargs.get('apply_range_filter', True):
-        #    batch_dict = self.range_filter(batch_dict)
-
+        # NOTE range filter should be executed before this
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
@@ -234,22 +216,6 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
     def get_output_feature_dim(self):
         return self.num_filters[-1]
-
-    @torch.no_grad()
-    def range_filter(self, batch_dict, point_cloud_range=None):
-        if  point_cloud_range is None:
-            point_cloud_range = self.filter_point_cloud_range
-
-        points = batch_dict['points'] # (batch_idx, x, y, z, i, t)
-        points_xyz = points[:, 1:4]
-        mask_min = points_xyz > point_cloud_range[:3]
-        mask_max = points_xyz < point_cloud_range[3:]
-
-        mask = (mask_min & mask_max).all(dim=1)
-
-        points = points[mask]
-        batch_dict['points'] = points
-        return batch_dict
 
     @torch.no_grad()
     def calc_points_coords(self, batch_dict):

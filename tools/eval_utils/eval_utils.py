@@ -441,8 +441,8 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             pickle.dump(all_data, f)
         print(f'Dumping took {(time.time() - t0):.2f} seconds.')
 
-    if cfg.MODEL.STREAMING_EVAL:
-        ret_dict['e2e_dl_musec'] = e2e_dl_musec
+#    if cfg.MODEL.STREAMING_EVAL:
+#        ret_dict['e2e_dl_musec'] = e2e_dl_musec
 
 #    logger.info('Result is saved to %s' % result_dir)
 #    logger.info('****************Evaluation done.*****************')

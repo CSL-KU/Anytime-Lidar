@@ -12,6 +12,7 @@ import platform
 from typing import Dict, List, Tuple, Optional, Final
 from .forecaster import split_dets
 from .valor_utils import *
+from ...utils import common_utils
 
 import ctypes
 pth = os.environ['PCDET_PATH']
@@ -26,6 +27,13 @@ VALO_OPT_OFF_WCET_SCHED = 9 # no dense conv opt, no forecasting, wcet scheduling
 class PillarNetVALOR(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+
+        rd = model_cfg.get('RESOLUTION_DIV', [1.0])
+        self.model_cfg.VFE.RESOLUTION_DIV = rd
+        self.model_cfg.BACKBONE_3D.RESOLUTION_DIV = rd
+        self.model_cfg.BACKBONE_2D.RESOLUTION_DIV = rd
+        self.model_cfg.DENSE_HEAD.RESOLUTION_DIV = rd
+        self.resolution_dividers = rd
 
         self.method = int(self.model_cfg.METHOD)
         self.valo_opt_on = (self.method == VALO_OPT_ON or \
@@ -67,7 +75,6 @@ class PillarNetVALOR(Detector3DTemplate):
         self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
         print('Model size is:', self.get_model_size_MB(), 'MB')
 
-        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1.0])
         self.num_res = len(self.resolution_dividers)
         self.latest_losses = [0.] * self.num_res
         self.res_aware_1d_batch_norms, self.res_aware_2d_batch_norms = get_all_resawarebn(self)
@@ -110,7 +117,8 @@ class PillarNetVALOR(Detector3DTemplate):
 
     def forward(self, batch_dict):
         if self.training:
-            batch_dict = self.vfe.range_filter(batch_dict)
+            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.vfe.point_cloud_range)
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
@@ -148,8 +156,8 @@ class PillarNetVALOR(Detector3DTemplate):
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
-            batch_dict = self.vfe.range_filter(batch_dict, self.calib_pc_range \
-                    if self.is_calibrating() else None)
+            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.vfe.point_cloud_range)
 
             fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
 

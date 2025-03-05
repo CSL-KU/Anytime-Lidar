@@ -10,7 +10,7 @@ import socket
 import torch
 import torch.nn as nn
 
-from nuscenes.utils.splits import all_speed_scenes
+#from nuscenes.utils.splits import all_speed_scenes
 from nuscenes.utils.splits import train as train_scenes
 
 from ...ops.iou3d_nms import iou3d_nms_utils
@@ -51,7 +51,7 @@ def pre_forward_hook(module, inp_args):
 
     if module.deadline_range is not None and not module.is_calibrating():
         use_calib_dataset = (int(os.getenv('CALIBRATION', 0)) > 0)
-        scenes = train_scenes if use_calib_dataset else all_speed_scenes
+        scenes = train_scenes #if use_calib_dataset else all_speed_scenes
         scene_name = module.token_to_scene_name[latest_token]
         dl_scale = scenes.index(scene_name) / (len(scenes) - 1)
         dr = module.deadline_range
