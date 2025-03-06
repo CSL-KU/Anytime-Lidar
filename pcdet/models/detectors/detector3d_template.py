@@ -122,8 +122,8 @@ def post_forward_hook(module, inp_args, outp_args):
         exec_time_ms = module.calibrators[module.res_idx].pred_exec_time_ms(
                 num_points, num_voxels, xlen, consider_prep_time=True)
         finish_time = batch_dict['start_time_sec'] + (exec_time_ms / 1000)
-        # simulated time includes ~2ms forecasting overhead, which is why we substract
-        forecast_time_point = module.sim_cur_time_ms + exec_time_ms - 2
+        # simulated time includes ~1ms forecasting overhead, which is why we substract
+        forecast_time_point = module.sim_cur_time_ms + exec_time_ms - 1.0
     else:
         finish_time = time.time()
         exec_time_ms = (finish_time - batch_dict['start_time_sec'])*1000
@@ -137,10 +137,16 @@ def post_forward_hook(module, inp_args, outp_args):
     future_sample_inds = torch.tensor([ind for ind in future_sample_inds \
             if ind < len(module.dataset)]).int()
 
+    streaming_eval = module.ignore_dl_miss
+
     forecasted_objs_pd_list = []
     if module.enable_forecasting_to_fut:
         egovel = module.sampled_egovels[module.dataset_indexes[0]]
-        inp_arrival_ms = module.sim_cur_time_ms # NOTE FIX THIS FOR STREAMING, can be earlier
+        if not streaming_eval:
+            inp_arrival_ms = module.sim_cur_time_ms
+        else:
+            tail = int(module.sim_cur_time_ms) % int(module.data_period_ms)
+            inp_arrival_ms = module.sim_cur_time_ms - tail_ms
 
         # Do not forecast those which are already forecasted!
         pd_to_forecast = batch_dict['final_box_dicts'][0]
@@ -169,20 +175,21 @@ def post_forward_hook(module, inp_args, outp_args):
     module.measure_time_end('PostProcess')
     module.measure_time_end('End-to-end')
 
-    ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
-    if ignore_dl_miss: # nonperiodic
+    #gt_boxes = batch_dict['gt_boxes'].cpu()[0] # batch size, num obj, 10
+
+    if streaming_eval: # nonperiodic
         module.sim_cur_time_ms += exec_time_ms
     else: # periodic execution
         #NOTE use time stamp dict instead
         module.sim_cur_time_ms += module.data_period_ms
 
-    #torch.cuda.synchronize() # the .cpu() calls sync anyway
     pred_dicts, recall_dict = module.post_processing_post(pp_args)
 
     tdiff = round(finish_time - batch_dict['abs_deadline_sec'], 3)
     module._eval_dict['deadline_diffs'].append(tdiff)
 
     dl_missed = (tdiff > 0)
+    ignore_dl_miss = module.is_calibrating() or module.ignore_dl_miss
     if ignore_dl_miss or not dl_missed:
         if module.enable_forecasting_to_fut:
             # assign forecasting result
@@ -194,9 +201,7 @@ def post_forward_hook(module, inp_args, outp_args):
                 # dont do this on counted deadline miss!
                 module.sampled_dets[sample_ind_f] = batch_dict['final_box_dicts']
 
-   # print('post_bb3d time:', (module.finish_time- module.sync_time_ms)*1000.0, 'ms')
-    ignore_dl_miss = module.is_calibrating() or (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
-    if not ignore_dl_miss and not module.do_streaming_eval:
+    if not streaming_eval:
         #PERIODIC
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
@@ -221,8 +226,6 @@ def post_forward_hook(module, inp_args, outp_args):
             module.latest_valid_dets = None
     else:
         module.latest_valid_dets = pred_dicts
-
-    #module.sampled_dets[cur_sample_idx] = pred_dicts
 
     torch.cuda.synchronize()
     module.calc_elapsed_times()
@@ -352,6 +355,7 @@ class Detector3DTemplate(nn.Module):
         self.sampled_dets = [None] * len(self.dataset)
         self.sampled_egovels= [None] * len(self.dataset)
         self.simulate_exec_time = False
+        self.ignore_dl_miss = (int(os.getenv('IGNORE_DL_MISS', 0)) == 1)
 
     def get_tpred_err(self, predicted_ms_arr):
         err = np.empty(5)

@@ -40,6 +40,8 @@ class NuScenesDataset(DatasetTemplate):
 
         # Force using train data for calibration
         do_calib = (int(os.getenv('CALIBRATION', '0')) > 0)
+        if do_calib:
+            print('Using CALIBRATION split')
         self.include_nuscenes_data("train" if do_calib else self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
@@ -446,9 +448,9 @@ if __name__ == '__main__':
             max_sweeps=dataset_cfg.MAX_SWEEPS,
         )
 
-        nuscenes_dataset = NuScenesDataset(
-            dataset_cfg=dataset_cfg, class_names=None,
-            root_path=ROOT_DIR / 'data' / 'nuscenes',
-            logger=common_utils.create_logger(), training=True
-        )
-        nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)
+#        nuscenes_dataset = NuScenesDataset(
+#            dataset_cfg=dataset_cfg, class_names=None,
+#            root_path=ROOT_DIR / 'data' / 'nuscenes',
+#            logger=common_utils.create_logger(), training=True
+#        )
+#        nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)

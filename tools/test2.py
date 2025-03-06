@@ -17,6 +17,7 @@ import numpy as np
 from alive_progress import alive_bar
 
 from eval_utils import eval_utils
+from visual_utils.bev_visualizer import visualize_bev_detections
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
 from pcdet.datasets import build_dataloader
 from pcdet.models import build_network, load_data_to_gpu
@@ -51,7 +52,7 @@ def calc_tail_ms(cur_time_point_ms, data_period_ms):
 def build_model(cfg_file, ckpt_file, default_deadline_sec):
     cfg_from_yaml_file(cfg_file, cfg)
     
-    set_cfgs = ['MODEL.METHOD', '0',
+    set_cfgs = ['MODEL.METHOD', '8',
             'MODEL.DEADLINE_SEC', str(default_deadline_sec),
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
@@ -69,7 +70,7 @@ def build_model(cfg_file, ckpt_file, default_deadline_sec):
 
     return model
 
-def get_lastest_exec_time(model):
+def get_latest_exec_time(model):
     pp_ms =  model._time_dict['PreProcess'][-1]
     sched_ms =  model._time_dict['Sched'][-1]
     preprocess_ms = pp_ms + sched_ms
@@ -81,6 +82,45 @@ def get_lastest_exec_time(model):
     postprocess_ms = postp_ms + genbox_ms
 
     return np.array([preprocess_ms, vfe_ms, bb3d_ms, dense_ops_ms, postprocess_ms])
+
+
+def gen_gt_database(model):
+    num_samples = len(model.dataset)
+    cur_sample_idx = 0
+    model.calibrate()
+    visualize = False
+
+    gt_and_timepred_tuples = []
+
+    with alive_bar(num_samples, force_tty=True, max_cols=160, manual=False) as bar:
+        with torch.no_grad():
+            while cur_sample_idx < num_samples:
+                #pred_dicts, ret_dict = model([cur_sample_idx])
+                data_dict = model.dataset[cur_sample_idx]
+                sample_tkn = data_dict['metadata']['token']
+                gt_boxes = data_dict['gt_boxes']
+
+                batch_dict = model.dataset.collate_batch([data_dict])
+                points = torch.from_numpy(batch_dict['points']).float().cuda()
+                points = common_utils.pc_range_filter(points, model.filter_pc_range)
+                all_pred_res_latencies = model.pred_all_res_times(points)
+                gt_and_timepred_tuples.append((sample_tkn,
+                                              gt_boxes, all_pred_res_latencies))
+
+                if visualize:
+                    pboxes = pred_dicts[0]['pred_boxes'][:, :7].cpu().numpy()
+                    gtboxes = batch_dict['gt_boxes'][0, :, :7].cpu().numpy()
+                    fname = f"images/sample{cur_sample_idx}.png"
+                    print(pboxes.shape, gtboxes.shape)
+                    visualize_bev_detections(pboxes, gtboxes, fname, swap_wh=True)
+                    print(f'Image saved to {fname}')
+
+                cur_sample_idx += 1
+                bar()
+
+        with open(f'respred_gt_database.pkl', 'wb') as f:
+            pickle.dump(gt_and_timepred_tuples, f)
+
 
 def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulate_exec_time=False):
     if hasattr(model, 'res_idx'):
@@ -102,8 +142,9 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     model.calibrate()
     resolution_stats = [0] * model.num_res if 'num_res' in dir(model) else [0]
     sampled_exec_times_ms = [None] * num_samples
+    scene_begin_inds = []
 
-    sched_algo = 'closer'
+    sched_algo = 'dynamic'
     #sched_algo = 'periodic'
     #sched_algo = 'dynamic'
 
@@ -121,6 +162,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                         scene_token = model.token_to_scene[potential_sample_tkn]
                     cur_sample_idx += 1
                     model.sim_cur_time_ms = float(cur_sample_idx * data_period_ms)
+                    scene_begin_inds.append(cur_sample_idx)
 
             with torch.no_grad():
                 lbd = model.latest_batch_dict # save bef its modified
@@ -132,7 +174,7 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
 
             if hasattr(model, 'calibrators'):
                 predicted = model.calibrators[model.res_idx].last_pred
-                orig = get_lastest_exec_time(model)
+                orig = get_latest_exec_time(model)
                 time_pred_diffs.append(predicted - orig)
 
             sample_tkn = batch_dict['metadata'][0]['token']
@@ -158,15 +200,15 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
                 cur_tail = calc_tail_ms(model.sim_cur_time_ms, data_period_ms)
                 if sched_algo == 'closer':
                     if cur_tail > data_period_ms / 2:
-                        model.sim_cur_time_ms += data_period_ms - cur_tail + 0.1
+                        model.sim_cur_time_ms += data_period_ms - cur_tail
                 elif sched_algo == 'dynamic':
                     #Dynamic scheduling
                     pred_finish_time = model.sim_cur_time_ms + last_exec_time_ms
                     next_tail = calc_tail_ms(pred_finish_time, data_period_ms)
                     if next_tail < cur_tail:
-                        model.sim_cur_time_ms += data_period_ms - cur_tail + 0.1
+                        model.sim_cur_time_ms += data_period_ms - cur_tail
 
-                next_sample_idx = int(model.sim_cur_time_ms / data_period_ms)
+                next_sample_idx = int(round(model.sim_cur_time_ms / data_period_ms))
             else:
                 next_sample_idx = cur_sample_idx + 1
                 model.sim_cur_time_ms = next_sample_idx * data_period_ms
@@ -196,11 +238,11 @@ def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulat
     #    pickle.dump([sampled_dets, exec_times_musec, resolution_stats], f)
 
     print(f'Sampled {len(model.sampled_dets)} objects')
-    return model.sampled_dets, exec_times_musec, resolution_stats, model.sampled_egovels, sampled_exec_times_ms
+    return model.sampled_dets, exec_times_musec, resolution_stats, model.sampled_egovels, sampled_exec_times_ms, scene_begin_inds
 
-def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
-            exec_times_musec=None, dump_eval_dict=True, loaded_nusc=None, egovels=None,
-            sampled_exec_times_ms=None):
+def do_eval(sampled_dets, resolution_idx, dataset, streaming=True,
+            exec_times_musec=None, loaded_nusc=None, egovels=None,
+            sampled_exec_times_ms=None, scene_begin_inds=None):
 
     det_annos = []
     num_ds_elems = len(dataset)
@@ -208,12 +250,12 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         data_dict = dataset.get_metadata_dict(i)
         for k, v in data_dict.items():
             data_dict[k] = [v] # make it a batch dict
-        pred_dicts = sampled_objects[i]
+        pred_dicts = sampled_dets[i]
 
         if pred_dicts is None:
-            if i > 0 and sampled_objects[i-1] is not None:
-                sampled_objects[i] = sampled_objects[i-1]
-                pred_dicts = sampled_objects[i]
+            if i > 0 and sampled_dets[i-1] is not None:
+                sampled_dets[i] = sampled_dets[i-1]
+                pred_dicts = sampled_dets[i]
             else:
                 pred_dicts = [{
                     'pred_boxes': torch.empty((0, 9)),
@@ -239,7 +281,7 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
         #(None if streaming else exec_times_musec)
     )
 
-    do_tracking=True
+    do_tracking=False
     if do_tracking:
         ## NUSC TRACKING START
         tracker = Tracker(max_age=6, hungarian=False)
@@ -314,31 +356,21 @@ def do_eval(sampled_objects, resolution_idx, dataset, streaming=True,
             tracking_res=json.load(f)
 
     calib_id = int(os.environ.get('CALIBRATION', '0'))
-    if calib_id > 0:
-        ridx = int(os.environ.get('FIXED_RES_IDX', -1))
-        eval_d = {
-               'exec_times_ms': sampled_exec_times_ms,
-               'objects': sampled_objects,
-               'egovels': egovels,
-               'resolution': ridx,
-               'result_str': result_str,
-               'tracking_result': tracking_res,
-        }
-        with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
-            pickle.dump(eval_d, f)
+    #if calib_id > 0:
+    ridx = int(os.environ.get('FIXED_RES_IDX', -1))
+    eval_d = {
+           'cfg': cfg,
+           'scene_begin_inds': scene_begin_inds,
+           'exec_times_ms': sampled_exec_times_ms,
+           'objects': sampled_dets,
+           'egovels': egovels,
+           'resolution': ridx,
+           'result_str': result_str,
+           #'tracking_result': tracking_res,
+    }
+    with open(f'sampled_dets/res{ridx}_calib{calib_id}.pkl', 'wb') as f:
+        pickle.dump(eval_d, f)
 
-#    if dump_eval_dict:
-#        eval_d = {
-#                'cfg': cfg,
-#                'exec_times_musec': exec_times_musec,
-#                'det_annos': det_annos,
-#                'annos_in_glob_coords': False,
-#                'resolution': resolution_idx,
-#                'result_str': result_str,
-#        }
-#
-#        with open(f'sampled_dets_res{resolution_idx}.pkl', 'wb') as f:
-#            pickle.dump(eval_d, f)
     if do_tracking:
         for k, v in tracking_res.items():
             if isinstance(v, str) or isinstance(v, float) or isinstance(v, int):
@@ -395,6 +427,9 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
         ckpt_file = "../models/pillar_010_011_012_014_016_valor_e30.pth"
         num_res = 5
+    elif chosen_method == 'MURAL': # VALOR Pillarnet 5 res
+        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_016_020_032.yaml"
+        ckpt_file = "../models/mural_pillarnet_016_020_032_e20.pth"
     else:
         print('Unknown method, exiting.')
         sys.exit()
@@ -408,7 +443,12 @@ if __name__ == "__main__":
             # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
             t1 = time.time()
             model = build_model(cfg_file, ckpt_file, default_deadline_sec)
-            sampled_objects, exec_times_musec, resolution_stats, egovels, sampled_exec_times_ms = \
+
+            # FOR DATASET GEN ONLY
+            #gen_gt_database(model)
+            #sys.exit()
+
+            sampled_dets, exec_times_musec, resolution_stats, egovels, sampled_exec_times_ms, sbi = \
                     run_test(model, resolution_idx,
                     streaming=streaming,
                     forecasting=forecasting,
@@ -430,20 +470,20 @@ if __name__ == "__main__":
             if not skip_eval:
                 # fname = f'tmp_results/detdata_res{resolution_idx}.pkl'
                 # with open(fname, 'rb') as f:
-                #     sampled_objects, exec_times_musec, resolution_stats = pickle.load(f)
-                #     print(f'Loaded {len(sampled_objects)} objects from {fname}')
+                #     sampled_dets, exec_times_musec, resolution_stats = pickle.load(f)
+                #     print(f'Loaded {len(sampled_dets)} objects from {fname}')
 
                 dataset = model.dataset
                 del model
                 loaded_nusc = load_dataset()
-                result_str = do_eval(sampled_objects, resolution_idx, dataset, streaming,
+                result_str = do_eval(sampled_dets, resolution_idx, dataset, streaming,
                                      exec_times_musec=exec_times_musec,
-                                     dump_eval_dict=False, loaded_nusc=loaded_nusc,
-                                     egovels=egovels, sampled_exec_times_ms=sampled_exec_times_ms)
+                                     loaded_nusc=loaded_nusc,
+                                     egovels=egovels, sampled_exec_times_ms=sampled_exec_times_ms,
+                                     scene_begin_inds=sbi)
 
                 for outf in (fw, sys.stdout):
                     print(result_str, file=outf)
 
-            #model.dump_eval_dict(ret_dict) # not necessary
             t2 = time.time()
             print('Time passed (seconds):', t2-t1)

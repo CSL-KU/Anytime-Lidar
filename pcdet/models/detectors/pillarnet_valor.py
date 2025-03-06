@@ -121,7 +121,7 @@ class PillarNetVALOR(Detector3DTemplate):
     def forward(self, batch_dict):
         if self.training:
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
-                                self.vfe.point_cloud_range)
+                                self.filter_pc_range)
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
             self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
@@ -159,8 +159,7 @@ class PillarNetVALOR(Detector3DTemplate):
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
-            points = batch_dict['points']
-            points = common_utils.pc_range_filter(points,
+            points = common_utils.pc_range_filter(batch_dict['points'],
                                 self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)
             batch_dict['points'] = points
@@ -177,7 +176,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 if not self.is_calibrating():
                     self.res_idx = fixed_res_idx
                 if self.valo_opt_on:
-                    points_xy_s = batch_dict['points'][:, 1:3] - self.mpc_script.pc_range_min
+                    points_xy_s = points[:, 1:3] - self.mpc_script.pc_range_min
                     pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
                     nz_slice_inds = pillar_counts[0].cpu().nonzero()
                     xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
@@ -196,21 +195,14 @@ class PillarNetVALOR(Detector3DTemplate):
                             conf_found = True
                             break
                 else:
-                    points = batch_dict['points']
                     points_xy = points[:, 1:3].contiguous()
                     num_points = points_xy.size(0)
-                    #start_time = batch_dict['start_time_sec']
-                    #deadline_ms = batch_dict['deadline_sec'] * 1e3
-                    # This is needed in case we did not start when input arrived
-                    #deadline_ms -= (int(self.sim_cur_time_ms) % self.data_period_ms)
                     all_pillar_counts = self.mpc_script(points_xy).int().cpu()
                     all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
                     for i in range(self.num_res):
                         pillar_counts = all_pillar_counts[i]
                         if self.valo_opt_on:
                             nz_slice_inds = pillar_counts[0].nonzero()
-                            #time_passed_ms = (time.time() - start_time) * 1e3
-                            #time_left = deadline_ms - time_passed_ms
                             xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
                             x_minmax[i, 0] = xmin
                             x_minmax[i, 1] = xmax
@@ -552,3 +544,22 @@ class PillarNetVALOR(Detector3DTemplate):
         self.res_idx = cur_res_idx
         #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
         return None
+
+    def pred_all_res_times(self, points):
+        points_xy = points[:, 1:3].contiguous()
+        num_points = points_xy.size(0)
+        all_pillar_counts = self.mpc_script(points_xy).int().cpu()
+        all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
+        latencies = [0.] * self.num_res
+        for i in range(self.num_res):
+            pillar_counts = all_pillar_counts[i]
+            if self.valo_opt_on:
+                nz_slice_inds = pillar_counts[0].nonzero()
+                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
+            else:
+                xmin, xmax = 0, self.mpc_script.num_slices[i] - 1
+
+            latencies[i] = self.calibrators[i].pred_exec_time_ms(num_points,
+                    pillar_counts.numpy(), (xmax - xmin + 1).item())
+
+        return latencies
