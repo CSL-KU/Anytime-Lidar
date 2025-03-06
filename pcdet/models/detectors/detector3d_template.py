@@ -61,7 +61,6 @@ def pre_forward_hook(module, inp_args):
 
     deadline_sec_override, reset = module.initialize(latest_token)
 
-    # the module.sampled_dets can be overwritten, which is okay
     lbd = module.latest_batch_dict
     if lbd is not None and not reset:
         sample_tkn = latest_token
@@ -84,6 +83,11 @@ def pre_forward_hook(module, inp_args):
         module.latest_batch_dict = None
         module.latest_valid_dets = None
         module.dl_miss_streak = 0
+        if module.ignore_dl_miss:
+            cur_idx = module.dataset_indexes[0]
+            while module.sampled_dets[cur_idx] is not None:
+                module.sampled_dets[cur_idx] = None
+                cur_idx += 1
     data_dicts = [module.dataset.getitem_post(dd) for dd in data_dicts]
     batch_dict = module.dataset.collate_batch(data_dicts)
     module.measure_time_start('End-to-end')
