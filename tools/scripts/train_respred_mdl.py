@@ -15,20 +15,20 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import pandas as pd
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.transforms import Affine2D
+#import matplotlib.pyplot as plt
+#from matplotlib.patches import Rectangle
+#from matplotlib.transforms import Affine2D
 #from match_objs import match_objects_torch
 
 #NUMRES = 3
 num_train_scenes = 75
 num_test_scenes = 75
-gen_dataset=False
-calc_detscores=False
+gen_dataset=True
+calc_detscores=True
 #NUM_BINS=10
 
 NUM_CLASSES = 10
-TIME_SLICE_PER_SCENE = 5 # ~4 seconds
+TIME_SLICE_PER_SCENE = 10 # ~4 seconds
 DISTANCE_THRESHOLDS = [0.5, 1.0, 2.0, 4.0]
 
 #if merge_evals:
@@ -91,16 +91,14 @@ def calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th, num_all_dets, num_all_gt):
     return float(np.mean(prec)) / (1.0 - min_precision)
 
 def calc_detscore(eval_data_arr):
-    results = []
     detscore = 0.
     for eval_data_dict in eval_data_arr: #for each class
         boxes_l, scores_l, gt_boxes_l = eval_data_dict['boxes'], \
                 eval_data_dict['scores'], eval_data_dict['gt_boxes']
 
         num_gt_per_frame = np.array([gtb.shape[0] for gtb in gt_boxes_l])
-        num_frames_available = np.sum(num_gt_per_frame > 0)
-        num_all_gt = np.sum(num_gt_per_frame)
-        if num_all_gt == 0:
+        num_gt = np.sum(num_gt_per_frame)
+        if num_gt == 0:
             continue # skip this class
 
         num_all_dets = sum([b.shape[0] for b in boxes_l])
@@ -108,10 +106,49 @@ def calc_detscore(eval_data_arr):
             for dist_th in DISTANCE_THRESHOLDS:
                 #Append frame id of each score
                 ap_score = calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th,
-                                   num_all_dets, num_all_gt)
-                detscore += ap_score * num_frames_available
+                                   num_all_dets, num_gt)
+                detscore += ap_score * num_gt
 
     return detscore
+
+def calc_resolution_detscores(sampled_dets, all_tslc_inds, all_gt_boxes, ridx):
+    print('Calculating detection scores for resolution', ridx)
+    num_timeslices = len(all_tslc_inds)
+    tslc_scores = np.empty(num_timeslices)
+    for tidx, (si, ei) in enumerate(all_tslc_inds): # for each timeslice
+        num_tslc_elems = ei - si
+        eval_data_arr = [{
+            'boxes': [None] * num_tslc_elems, # list of frames
+            'scores': [None] * num_tslc_elems,
+            'gt_boxes': [None] * num_tslc_elems,
+        } for c in range(NUM_CLASSES)]
+        for cls_id in range(1, NUM_CLASSES+1): #1 to 10
+            slc_eval_data = eval_data_arr[cls_id-1]
+            boxes_l, scores_l, gt_boxes_l = slc_eval_data['boxes'], \
+                    slc_eval_data['scores'], slc_eval_data['gt_boxes']
+            for i in range(si, ei):
+                j = i - si
+                gt_labels = all_gt_boxes[i][:, -1].astype(int)
+                cls_mask = (gt_labels == cls_id)
+                gt_boxes_l[j] = all_gt_boxes[i][cls_mask, :-1].astype(float)
+
+                pred_dicts = sampled_dets[i]
+                if pred_dicts is None:
+                    boxes_l[j] = np.zeros((0, 9), dtype=float)
+                    scores_l[j] = np.zeros((0,), dtype=float)
+                else:
+                    # ind is 0 since batch size assumed to be 1
+                    pd = pred_dicts[0]
+                    labels = pd['pred_labels']
+                    cls_mask = (labels == cls_id)
+                    boxes_l[j] = pd['pred_boxes'][cls_mask]
+                    scores_l[j] = pd['pred_scores'][cls_mask]
+        tslc_scores[tidx] = calc_detscore(eval_data_arr)
+        if tidx % (int(num_timeslices / 10)+1) == 0:
+            print(f"Resolution {ridx} detscore calc progress: %{int(tidx/num_timeslices*100)}")
+
+    return tslc_scores
+
 
 def read_data(pth):
     gt_database_path = glob.glob(pth + "/*gt_database*.pkl")
@@ -138,9 +175,9 @@ def read_data(pth):
     eval_d = eval_dicts[0] # any of them works to get timeslice
     all_time_slice_inds = []
     scene_begin_inds = eval_d['scene_begin_inds']
-    sampled_dets = eval_d['objects']
+    sampled_dets_0 = eval_d['objects']
     begin_inds = np.array([0] + scene_begin_inds)
-    end_inds = np.array(scene_begin_inds + [len(sampled_dets)])
+    end_inds = np.array(scene_begin_inds + [len(sampled_dets_0)])
     num_samples_in_scene = end_inds - begin_inds
     for num_smpl, bi, ei in zip(num_samples_in_scene, begin_inds, end_inds):
         slice_inds = np.linspace(bi, ei, TIME_SLICE_PER_SCENE, dtype=int)
@@ -149,6 +186,18 @@ def read_data(pth):
     all_tslc_inds = np.array(all_time_slice_inds)
     num_slices = len(all_tslc_inds)
 
+    # I am converting the objs here cuz pickling torch tensors is troublesome
+    for eval_d in eval_dicts:
+        for pred_dicts in eval_d['objects']:
+            if pred_dicts is not None:
+                pd = pred_dicts[0] # batch size assumes to be 1
+                boxes = pd['pred_boxes'] 
+                if not isinstance(boxes, np.ndarray):
+                    scores, labels = pd['pred_scores'], pd['pred_labels']
+                    pd['pred_boxes'] = boxes.numpy().astype(float)
+                    pd['pred_scores'] = scores.numpy().astype(float)
+                    pd['pred_labels'] = labels.numpy().astype(int)
+
     # For each resolution, calculate detection score of each time slice
     detscore_path = os.path.join(pth, 'detscore.json')
     if not calc_detscores:
@@ -156,41 +205,16 @@ def read_data(pth):
             all_tslc_scores = json.load(f)
     else:
         all_tslc_scores = np.zeros((len(all_tslc_inds), num_res))
-        for eval_d in eval_dicts:
-            ridx = eval_d['resolution']
-            print('Calculating accuracies for resolution', ridx)
-            sampled_dets = eval_d['objects']
-            with alive_bar(num_slices, force_tty=True, max_cols=160, manual=False) as bar:
-                for tidx, (si, ei) in enumerate(all_tslc_inds): # for each timeslice
-                    eval_data_arr = [{
-                        'boxes': [], # list of frames
-                        'scores': [],
-                        'gt_boxes': [],
-                    } for c in range(NUM_CLASSES)]
-                    for cls_id in range(1, NUM_CLASSES+1): #1 to 10
-                        slc_eval_data = eval_data_arr[cls_id-1]
-                        for i in range(si, ei):
-                            gt_labels = all_gt_boxes[i][:, -1].astype(int)
-                            cls_mask = (gt_labels == cls_id)
-                            gt_boxes_cls = all_gt_boxes[i][cls_mask, :-1].astype(float)
-                            slc_eval_data['gt_boxes'].append(gt_boxes_cls)
-
-                            pred_dicts = sampled_dets[i]
-                            if pred_dicts is None:
-                                slc_eval_data['boxes'].append(np.zeros((0, 9), dtype=float))
-                                slc_eval_data['scores'].append(np.zeros((0,), dtype=float))
-                            else:
-                                # ind is 0 since batch size assumed to be 1
-                                pd = pred_dicts[0]
-                                labels = pd['pred_labels'].numpy().astype(int)
-                                cls_mask = (labels == cls_id)
-                                boxes = pd['pred_boxes'].numpy().astype(float)[cls_mask]
-                                scores = pd['pred_scores'].numpy().astype(float)[cls_mask]
-                                slc_eval_data['boxes'].append(boxes)
-                                slc_eval_data['scores'].append(scores)
-                    time_slice_score = calc_detscore(eval_data_arr)
-                    all_tslc_scores[tidx, ridx] = time_slice_score
-                    bar()
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_res) as executor:
+            futs = []
+            for eval_d in eval_dicts:
+                ridx = eval_d['resolution']
+                fut = executor.submit(calc_resolution_detscores, eval_d['objects'], \
+                        all_tslc_inds, all_gt_boxes, ridx)
+                futs.append((ridx, fut))
+            for ridx, fut in futs:
+                detscores = fut.result()
+                all_tslc_scores[:, ridx] = detscores
 
         with open(detscore_path, 'w') as f:
             json.dump(all_tslc_scores.tolist(), f, indent=4)
