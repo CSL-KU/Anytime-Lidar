@@ -10,11 +10,15 @@ import os
 import time
 import copy
 from scipy.spatial import distance
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import pandas as pd
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.transforms import Affine2D
-from match_objs import match_objects_torch
+#from match_objs import match_objects_torch
 
 #NUMRES = 3
 num_train_scenes = 75
@@ -232,23 +236,26 @@ if __name__ == '__main__':
     y_train_labels = np.argmax(y_train, axis=1)
     y_test_labels = np.argmax(y_test, axis=1)
 
-    #train_max_scores = np.take_along_axis(y_train, indices=y_train_labels, axis=1)
-    #print(y_train[:5])
-    #print(train_max_scores[:5])
-    #train_max_score = np.sum(train_max_score)
+    #train_max_scores = np.take_along_axis(y_train, np.expand_dims(y_train_labels, -1), axis=1)
+    #train_max_score = np.sum(train_max_scores)
+
+    test_max_scores = np.take_along_axis(y_test, np.expand_dims(y_test_labels, -1), axis=1)
+    test_max_score = np.sum(test_max_scores)
+
+    num_res = y_test.shape[1]
+    fixed_res_scores = np.empty(num_res)
+    for ridx in range(num_res):
+        fixed_res_scores[ridx] = np.sum(y_test[:, ridx]) / test_max_score * 100
+
+    print('***** Fixed resolution scores:', np.round(fixed_res_scores, 2))
 
     print('Train data shapes and labels distribution:')
     print(X_train.shape, y_train.shape, np.bincount(y_train_labels))
     print('Test data shapes and labels distribution:')
     print(X_test.shape, y_test.shape, np.bincount(y_test_labels))
 
-    from sklearn.model_selection import train_test_split
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-    import pandas as pd
-
     # Create and train the Random Forest classifier
-    use_grid_search = True
+    use_grid_search = False
     if use_grid_search:
         from sklearn.model_selection import GridSearchCV
 
@@ -276,7 +283,7 @@ if __name__ == '__main__':
             n_estimators=100,  # number of trees
             max_depth=10,    # maximum depth of trees
             max_features='sqrt',
-            min_samples_split=5,
+            min_samples_split=2,
             min_samples_leaf=2,
             random_state=40
         )
@@ -288,6 +295,9 @@ if __name__ == '__main__':
 
     # Make predictions on test set
     y_pred = rf_classifier.predict(X_test)
+    pred_scores = np.take_along_axis(y_test, np.expand_dims(y_pred, -1), axis=1)
+    pred_score = np.sum(pred_scores)
+    print('***** Predictor score:', round(pred_score / test_max_score * 100, 2))
 
     #speed test
     t1 = time.monotonic()
@@ -308,18 +318,6 @@ if __name__ == '__main__':
     # Print confusion matrix
     print("\nConfusion Matrix:")
     print(confusion_matrix(y_test_labels, y_pred))
-
-    if use_RFECV:
-        print("Optimal number of features:", rf_classifier.n_features_)
-        print("Selected features:", [feature_names[i] for i in range(len(feature_names)) if rf_classifier.support_[i]])
-    else:
-        # Feature importance
-        feature_importance = pd.DataFrame({
-            'feature': range(X_train.shape[1]),
-            'importance': rf_classifier.feature_importances_
-        })
-        print("\nFeature Importance:")
-        print(feature_importance.sort_values('importance', ascending=False))
 
     #from sklearn.model_selection import cross_val_score
     #
