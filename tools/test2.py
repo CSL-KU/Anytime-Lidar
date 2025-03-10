@@ -118,8 +118,9 @@ def gen_gt_database(model):
                 cur_sample_idx += 1
                 bar()
 
-        with open(f'respred_gt_database.pkl', 'wb') as f:
-            pickle.dump(gt_and_timepred_tuples, f)
+    calib_id = os.environ.get("CALIBRATION", "0")
+    with open(f'sampled_dets/respred_gt_database_{calib_id}.pkl', 'wb') as f:
+        pickle.dump(gt_and_timepred_tuples, f)
 
 
 def run_test(model, resolution_idx=0, streaming=True, forecasting=False, simulate_exec_time=False):
@@ -393,6 +394,7 @@ if __name__ == "__main__":
     mode = sys.argv[3] if len(sys.argv) > 3 else "streaming"
     forecasting = sys.argv[4] if len(sys.argv) > 4 else "noforecast"
     streaming = (mode == "streaming") # otherwise offline
+    build_gt_database = (mode == "build_gt_database")
     forecasting = (forecasting == "forecast")
 
     num_res = 1
@@ -427,9 +429,13 @@ if __name__ == "__main__":
         cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
         ckpt_file = "../models/pillar_010_011_012_014_016_valor_e30.pth"
         num_res = 5
-    elif chosen_method == 'MURAL': # VALOR Pillarnet 5 res
+    elif chosen_method == 'MURAL':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_016_020_032.yaml"
         ckpt_file = "../models/mural_pillarnet_016_020_032_e20.pth"
+    elif chosen_method == 'MURAL_0075_3res':
+        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0075_0100_0150.yaml"
+        ckpt_file = "../models/mural_pillarnet_0075_0100_0150_e20.pth"
+
     else:
         print('Unknown method, exiting.')
         sys.exit()
@@ -444,9 +450,10 @@ if __name__ == "__main__":
             t1 = time.time()
             model = build_model(cfg_file, ckpt_file, default_deadline_sec)
 
-            # FOR DATASET GEN ONLY
-            #gen_gt_database(model)
-            #sys.exit()
+            if build_gt_database:
+                # FOR DATASET GEN ONLY
+                gen_gt_database(model)
+                sys.exit()
 
             sampled_dets, exec_times_musec, resolution_stats, egovels, sampled_exec_times_ms, sbi = \
                     run_test(model, resolution_idx,
