@@ -14,11 +14,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import pandas as pd
-
-#import matplotlib.pyplot as plt
-#from matplotlib.patches import Rectangle
-#from matplotlib.transforms import Affine2D
-#from match_objs import match_objects_torch
+from visual_utils.bev_visualizer import visualize_bev_detections
 
 #NUMRES = 3
 num_train_scenes = 75
@@ -31,24 +27,33 @@ NUM_CLASSES = 10
 TIME_SLICE_PER_SCENE = 10 # ~2 seconds
 DISTANCE_THRESHOLDS = [0.5, 1.0, 2.0, 4.0]
 
-#if merge_evals:
-#    import torch
-#    import _init_path
-#    from pcdet.models.detectors.detector3d_template import move_bounding_boxes
+def parse_detresult(result_str):
+    result_str = result_str.split('\n')
+
+    cls_AP_scores = []
+    for i, line in enumerate(result_str):
+        if line[:3] == "***":
+            cls = line.split(' ')[0][3:]
+            mean_cls_AP = float(result_str[i+1].split(' ')[-1])
+            cls_AP_scores.append(mean_cls_AP)
+
+    mAP = float(result_str[-3:][0].split(' ')[-1])
+    NDS = float(result_str[-3:][1].split(' ')[-1])
+    return mAP, NDS, cls_AP_scores
 
 def calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th, num_all_dets, num_all_gt):
     gt_boxes_l_cpy = copy.deepcopy(gt_boxes_l)
 
     merged_scores = np.empty(num_all_dets, dtype=float)
     merged_frame_ids = np.empty(num_all_dets, dtype=int)
-    merged_boxes = np.empty((num_all_dets, 9), dtype=int)
+    merged_boxes = np.empty((num_all_dets, 2), dtype=float)
 
     i = 0
     for frame_id, scores in enumerate(scores_l):
         endi = len(scores) + i
         merged_scores[i:endi] = scores
         merged_frame_ids[i:endi] = frame_id
-        merged_boxes[i:endi] = boxes_l[frame_id]
+        merged_boxes[i:endi] = boxes_l[frame_id][:, :2]
         i = endi
 
     scores_sort_inds = np.argsort(merged_scores)[::-1] # reverse it
@@ -65,6 +70,7 @@ def calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th, num_all_dets, num_all_gt):
 
         dists = distance.cdist(gt_boxes[:, :2], box_xy, 'euclidean').flatten()
         min_idx = np.argmin(dists)
+
         if dists[min_idx] < dist_th:
             tp[i] = True
             gt_boxes[min_idx, :2] = 9999. # make sure it won't match again
@@ -172,6 +178,8 @@ def read_data(pth):
         with open(evald_pth, 'rb') as f:
             eval_d = pickle.load(f)
         eval_dicts[eval_d['resolution']] = eval_d
+        mAP, NDS, class_AP_scrs = parse_detresult(eval_d['result_str'])
+        print(f'Resolution {eval_d["resolution"]} mAP: {mAP} NDS: {NDS}')
 
     print('Calculating time slice indices')
     eval_d = eval_dicts[0] # any of them works to get timeslice
@@ -223,7 +231,7 @@ def read_data(pth):
 
     # now work on what would be the input of the prediction model
     # use global best data
-    eval_d = eval_dicts[1]
+    eval_d = eval_dicts[0]
     egovels = eval_d['egovels']
     exec_times_ms = eval_d['exec_times_ms'] # use for it?
     sampled_dets = eval_d['objects']
@@ -231,65 +239,76 @@ def read_data(pth):
     mask = np.zeros(num_dets, dtype=bool)
     egovel_inds = [i for i, ev in enumerate(egovels) if ev is not None]
     data_tuples = []
-    for idx in range(1, len(egovel_inds)-1):
-        time_tpl = exec_times_ms[egovel_inds[idx]]
-        if time_tpl is None:
-            continue
-        etime, sim_time_ms = time_tpl
-        if sim_time_ms < 800:
-            continue
-        #ev = egovels[egovel_inds[idx]]
-        #if np.isnan(ev).any():
-        #    continue
-        pred_dict = sampled_dets[egovel_inds[idx+1]] #[0]
-        if pred_dict is None:
-            continue
-        pred_dict = pred_dict[0]
-        boxes = pred_dict['pred_boxes']
-        if boxes.shape[0] == 0:
-            continue
+    for tidx, (si, ei) in enumerate(all_tslc_inds): # for each timeslice
+        scene_egovel_inds = [i for i in egovel_inds if i >= si and i < ei]
+        for idx in range(1, len(scene_egovel_inds)-1):
+            time_tpl = exec_times_ms[scene_egovel_inds[idx]]
+            if time_tpl is None:
+                print(idx, scene_egovel_inds[idx], 'No time tuple.')
+                continue
+            #etime, sim_time_ms = time_tpl
+            #if sim_time_ms < 800:
+            #    continue
+            ev = egovels[scene_egovel_inds[idx]]
+            if np.isnan(ev).any():
+                print(idx, scene_egovel_inds[idx], 'Egovel is bad.')
+                continue
+            pred_dict = sampled_dets[scene_egovel_inds[idx+1]] #[0]
+            if pred_dict is None:
+                print(idx, scene_egovel_inds[idx], 'Pred dict is none.')
+                continue
+            pred_dict = pred_dict[0]
+            boxes = pred_dict['pred_boxes']
+            if boxes.shape[0] == 0:
+                print(idx, scene_egovel_inds[idx], 'No boxes.')
+                continue
 
-#        #NOTE the velocities does not help, dunno why
-#        obj_velos = boxes[:, 7:9]
-#        obj_velos[np.isnan(obj_velos).any(1)] = 0. #Assume these to be stationary
-#        rel_velos = obj_velos - ev # using ev makes it worse?
-#        bj_velos = np.linalg.norm(obj_velos, axis=1)
-#        rel_velos = np.linalg.norm(rel_velos, axis=1)
-#        mean_rel_vel = np.mean(rel_velos)
-#        relvel_perc5, relvel_perc95 = np.percentile(rel_velos, (5, 95))
+            #NOTE the velocities does not help, dunno why
+            obj_velos = boxes[:, 7:9]
+            obj_velos[np.isnan(obj_velos).any(1)] = 0. #Assume these to be stationary
+            rel_velos = obj_velos - ev # using ev makes it worse?
+            bj_velos = np.linalg.norm(obj_velos, axis=1)
+            rel_velos = np.linalg.norm(rel_velos, axis=1)
+            relvel_mean = np.mean(rel_velos)
+            relvel_perc5, relvel_perc95 = np.percentile(rel_velos, (5, 95))
 
-#        #NOTE this part did not improve either
-#        prev_pred_dicts = sampled_dets[egovel_inds[idx]]
-#        if prev_pred_dicts is None:
-#            continue
-#        prev_pd = prev_pred_dicts[0]
-#        prev_boxes = prev_pd['pred_boxes']
-#        if prev_boxes.shape[0] == 0:
-#            continue
-#        # assume all objects to be of same class
-#        precs = np.empty(4)
-#        boxes_l, scores_l, gt_boxes_l = [prev_boxes], [prev_pd['pred_scores']], [boxes]
-#        num_all_dets, num_all_gt = len(prev_boxes), len(boxes)
-#        for j, dist_th in enumerate(DISTANCE_THRESHOLDS):
-#            _, precision = calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th, num_all_dets, num_all_gt)
-#            precs[j] = precision
-#        mean_prec = precs.mean()
+            #NOTE this part did not improve either
+            prev_pred_dicts = sampled_dets[scene_egovel_inds[idx]]
+            if prev_pred_dicts is None:
+                print(idx, scene_egovel_inds[idx], 'No prev pred dict.')
+                continue
+            prev_pd = prev_pred_dicts[0]
+            prev_boxes = prev_pd['pred_boxes']
+            if prev_boxes.shape[0] == 0:
+                print(idx, scene_egovel_inds[idx], 'No prev boxes.')
+                continue
+#            # assume all objects to be of same class
+            #precs = np.empty(4)
+            #prev_box_locs = prev_boxes[:, :2] + np.repeat(prev_pd['pred_labels'] * 100, 2).reshape(-1, 2)
+            #box_locs = boxes[:, :2] + np.repeat(pred_dict['pred_labels'] * 100, 2).reshape(-1, 2)
+            #boxes_l, scores_l, gt_boxes_l = [prev_box_locs], [prev_pd['pred_scores']], [box_locs]
+            #num_all_dets, num_all_gt = len(prev_boxes), len(boxes)
+            #for j, dist_th in enumerate(DISTANCE_THRESHOLDS):
+            #   _, precision = calc_AP(boxes_l, scores_l, gt_boxes_l, dist_th, num_all_dets, num_all_gt)
+            #   precs[j] = precision * (1 / dist_th)
+            #mean_prec = precs.mean()
 
-        # This helps!
-        objpos = boxes[:, :2]
-        objpos = np.linalg.norm(objpos, axis=1)
-        objpos_mean = np.mean(objpos)
-        objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
+            # This helps! not all the time tho
+            objpos = boxes[:, :2]
+            objpos = np.linalg.norm(objpos, axis=1)
+            objpos_mean = np.mean(objpos)
+            objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
 
-        data_tuples.append((objpos_perc5, objpos_mean, objpos_perc95)) #, mean_prec))
-        mask[idx] = True
+            data_tuples.append((objpos_perc5, objpos_mean, objpos_perc95, #))
+                np.linalg.norm(ev),
+                relvel_perc5, relvel_perc95, relvel_mean,
+            #    mean_prec,
+            ))
+            mask[scene_egovel_inds[idx]] = True
 
     data_tuples = np.array(data_tuples)
     tpreds = np.array(time_preds)[mask]
     X = np.concatenate((tpreds, data_tuples), axis=1)
-
-    #relvel_data = np.empty(
-    #for dets in sampled_dets
 
     # num time_preds is as same as num sampled_dets
     y = np.empty((len(time_preds), num_res))
@@ -418,3 +437,9 @@ if __name__ == '__main__':
     #print("\nCross-validation scores:", cv_scores)
     #print(f"Average CV score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
 
+    feature_importance = pd.DataFrame({
+        'feature': range(X_train.shape[1]),
+        'importance': rf_classifier.feature_importances_
+    })
+    print("\nFeature Importance:")
+    print(feature_importance.sort_values('importance', ascending=False))
