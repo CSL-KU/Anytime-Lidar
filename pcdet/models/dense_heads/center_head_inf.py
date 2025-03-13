@@ -97,7 +97,6 @@ class SeparateHead(nn.Module):
 
 # Inference only, torchscript compatible
 class CenterHeadInf(nn.Module): 
-    point_cloud_range : Final[List[float]]
     feature_map_stride : Final[int]
     nms_type : Final[str]
     nms_thresh : Final[List[float]]
@@ -111,7 +110,10 @@ class CenterHeadInf(nn.Module):
     tcount : Final[int]
     optimize_attr_convs : Final[bool]
     initial_voxel_size : Final[List[float]]
+    grid_size : Final[List[int]]
+    res_divs: Final[List[float]]
 
+    point_cloud_range : List[float]
     voxel_size : List[float]
     class_id_mapping_each_head : List[torch.Tensor]
     det_dict_copy : Dict[str,torch.Tensor]
@@ -124,10 +126,12 @@ class CenterHeadInf(nn.Module):
         assert not predict_boxes_when_training
         self.model_cfg = model_cfg
         self.num_class = num_class
-        self.grid_size = grid_size
-        self.point_cloud_range = point_cloud_range.tolist()
+        self.grid_size = grid_size.tolist()
         self.voxel_size = voxel_size
         self.initial_voxel_size = voxel_size.copy()
+        self.point_cloud_range = point_cloud_range.tolist()
+
+        self.all_pc_ranges = self.model_cfg.get('ALL_PC_RANGES', None)
 
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', 1)
 
@@ -152,13 +156,14 @@ class CenterHeadInf(nn.Module):
             for cls_id in cls_ids:
                 self.cls_id_to_det_head_idx_map[cls_id] = i
 
-        res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
+        self.res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
+        resdiv_mask = self.model_cfg.get('RESDIV_MASK', [True] * len(self.res_divs))
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         if norm_method == 'Batch':
             norm_func = partial(nn.BatchNorm2d, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
         elif norm_method == 'ResAwareBatch':
-            norm_func = partial(ResAwareBatchNorm2d, num_resolutions=len(res_divs), \
-                    eps=1e-3, momentum=0.01)
+            norm_func = partial(ResAwareBatchNorm2d, res_divs=self.res_divs, \
+                    resdiv_mask=resdiv_mask, eps=1e-3, momentum=0.01)
         elif norm_method == 'Instance':
             norm_func = partial(FnInstanceNorm, eps=self.model_cfg.get('BN_EPS', 1e-5), momentum=self.model_cfg.get('BN_MOM', 0.1))
         self.shared_conv = nn.Sequential(
@@ -449,11 +454,15 @@ class CenterHeadInf(nn.Module):
         return det_dict
 
     @torch.jit.export
-    def adjust_voxel_size_wrt_resolution(self, res_div : float):
-        voxel_sz = torch.tensor([vs*res_div for vs in self.initial_voxel_size[:2]], dtype=torch.float)
-        voxel_sz = torch.round(voxel_sz, decimals=3)
-        self.voxel_size[0] = voxel_sz[0].item()
-        self.voxel_size[1] = voxel_sz[1].item()
+    def adjust_voxel_size_wrt_resolution(self, res_idx : int):
+        self.point_cloud_range = self.all_pc_ranges[res_idx]
+        resdiv = self.res_divs[res_idx]
+        new_grid_size_x = int(self.grid_size[0] / resdiv)
+        new_grid_size_y = int(self.grid_size[1] / resdiv)
+        Xlen = self.point_cloud_range[3] - self.point_cloud_range[0]
+        Ylen = self.point_cloud_range[4] - self.point_cloud_range[1]
+        self.voxel_size[0] = Xlen / new_grid_size_x
+        self.voxel_size[1] = Ylen / new_grid_size_y
 
 @torch.jit.script
 def scatter_sliced_tensors(chosen_tile_coords : List[int],

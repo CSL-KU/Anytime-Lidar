@@ -12,7 +12,7 @@ import platform
 from typing import Dict, List, Tuple, Optional, Final
 from .forecaster import split_dets
 from .valor_utils import *
-from ...utils import common_utils
+from ...utils import common_utils, vsize_calc
 
 import ctypes
 pth = os.environ['PCDET_PATH']
@@ -29,11 +29,26 @@ class PillarNetVALOR(Detector3DTemplate):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
         rd = model_cfg.get('RESOLUTION_DIV', [1.0])
+        pc_range = self.dataset.point_cloud_range
+        self.max_grid_l = self.dataset.grid_size[0]
+        all_pc_ranges, all_pillar_sizes, all_grid_lens, new_resdivs, resdiv_mask = \
+                vsize_calc.interpolate_pillar_sizes(self.max_grid_l,
+                 rd, pc_range.tolist(), step=32)
+        rd = new_resdivs
+
         self.model_cfg.VFE.RESOLUTION_DIV = rd
+        self.model_cfg.VFE.RESDIV_MASK = resdiv_mask
+        self.model_cfg.VFE.ALL_PC_RANGES = all_pc_ranges
         self.model_cfg.BACKBONE_3D.RESOLUTION_DIV = rd
+        self.model_cfg.BACKBONE_3D.RESDIV_MASK = resdiv_mask
         self.model_cfg.BACKBONE_2D.RESOLUTION_DIV = rd
+        self.model_cfg.BACKBONE_2D.RESDIV_MASK = resdiv_mask
         self.model_cfg.DENSE_HEAD.RESOLUTION_DIV = rd
+        self.model_cfg.DENSE_HEAD.RESDIV_MASK = resdiv_mask
+        self.model_cfg.DENSE_HEAD.ALL_PC_RANGES = all_pc_ranges
         self.resolution_dividers = rd
+        self.resdiv_mask = resdiv_mask
+        self.all_pc_ranges = torch.tensor(all_pc_ranges)
 
         self.method = int(self.model_cfg.METHOD)
         self.valo_opt_on = (self.method == VALO_OPT_ON or \
@@ -90,8 +105,14 @@ class PillarNetVALOR(Detector3DTemplate):
         self.opt_dense_convs = None
 
         # narrow it a little bit to avoid numerical errors
-        self.filter_pc_range = self.vfe.point_cloud_range + \
-                torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+        filter_min = torch.max(self.all_pc_ranges[:, :3], dim=0).values
+        filter_max = torch.min(self.all_pc_ranges[:, 3:], dim=0).values
+        filter_range = torch.cat((filter_min, filter_max))
+        self.filter_pc_range =  filter_range + \
+                torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01])
+        self.filter_pc_range = self.filter_pc_range.cuda()
+        print('Point cloud filtering range:')
+        print(self.filter_pc_range)
         self.calib_pc_range = self.filter_pc_range.clone()
 
         #NOTE, this seems to work but I am not absolute
@@ -117,6 +138,7 @@ class PillarNetVALOR(Detector3DTemplate):
             pass
         self.sched_step = 0
         self.sched_time_point_ms = 0
+        self.batch_norm_interpolated = False
 
     def forward(self, batch_dict):
         if self.training:
@@ -133,7 +155,7 @@ class PillarNetVALOR(Detector3DTemplate):
             batch_dict = self.backbone_3d(batch_dict)
             batch_dict = self.backbone_2d(batch_dict)
 
-            self.dense_head.adjust_voxel_size_wrt_resolution(resdiv)
+            self.dense_head.adjust_voxel_size_wrt_resolution(self.res_idx)
             batch_dict = self.dense_head.forward_pre(batch_dict)
             batch_dict = self.dense_head.forward_post(batch_dict)
 
@@ -156,6 +178,11 @@ class PillarNetVALOR(Detector3DTemplate):
             return self.forward_eval(batch_dict)
 
     def forward_eval(self, batch_dict):
+        if not self.batch_norm_interpolated:
+            interpolate_batch_norms(self.res_aware_1d_batch_norms, self.max_grid_l)
+            interpolate_batch_norms(self.res_aware_2d_batch_norms, self.max_grid_l)
+            self.batch_norm_interpolated = True
+
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
@@ -326,7 +353,7 @@ class PillarNetVALOR(Detector3DTemplate):
             batch_dict['tensor_slice_inds'] = (xmin, xmax)
             pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
 
-            self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(resdiv)
+            self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(self.res_idx)
             if not self.valo_opt_on:
                 topk_outputs = self.dense_head_scrpt.forward_topk(pred_dicts)
             self.measure_time_end('DenseOps')
@@ -396,7 +423,7 @@ class PillarNetVALOR(Detector3DTemplate):
             self.dense_head_scrpt = torch.jit.script(self.dense_head)
 
         # Not necessary but its ok
-        self.dense_head.adjust_voxel_size_wrt_resolution(self.resolution_dividers[self.res_idx]) 
+        self.dense_head.adjust_voxel_size_wrt_resolution(self.res_idx)
 
         if self.opt_dense_convs is None:
             self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)

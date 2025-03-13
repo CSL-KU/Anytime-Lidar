@@ -18,10 +18,11 @@ class PFNLayerV2(nn.Module):
                  out_channels,
                  use_norm=True,
                  last_layer=False,
-                 res_divs=[1],
+                 res_divs=[1.0],
+                 resdiv_mask=[True],
                  norm_method='Batch'):
         super().__init__()
-        
+
         self.last_vfe = last_layer
         self.use_norm = use_norm
         if not self.last_vfe:
@@ -33,7 +34,8 @@ class PFNLayerV2(nn.Module):
                 self.norm = nn.BatchNorm1d(out_channels, eps=1e-3, momentum=0.01)
             elif norm_method == 'ResAwareBatch':
                 self.norm = ResAwareBatchNorm1d(out_channels, \
-                        num_resolutions=len(res_divs), \
+                        res_divs=res_divs, \
+                        resdiv_mask=resdiv_mask,
                         eps=1e-3, momentum=0.01)
         else:
             self.linear = nn.Linear(in_channels, out_channels, bias=True)
@@ -53,7 +55,6 @@ class PFNLayerV2(nn.Module):
         else:
             x_concatenated = torch.cat([x, x_max[unq_inv, :]], dim=1)
             return x_concatenated
-
 
 class DynamicPillarVFE(VFETemplate):
     def __init__(self, model_cfg, num_point_features, voxel_size, grid_size, point_cloud_range, **kwargs):
@@ -167,6 +168,8 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
         res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        all_pc_ranges = self.model_cfg.get('ALL_PC_RANGES', None)
+        resdiv_mask = self.model_cfg.get('RESDIV_MASK', [True] * len(res_divs))
 
         self.num_filters = self.model_cfg.NUM_FILTERS
         assert len(self.num_filters) > 0
@@ -178,14 +181,19 @@ class DynamicPillarVFESimple2D(VFETemplate):
             out_filters = num_filters[i + 1]
             pfn_layers.append(
                 PFNLayerV2(in_filters, out_filters, self.use_norm, last_layer=(i >= len(num_filters) - 2),
-                    res_divs=res_divs, norm_method=norm_method)
+                    res_divs=res_divs, resdiv_mask=resdiv_mask, norm_method=norm_method)
             )
         self.pfn_layers = nn.ModuleList(pfn_layers)
 
         self.voxel_params = []
-        for resdiv in res_divs:
-            voxel_size_tmp = [vs * resdiv for vs in voxel_size[:2]]
-            grid_size_tmp = [int(gs / resdiv) for gs in grid_size]
+        for i, resdiv in enumerate(res_divs):
+            if all_pc_ranges is not None:
+                point_cloud_range = all_pc_ranges[i]
+
+            grid_size_tmp = [int(gs / resdiv) for gs in grid_size[:2]]
+            Xlen = point_cloud_range[3] - point_cloud_range[0]
+            Ylen = point_cloud_range[4] - point_cloud_range[1]
+            voxel_size_tmp = [Xlen/grid_size_tmp[0], Ylen/grid_size_tmp[1]]
             self.voxel_params.append((
                     voxel_size_tmp[0], #voxel_x
                     voxel_size_tmp[1], #voxel_y
@@ -196,20 +204,19 @@ class DynamicPillarVFESimple2D(VFETemplate):
                     grid_size_tmp[0] * grid_size_tmp[1], #scale_xy
                     grid_size_tmp[1], #scale_y
                     torch.tensor(grid_size_tmp).cuda(), # grid_size
-                    torch.tensor(voxel_size_tmp + [voxel_size[2]]).cuda()
+                    torch.tensor(voxel_size_tmp + [voxel_size[2]]).cuda(),
+                    torch.tensor(point_cloud_range).cuda()
             ))
 
         self.set_params(0)
-        self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
-        self.filter_point_cloud_range = (torch.tensor(point_cloud_range) + \
-                torch.tensor([0.2, 0.2, 0., -0.2, -0.2, 0.])).cuda()
 
     # Allows switching between different pillar sizes
     def set_params(self, idx):
         self.voxel_x, self.voxel_y, self.voxel_z, \
                 self.x_offset, self.y_offset, self.z_offset,  \
                 self.scale_xy, self.scale_y, \
-                self.grid_size, self.voxel_size = self.voxel_params[idx]
+                self.grid_size, self.voxel_size, \
+                self.point_cloud_range = self.voxel_params[idx]
 
     def adjust_voxel_size_wrt_resolution(self, res_idx):
         self.set_params(res_idx)

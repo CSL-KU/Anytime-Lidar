@@ -7,6 +7,10 @@ def set_bn_resolution(resawarebns, res_idx):
     for rabn in resawarebns:
         rabn.setResIndex(res_idx)
 
+def interpolate_batch_norms(resawarebns, max_grid_l):
+    for rabn in resawarebns:
+        rabn.interpolate(max_grid_l)
+
 def get_all_resawarebn(model):
     resaware1dbns, resaware2dbns = [], []
     for module in model.modules():

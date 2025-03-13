@@ -226,10 +226,11 @@ class PillarRes18BackBone8x(nn.Module):
         self.model_cfg = model_cfg
 
         self.res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
+        self.resdiv_mask = self.model_cfg.get('RESDIV_MASK', [True] * len(self.res_divs))
         norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
         if norm_method == 'ResAwareBatch':
-            norm_fn = partial(ResAwareBatchNorm1d, num_resolutions=len(self.res_divs), \
-                    eps=1e-3, momentum=0.01)
+            norm_fn = partial(ResAwareBatchNorm1d, res_divs=self.res_divs, \
+                    resdiv_mask=self.resdiv_mask, eps=1e-3, momentum=0.01)
         else: #norm_method == 'Batch':
             norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
         #elif norm_method == 'Instance':
@@ -268,8 +269,8 @@ class PillarRes18BackBone8x(nn.Module):
         if norm_method == 'Batch':
             norm_fn = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.01)
         elif norm_method == 'ResAwareBatch':
-            norm_fn = partial(ResAwareBatchNorm2d, num_resolutions=len(self.res_divs), \
-                    eps=1e-3, momentum=0.01)
+            norm_fn = partial(ResAwareBatchNorm2d, res_divs=self.res_divs, \
+                    resdiv_mask=self.resdiv_mask, eps=1e-3, momentum=0.01)
         elif norm_method == 'Instance':
             norm_fn = partial(FnInstanceNorm, eps=1e-3, momentum=0.01)
 
