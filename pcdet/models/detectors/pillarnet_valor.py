@@ -117,7 +117,6 @@ class PillarNetVALOR(Detector3DTemplate):
         print(self.filter_pc_range)
         self.calib_pc_range = self.filter_pc_range.clone()
 
-        #NOTE, this seems to work but I am not absolute
         t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
         pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
         mpc = MultiPillarCounter(pillar_sizes, self.vfe.point_cloud_range.cpu())
