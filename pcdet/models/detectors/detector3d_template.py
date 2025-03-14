@@ -313,7 +313,7 @@ class Detector3DTemplate(nn.Module):
 
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'] = []
-        self._eval_dict['resolution_selections'] = [0] * 5
+        rs = self._eval_dict['resolution_selections'] = []
         self._eval_dict['time_pred_errs'] = []
 
         self.do_streaming_eval = self.model_cfg.get('STREAMING_EVAL', False)
@@ -859,7 +859,9 @@ class Detector3DTemplate(nn.Module):
         # deadline
         self._eval_dict['deadlines_missed'] = 0
         self._eval_dict['deadline_diffs'].clear()
-        self._eval_dict['resolution_selections'] = [0] * 5
+        rs = self._eval_dict['resolution_selections']
+        for i in range(len(rs)):
+            rs[i] = 0
         self._eval_dict['time_pred_errs'] = []
 
     def get_time_dict_stats(self):
