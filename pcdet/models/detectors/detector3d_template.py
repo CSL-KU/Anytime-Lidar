@@ -149,7 +149,7 @@ def post_forward_hook(module, inp_args, outp_args):
         if not streaming_eval:
             inp_arrival_ms = module.sim_cur_time_ms
         else:
-            tail = int(module.sim_cur_time_ms) % int(module.data_period_ms)
+            tail_ms = int(module.sim_cur_time_ms) % int(module.data_period_ms)
             inp_arrival_ms = module.sim_cur_time_ms - tail_ms
 
         # Do not forecast those which are already forecasted!
