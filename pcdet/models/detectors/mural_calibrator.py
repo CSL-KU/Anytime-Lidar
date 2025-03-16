@@ -349,7 +349,7 @@ class MURALCalibrator():
                 gc.collect()
 
 
-        if self.model.valo_opt_on:
+        if self.model.dense_conv_opt_on:
             # Calculate DenseOps times that were not calculated
             dense_ops_inp_sz = self.model.inp_tensor_sizes[self.res_idx]
             dummy_inp = torch.rand(dense_ops_inp_sz).cuda()

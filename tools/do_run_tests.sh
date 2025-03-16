@@ -8,19 +8,19 @@ export DATASET_PERIOD=250
 export OMP_NUM_THREADS=4
 
 ############CALIB START################
-#export CALIBRATION=1
-#CFG_FILE="./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
-#CKPT_FILE="../models/pillarnet0100_e20.pth"
-#CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 5 10.0
+export CALIBRATION=1
+CFG_FILE="./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
+CKPT_FILE="../models/pillarnet0100_e20.pth"
+CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 5 10.0
 
-#CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-#CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
-#CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 6 10.0
-#CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 7 10.0
-#CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 8 10.0
-#CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem 9 10.0
-############CALIB END################
+CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
+for m in $(seq 6 10)
+do
+  CFG_FILE=$CFG_FILE CKPT_FILE=$CKPT_FILE ./run_tests.sh singlem $m 10.0
+done
+############CALIB END################a
 
 export CALIBRATION=0
-./run_tests.sh methods 0.050 0.050 0.250
+./run_tests.sh methods 0.060 0.020 0.120
 python eval_from_files.py ./exp_data_nsc_methods
