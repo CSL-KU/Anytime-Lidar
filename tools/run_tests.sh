@@ -8,7 +8,6 @@ fi
 
 export IGNORE_DL_MISS=${IGNORE_DL_MISS:-0}
 export DO_EVAL=${DO_EVAL:-1}
-export E2E_REL_DEADLINE_S=${E2E_REL_DEADLINE_S:-0.0}
 export CALIBRATION=${CALIBRATION:-0}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export TASKSET=${TASKSET:-"taskset -c 2-7"}
@@ -16,100 +15,8 @@ export USE_AMP=${USE_AMP:-"false"}
 export PMODE=${PMODE:-"UNKNOWN_POWER_MODE"}
 
 if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
-    #PointPillars Multihead *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_multihead_3br.yaml"
-    #CKPT_FILE="../models/pp_multihead_nds5823_updated.pth"
-
-    #SECOND CBGS *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_second_multihead.yaml"
-    #CKPT_FILE="../models/cbgs_second_multihead_nds6229_updated.pth"
-
-    # Centerpoint-pointpillar * 
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pp_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/cbgs_pp_centerpoint_nds6070.pth"
-
-    # Centerpoint-voxel01 *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/cbgs_voxel01_centerpoint_nds_6454.pth"
-
-    # Centerpoint-voxel0075 *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_trt.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/cbgs_voxel0075_centerpoint_nds_6648.pth"
-
-    # VoxelNeXt *
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_voxelnext.yaml"
-    #CKPT_FILE="../models/voxelnext_nuscenes_kernel1.pth"
- 
-    # PillarNet 0.075
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar0075_res2d_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_pillar0075_res2d_centerpoint.pth"
-
-    # PillarNet 0.1
-    #CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_valor_v5.yaml"
-    #CKPT_FILE="../models/pillar01_015_02_valor_v5_epoch30.pth"
-
-    ################################
-    #CFG_FILE="./cfgs/nuscenes_models/pillarnet010.yaml"
-    #CKPT_FILE="../models/pillarnet010_epoch30.pth"
-
-    CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-    CKPT_FILE="../models/pillar01_015_02_024_03_valor_epoch40.pth"
-
-    # this is pillarnet valo
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/pillarnet010_epoch30.pth"
-
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar015_res2d_centerpoint_valo.yaml"
-    #CKPT_FILE="../models/pillarnet015_epoch20.pth"
-    ########################################
-
-    #CFG_FILE="./cfgs/nuscenes_models/pillar01_015_02_024_03_valor_awsim.yaml"
-    #CKPT_FILE="../models/pillar01_015_02_024_03_valor_awsim_epoch30.pth"
-
-    # PillarNet 0.2
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_pillar02_res2d_centerpoint_trt.yaml"
-    #CKPT_FILE="../models/cbgs_pillar02_res2d_centerpoint_nds_6150.pth"
-
-    # DSVT - CenterHead
-    #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusc_chm_trt.yaml"
-    #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusc_chm_ep25.pth"
- 
-    
-    # Centerpoint-voxel02
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel02_res3d_centerpoint.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_voxel02_res3d_centerpoint.yaml"
-    #CKPT_FILE="../models/cbgs_voxel02_centerpoint_5swipes.pth"
-    
-    # Centerpoint-voxel0075-VALO
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_18.yaml"
-    #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_18.pth"
-
-    # Centerpoint-VALO-autoware
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel01_res3d_centerpoint_anytime_aw.yaml"
-    #CKPT_FILE="../models/cbgs_voxel01_res3d_centerpoint_anytime_aw_amp_5sweeps.pth"
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_aw.yaml"
-    ###############################3
-    
-    # Centerpoint-voxel0075-anytime-v1
-    #CFG_FILE="./cfgs/nuscenes_models/cbgs_dyn_voxel0075_res3d_centerpoint_anytime_v1.yaml"
-    #CKPT_FILE="../models/cbgs_voxel0075_res3d_centerpoint_anytime_v1.pth"
-    #TASKSET="taskset 0x3f"
-    #export OMP_NUM_THREADS=2
-    #export USE_ALV1=1
-    
-    # Centerpoint-KITTI-voxel
-    #CFG_FILE="./cfgs/kitti_models/centerpoint.yaml"
-    #CKPT_FILE="../models/centerpoint_kitti.pth"
-   
-    #DSVT mymodel
-    #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusences_aw.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusences_aw_no_iou_valo.yaml"
-    #CFG_FILE="./cfgs/nuscenes_models/dsvt_plain_1f_onestage_nusences_aw_no_iou.yaml"
-    #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusences_aw_no_iou_10sweeps.pth"
-    #CKPT_FILE="../models/dsvt_plain_1f_onestage_nusences_aw_2_untrained.pth"
+    CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -136,13 +43,12 @@ elif [ $1 == 'ros2_nsys' ]; then
     chrt -r 90 $PROF_CMD python inference_ros2.py --cfg_file=$CFG_FILE \
             --ckpt $CKPT_FILE --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
 elif [ $1 == 'profilem' ]; then
-    #export CUddDA_LAUNCH_BLOCKING=1
+    #export CUDA_LAUNCH_BLOCKING=1
     $PROF_CMD $CMD --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3
     #export CUDA_LAUNCH_BLOCKING=0
 elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
   export IGNORE_DL_MISS=0
   export DO_EVAL=0
-  export E2E_REL_DEADLINE_S=0.0 # not streaming
   export CALIBRATION=0
 
   rm eval_dict_*
@@ -150,26 +56,30 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
   mkdir -p $OUT_DIR
 
   CFG_FILES=( \
-    "./cfgs/nuscenes_models/pillarnet010.yaml"
-    "./cfgs/nuscenes_models/pillarnet015.yaml"
-    "./cfgs/nuscenes_models/pillarnet020.yaml"
-    "./cfgs/nuscenes_models/pillarnet024.yaml"
-    "./cfgs/nuscenes_models/pillarnet030.yaml"
-    "./cfgs/nuscenes_models/cbgs_dyn_pillar01_res2d_centerpoint_valo.yaml"
-    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-    "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml" )
+    "./cfgs/nuscenes_models/pillarnet0100.yaml"
+    "./cfgs/nuscenes_models/pillarnet0128.yaml"
+    "./cfgs/nuscenes_models/pillarnet0160.yaml"
+    "./cfgs/nuscenes_models/pillarnet0200.yaml"
+    "dummy"
+    "./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml" )
 
   CKPT_FILES=( \
-    "../models/pillarnet010_epoch30.pth"
-    "../models/pillarnet015_epoch30.pth"
-    "../models/pillarnet020_epoch30.pth"
-    "../models/pillarnet024_epoch30.pth"
-    "../models/pillarnet030_epoch30.pth"
-    "../models/pillarnet010_epoch30.pth"
-    "../models/pillar01_015_02_024_03_valor_epoch40.pth"
-    "../models/pillar01_015_02_024_03_valor_epoch40.pth"
-    "../models/pillar01_015_02_024_03_valor_epoch40.pth" )
+    "../models/pillarnet0100_e20.pth"
+    "../models/pillarnet0128_e20.pth"
+    "../models/pillarnet0160_e20.pth"
+    "../models/pillarnet0200_e20.pth"
+    "dummy"
+    "../models/pillarnet0100_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth" )
 
   for m in ${!CFG_FILES[@]}
   do
@@ -178,6 +88,11 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 
     TSKST="taskset -c 2-7"
     MTD=$m
+
+    if [ $m -eq 4 ]; then
+      continue
+    fi
+
     export OMP_NUM_THREADS=4
     export USE_ALV1=0
     CMD="chrt -r 90 $TSKST python test.py --cfg_file=$CFG_FILE \
@@ -190,8 +105,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
         if [ -f $OUT_FILE ]; then
           printf "Skipping $OUT_FILE test.\n"
         else
-          $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD \
-            "MODEL.DENSE_HEAD.NAME" CenterHeadInf
+          $CMD --set "MODEL.DEADLINE_SEC" $s "MODEL.METHOD" $MTD
           # rename the output and move the corresponding directory
           mv -f eval_dict_*.json $OUT_FILE
           mv -f 'eval.pkl' $(echo $OUT_FILE | sed 's/json/pkl/g')
@@ -212,11 +126,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
 elif [ $1 == 'single' ]; then
     $CMD  --set "MODEL.DEADLINE_SEC" $2
 elif [ $1 == 'singlem' ]; then
-    chrt -r 90 $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.DENSE_HEAD.NAME" CenterHeadInf
-elif [ $1 == 'singlemt' ]; then
-    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.TILE_COUNT" $4
-elif [ $1 == 'singlems' ]; then
-    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True
-elif [ $1 == 'singlemsp' ]; then
-    $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 "MODEL.STREAMING_EVAL" True "MODEL.PROJECTION_COEFF" $4
+    chrt -r 90 $CMD  --set "MODEL.METHOD" $2 "MODEL.DEADLINE_SEC" $3 
+elif [ $1 == 'singlev' ]; then
+    $CMD  --set "MODEL.METHOD" 0 "MODEL.DEADLINE_SEC" 10.0 "DATA_CONFIG.DATA_PROCESSOR.1.VOXEL_SIZE" "[$2, $2, 0.2]"
 fi

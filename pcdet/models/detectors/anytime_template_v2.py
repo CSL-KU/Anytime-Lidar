@@ -165,8 +165,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
     def schedule1(self, batch_dict):
         calibrator = self.calibrators[self.res_idx]
-        resdiv = batch_dict['resolution_divider']
-        cur_tile_size_voxels = self.tile_size_voxels / resdiv
+        cur_tile_size_voxels = self.tile_size_voxels 
         if self.training or self.sched_disabled:
             voxel_x_coords = self.get_voxel_x_coords_from_points(batch_dict)
             voxel_tile_coords = torch.div(voxel_x_coords, cur_tile_size_voxels, \
@@ -180,7 +179,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.fut = do_inds_calc_wrapper(
                     self.latest_batch_dict['bb3d_intermediary_vinds'],
                     self.latest_batch_dict['vcount_area'],
-                    self.tcount, torch.tensor([d/resdiv for d in self.dividers]))
+                    self.tcount, torch.tensor([d for d in self.dividers]))
 
         pcount_area, vcount_area = None, None
         torch.cuda.synchronize() # prevents tile calculations failure

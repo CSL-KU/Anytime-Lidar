@@ -7,6 +7,7 @@ import sys
 import platform
 from typing import List
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+from ...utils import common_utils
 
 class DenseConvsPipeline(torch.nn.Module):
     def __init__(self, backbone_3d, backbone_2d, dense_head):
@@ -51,11 +52,14 @@ class PillarNetOpt(Detector3DTemplate):
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
         self.optimization1_done = False
         self.dense_convs_trt = None
+        self.filter_pc_range =  self.vfe.point_cloud_range + \
+                torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
 
 
     def forward(self, batch_dict):
         if self.training:
-            batch_dict = self.vfe.range_filter(batch_dict)
+            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.filter_pc_range)
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
@@ -77,7 +81,8 @@ class PillarNetOpt(Detector3DTemplate):
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             self.measure_time_start('VFE')
-            batch_dict = self.vfe.range_filter(batch_dict)
+            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.filter_pc_range)
             points = batch_dict['points']
             batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
@@ -127,7 +132,6 @@ class PillarNetOpt(Detector3DTemplate):
         self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)
         self.opt_dense_convs.eval()
 
-        generated_onnx=False
         onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             torch.onnx.export(
@@ -136,17 +140,11 @@ class PillarNetOpt(Detector3DTemplate):
                     onnx_path, input_names=input_names,
                     output_names=self.opt_dense_convs_output_names,
                     opset_version=17,
-                    #custom_opsets={"kucsl": 17}
             )
-            generated_onnx=True
 
         power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
         if power_mode == 'UNKNOWN_POWER_MODE':
             print('WARNING! Power mode is unknown. Please export PMODE.')
-
-        if generated_onnx:
-            print('ONNX files created, please run again after creating TensorRT engines.')
-            sys.exit(0)
 
         tokens = self.model_cfg.ONNX_PATH.split('/')
         trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
@@ -154,14 +152,12 @@ class PillarNetOpt(Detector3DTemplate):
         try:
             self.dense_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
         except:
-            print('TensorRT wrapper for fused_ops throwed exception, using eager mode')
-            eager_outputs = self.opt_dense_convs(fwd_data) # for calibration
+            print('TensorRT wrapper for fused_ops throwed exception, creating the engine')
+            create_trt_engine(onnx_path, trt_path, input_names[0])
+        self.dense_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
-        if generated_onnx:
-            print('ONNX files created, please run again after creating TensorRT engines.')
-            sys.exit(0)
 
         self.optimization1_done = True
 

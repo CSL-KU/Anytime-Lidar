@@ -330,7 +330,7 @@ class AnytimeCalibrator():
         print('VOXEL_SIZE:', self.model.vfe.voxel_size)
         print('GRID SIZE:', self.model.vfe.grid_size)
 
-        num_samples = len(self.dataset)
+        num_samples = min(512, len(self.dataset))
         print('Number of samples:', num_samples)
 
         if not self.model.use_voxelnext:

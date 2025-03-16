@@ -17,7 +17,7 @@ method_colors= [
     'tab:green',
     'tab:brown',
     'tab:blue', 
-    'tab:pink',  #'xkcd:coral', 
+    'tab:orange',  #'xkcd:coral', 
     'xkcd:coral', 
     'tab:pink',
     'tab:orange',
@@ -28,15 +28,17 @@ method_colors= [
 ]
 
 method_num_to_str = [
-        '0Pillarnet010',
-        '1Pillarnet015',
-        '2Pillarnet020',
-        '3Pillarnet024',
-        '4Pillarnet030',
-        '5VALO-010',
-        '6MURAL',
-        '7MURAL-NDCO-NF',
-        '8MURAL-NF',
+        '00Pillarnet010',
+        '01Pillarnet015',
+        '02Pillarnet020',
+        '03Pillarnet024',
+        '04Pillarnet030',
+        '05VALO-010',
+        '06MURAL',
+        '07MURAL-NDCO-NF',
+        '08MURAL-NF',
+        '09MURAL-NS',
+        '10MURAL-NEWTP',
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -70,28 +72,31 @@ if __name__ == '__main__':
 
     #Sort exps
     exp_names = sorted(exps_dict.keys())
-    exps_dict= {nm[1:]:exps_dict[nm] for nm in exp_names}
+    exps_dict= {nm[2:]:exps_dict[nm] for nm in exp_names}
 
     plot_sets=[]
 
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'Pillarnet010',
-            'Pillarnet015',
-            'Pillarnet020',
-            'Pillarnet024',
-            'Pillarnet030',
-            'MURAL',
-    ]})
+#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#            'Pillarnet010',
+#            'Pillarnet015',
+#            'Pillarnet020',
+#            'Pillarnet024',
+#            'Pillarnet030',
+#            'VALO-010',
+#            'MURAL',
+#    ]})
+#
+#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+#            'VALO-010',
+#            'MURAL',
+#    ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'VALO-010',
             'MURAL',
-    ]})
-
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'MURAL',
-            'MURAL-NF',
-            'MURAL-NDCO-NF',
+#            'MURAL-NF',
+#            'MURAL-NDCO-NF',
+#            'MURAL-NS',
+            'MURAL-NEWTP',
     ]})
 
     plot_set_choice = int(sys.argv[2])
@@ -129,8 +134,9 @@ if __name__ == '__main__':
     #procs.append(Process(target=plot_func_baseline_eted_box, args=(out_path, exps_dict,)))
     #procs[-1].start()
 
-    procs.append(Process(target=plot_res_select_stats, args=(out_path, exps_dict,)))
-    procs[-1].start()
+#    for name in ['MURAL', 'MURAL-NF', 'MURAL-NDCO-NF']:
+#        procs.append(Process(target=plot_res_select_stats, args=(out_path, exps_dict, name,)))
+#        procs[-1].start()
 
     procs.append(Process(target=plot_func_dm, args=(out_path, exps_dict,)))
     procs[-1].start()

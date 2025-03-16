@@ -1,5 +1,5 @@
 from .detector3d_template import Detector3DTemplate
-from .valor_calibrator import ValorCalibrator
+from .mural_calibrator import  MURALCalibrator
 from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 import torch
 import time
@@ -12,7 +12,7 @@ import numpy as np
 import platform
 from typing import Dict, List, Tuple, Optional, Final
 from .forecaster import split_dets
-from .valor_utils import *
+from .mural_utils import *
 from ...utils import common_utils, vsize_calc
 
 import ctypes
@@ -24,8 +24,9 @@ VALO_OPT_ON = 6
 VALO_OPT_OFF = 7 # no dense conv opt, no forecasting
 VALO_OPT_WO_FORECASTING = 8 # yes dense conv opt, no forecasting
 VALO_OPT_OFF_WCET_SCHED = 9 # no dense conv opt, no forecasting, wcet scheduling
+VALO_OPT_ON_PREV_PILLARS = 10
 
-class PillarNetVALOR(Detector3DTemplate):
+class PillarNetMURAL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
@@ -53,18 +54,22 @@ class PillarNetVALOR(Detector3DTemplate):
         self.all_pc_ranges = torch.tensor(all_pc_ranges)
 
         self.method = int(self.model_cfg.METHOD)
+        self.calib_method = self.method
         self.valo_opt_on = (self.method == VALO_OPT_ON or \
-                self.method == VALO_OPT_WO_FORECASTING)
+                self.method == VALO_OPT_WO_FORECASTING or \
+                self.method == VALO_OPT_ON_PREV_PILLARS)
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.valo_opt_on
-        self.enable_forecasting_to_fut = (self.method == VALO_OPT_ON)
+        self.enable_forecasting_to_fut = (self.method == VALO_OPT_ON or \
+                self.method == VALO_OPT_ON_PREV_PILLARS)
+        self.use_prev_pillars = (self.method == VALO_OPT_ON_PREV_PILLARS)
+        if self.use_prev_pillars:
+            print('Using previous pillar counts')
+            # Use same calibration files avalable for another method
+            self.calib_method = VALO_OPT_ON
 
         self.deadline_based_selection = True
         if self.deadline_based_selection:
             print('Deadline scheduling is enabled!')
-
-        self.enable_data_sched = False
-        if self.enable_data_sched:
-            print('Data scheduling is enabled!')
 
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
@@ -122,12 +127,11 @@ class PillarNetVALOR(Detector3DTemplate):
         mpc = MultiPillarCounter(pillar_sizes, self.vfe.point_cloud_range.cpu())
         mpc.eval()
         self.mpc_script = torch.jit.script(mpc)
-        self.shrink_flip = False
 
         self.dense_head_scrpt = None
         self.inp_tensor_sizes = [np.ones(4, dtype=int)] * self.num_res
         self.dense_inp_slice_sz = 4
-        self.calibrators = [ValorCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
+        self.calibrators = [MURALCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
         self.use_oracle_res_predictor = False
@@ -145,6 +149,8 @@ class PillarNetVALOR(Detector3DTemplate):
                 pass
         self.sched_time_point_ms = 0
         self.batch_norm_interpolated = False
+        self.x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+        self.prev_pillar_counts = None
 
     def forward(self, batch_dict):
         if self.training:
@@ -189,6 +195,8 @@ class PillarNetVALOR(Detector3DTemplate):
             interpolate_batch_norms(self.res_aware_2d_batch_norms, self.max_grid_l)
             self.batch_norm_interpolated = True
 
+        scene_reset = batch_dict['scene_reset']
+
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
@@ -196,14 +204,12 @@ class PillarNetVALOR(Detector3DTemplate):
                                 self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)
             batch_dict['points'] = points
-            fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
 
+            fixed_res_idx = int(os.environ.get('FIXED_RES_IDX', -1))
             # Schedule by calculating the exec time of all resolutions
-            conf_found, shrink = False, False
-            x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
             for i in range(self.num_res):
-                x_minmax[i, 0] = 0
-                x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
+                self.x_minmax[i, 0] = 0
+                self.x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
 
             sched_get_minmax = False
             if fixed_res_idx > -1:
@@ -211,6 +217,7 @@ class PillarNetVALOR(Detector3DTemplate):
                     self.res_idx = fixed_res_idx
                 sched_get_minmax = True
             elif self.deadline_based_selection:
+                conf_found = False
                 abs_dl_sec = batch_dict['abs_deadline_sec']
                 if self.method == VALO_OPT_OFF_WCET_SCHED:
                     t = time.time()
@@ -223,46 +230,27 @@ class PillarNetVALOR(Detector3DTemplate):
                             conf_found = True
                             break
                 else:
-                    points_xy = points[:, 1:3].contiguous()
-                    num_points = points_xy.size(0)
-                    all_pillar_counts = self.mpc_script(points_xy).int().cpu()
-                    all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
+                    if (not self.use_prev_pillars) or scene_reset:
+                        points_xy = points[:, 1:3]
+                        all_pillar_counts = self.mpc_script(points_xy, True)
+                        self.prev_pillar_counts = all_pillar_counts # for next sample
+                    else:
+                        all_pillar_counts = self.prev_pillar_counts
+                    num_points = points.size(0)
                     for i in range(self.num_res):
                         pillar_counts = all_pillar_counts[i]
                         if self.valo_opt_on:
                             nz_slice_inds = pillar_counts[0].nonzero()
-                            xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                            x_minmax[i, 0] = xmin
-                            x_minmax[i, 1] = xmax
-                        else:
-                            xmin, xmax = x_minmax[i, 0], x_minmax[i, 1]
+                            self.x_minmax[i, 0] = nz_slice_inds[0, 0]
+                            self.x_minmax[i, 1] = nz_slice_inds[-1, 0]
                         time_left = (abs_dl_sec - time.time()) * 1000
-
-                        if self.enable_data_sched:
-                            pred_latency, new_xmin, new_xmax = self.calibrators[i]. \
-                                    find_config_to_meet_dl(num_points,
-                                    pillar_counts.numpy(),
-                                    xmin.item(),
-                                    xmax.item(),
-                                    time_left,
-                                    self.shrink_flip)
-                                    # set a shrinking limit
-
-                            if not self.is_calibrating() and pred_latency < time_left:
-                                self.res_idx = i
-                                conf_found = True
-                                shrink = (new_xmin > xmin) or (new_xmax < xmax)
-                                xmin, xmax = new_xmin, new_xmax
-                                x_minmax[i, 0] = xmin
-                                x_minmax[i, 1] = xmax
-                                break
-                        else:
-                            pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
-                                    pillar_counts.numpy(), (xmax - xmin + 1).item())
-                            if not self.is_calibrating() and pred_latency < time_left:
-                                self.res_idx = i
-                                conf_found = True
-                                break
+                        pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
+                                pillar_counts.numpy(),
+                                (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
+                        if not self.is_calibrating() and pred_latency < time_left:
+                            self.res_idx = i
+                            conf_found = True
+                            break
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
@@ -272,7 +260,7 @@ class PillarNetVALOR(Detector3DTemplate):
                     self.res_idx = self.oracle_respred[sample_token]
                 sched_get_minmax = True
             elif self.res_predictor is not None:
-                assert batch_dict['scene_reset'] == (self.latest_batch_dict is None) # just to make sure
+                assert scene_reset == (self.latest_batch_dict is None) # just to make sure
                 if self.latest_batch_dict is not None:
                     # If you want to sched periodically rel to scene start, uncomment
                     tdiff = int(self.sim_cur_time_ms - self.sched_time_point_ms)
@@ -301,7 +289,7 @@ class PillarNetVALOR(Detector3DTemplate):
                         objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
 
                         #Override x_minmax
-                        pred_exec_times, x_minmax = self.pred_all_res_times(points)
+                        pred_exec_times, self.x_minmax = self.pred_all_res_times(points)
 
                         inp_tuple = np.array([[*pred_exec_times,
                                     objpos_perc5, objpos_mean, objpos_perc95,
@@ -310,7 +298,6 @@ class PillarNetVALOR(Detector3DTemplate):
                         pred_res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
                         if not self.is_calibrating():
                             self.res_idx = pred_res_idx
-                        sched_get_minmax = False
                     else:
                         sched_get_minmax = True
                 elif not self.is_calibrating():
@@ -322,12 +309,12 @@ class PillarNetVALOR(Detector3DTemplate):
                 points_xy_s = points[:, 1:3] - self.mpc_script.pc_range_min
                 pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
                 nz_slice_inds = pillar_counts[0].cpu().nonzero()
-                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                x_minmax[self.res_idx, 0] = xmin
-                x_minmax[self.res_idx, 1] = xmax
+                self.x_minmax[self.res_idx, 0] = nz_slice_inds[0, 0]
+                self.x_minmax[self.res_idx, 1] = nz_slice_inds[-1, 0]
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
-            xmin, xmax = x_minmax[self.res_idx] # must do this!
+            xmin, xmax = self.x_minmax[self.res_idx] # must do this!
+            batch_dict['tensor_slice_inds'] = (xmin, xmax)
 
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
@@ -337,14 +324,8 @@ class PillarNetVALOR(Detector3DTemplate):
             if self.fused_convs_trt[self.res_idx] is None:
                 set_bn_resolution(self.res_aware_2d_batch_norms, self.res_idx)
 
-            if shrink:
-                self.shrink_flip = not self.shrink_flip
-                pc_filter_lims = self.mpc_script.slice_inds_to_point_cloud_range(
-                        self.res_idx, xmin, xmax)
-                points_x = points_xy[:, 0]
-                mask = (points_x >= pc_filter_lims[0]) & (points_x <= pc_filter_lims[1])
-                points = points[mask]
-                batch_dict['points'] = points
+            if self.use_prev_pillars and not scene_reset:
+                mpc_fut = self.mpc_script.fork_forward(points)
 
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
@@ -368,7 +349,6 @@ class PillarNetVALOR(Detector3DTemplate):
                 lim1 = xmin*self.dense_inp_slice_sz
                 lim2 = (xmax+1)*self.dense_inp_slice_sz
                 x_conv4 = x_conv4[..., lim1:lim2].contiguous()
-            batch_dict['tensor_slice_inds'] = (xmin, xmax)
             pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
 
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(self.res_idx)
@@ -402,6 +382,9 @@ class PillarNetVALOR(Detector3DTemplate):
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
+
+            if self.use_prev_pillars and not scene_reset:
+                self.prev_pillar_counts = torch.jit.wait(mpc_fut)
             self.measure_time_end('CenterHead-GenBox')
 
             return batch_dict
@@ -464,7 +447,7 @@ class PillarNetVALOR(Detector3DTemplate):
         #print('Fused operations output names:', self.opt_outp_names)
 
         # Create a onnx and tensorrt file for each resolution
-        onnx_path = self.model_cfg.ONNX_PATH + '_m' + str(self.method) + f'_res{self.res_idx}.onnx'
+        onnx_path = self.model_cfg.ONNX_PATH + '_m' + str(self.calib_method) + f'_res{self.res_idx}.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
                 "x_conv4": {
@@ -568,7 +551,7 @@ class PillarNetVALOR(Detector3DTemplate):
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            name = self.model_name + '_m' + str(self.method)
+            name = self.model_name + '_m' + str(self.calib_method)
             calib_fnames[res_idx] = f"calib_files/{name}_{power_mode}_res{res_idx}.json"
             try:
                 self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])
@@ -588,10 +571,9 @@ class PillarNetVALOR(Detector3DTemplate):
         return None
 
     def pred_all_res_times(self, points):
-        points_xy = points[:, 1:3].contiguous()
+        points_xy = points[:, 1:3]
         num_points = points_xy.size(0)
-        all_pillar_counts = self.mpc_script(points_xy).int().cpu()
-        all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
+        all_pillar_counts = self.mpc_script(points_xy, True)
         latencies = [0.] * self.num_res
         x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         for i in range(self.num_res):

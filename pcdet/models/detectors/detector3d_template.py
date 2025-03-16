@@ -20,7 +20,7 @@ from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
 from ...utils.res_pred_utils import get_2d_egovel
-from .valor_calibrator import get_stats
+from .mural_calibrator import get_stats
 
 from typing import Dict, Final
 
@@ -225,7 +225,7 @@ def post_forward_hook(module, inp_args, outp_args):
             module.dl_miss_streak = 0
             module.latest_valid_dets = pred_dicts
         # total 2 seconds
-        if module.dl_miss_streak == round(2000 / module.data_period_ms):
+        if module.dl_miss_streak >= round(2000 / module.data_period_ms):
             #clear the buffer
             module.latest_valid_dets = None
     else:

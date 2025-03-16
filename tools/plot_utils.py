@@ -680,20 +680,20 @@ def plot_func_normalized_NDS(out_path, exps_dict, merged_exps_dict):
 
         plt.savefig(out_path + f"/normalized_{metric}_bar.pdf")
 
-def plot_res_select_stats(out_path, exps_dict):
-    if 'MURAL' not in exps_dict:
+def plot_res_select_stats(out_path, exps_dict, method_name):
+    if method_name not in exps_dict:
         return
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 3), constrained_layout=True)
     deadlines, rsels = [], []
-    for ed in reversed(exps_dict['MURAL']):
+    for ed in reversed(exps_dict[method_name]):
         deadlines.append(str(ed['deadline_msec']))
         res_selections = np.array(ed['resolution_selections'])
         rsels.append(res_selections / np.sum(res_selections) * 100)
 
     rsels = np.stack(rsels).T
     width = 0.5
-    labels = [r'$0.10^2$ m', r'$0.15^2$ m', r'$0.20^2$ m', r'$0.24^2$ m', r'$0.30^2$ m']
+    labels = [r'$0.10^2$ m', r'$0.128^2$ m', r'$0.16^2$ m', r'$0.20^2$ m']
     bottom = np.zeros(rsels.shape[1])
     for i in range(len(rsels)):
         ax.bar(np.arange(len(deadlines)), rsels[i], width, label=labels[i], bottom=bottom,
@@ -703,5 +703,5 @@ def plot_res_select_stats(out_path, exps_dict):
     ax.legend()
     ax.set_ylabel("Pillar size\nselection rate (%)", fontsize='x-large')
     ax.set_xlabel("Deadline (msec)", fontsize='x-large')
-    plt.savefig(out_path + f"/MURAL_res_sel_stats.pdf")
+    plt.savefig(out_path + f"/{method_name}_res_sel_stats.pdf")
 

@@ -152,7 +152,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         torch.cuda.cudart().cudaProfilerStart()
 
     global speed_test
-    num_samples = 20 if speed_test and len(dataset) >= 10 else len(dataset)
+    num_samples = 100 if speed_test and len(dataset) >= 10 else len(dataset)
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
     start_time = time.time()
@@ -169,7 +169,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         #def get_ts(data_dict):
         #    return token_to_pose[data_dict['metadata']['token']]['timestamp']
 
-    pred_tuples = [None] *len(dataloader)
+    pred_tuples = [None] * (100 if speed_test else len(dataloader))
     for i in range(len(dataloader)):
         if speed_test and i == num_samples:
             break

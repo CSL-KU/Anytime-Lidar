@@ -131,7 +131,7 @@ class CenterHeadInf(nn.Module):
         self.initial_voxel_size = voxel_size.copy()
         self.point_cloud_range = point_cloud_range.tolist()
 
-        self.all_pc_ranges = self.model_cfg.get('ALL_PC_RANGES', None)
+        self.all_pc_ranges = self.model_cfg.get('ALL_PC_RANGES', [self.point_cloud_range])
 
         self.feature_map_stride = self.model_cfg.TARGET_ASSIGNER_CONFIG.get('FEATURE_MAP_STRIDE', 1)
 

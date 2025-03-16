@@ -38,7 +38,7 @@ def expand_dim_if_one(arr):
         arr = np.expand_dims(arr, axis=-1)
     return arr
 
-class ValorCalibrator():
+class MURALCalibrator():
     def __init__(self, model, res_idx, num_slices):
         self.model = model
         self.dataset = model.dataset

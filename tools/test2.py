@@ -103,7 +103,7 @@ def gen_gt_database(model):
                 batch_dict = model.dataset.collate_batch([data_dict])
                 points = torch.from_numpy(batch_dict['points']).float().cuda()
                 points = common_utils.pc_range_filter(points, model.filter_pc_range)
-                all_pred_res_latencies = model.pred_all_res_times(points)
+                all_pred_res_latencies, _ = model.pred_all_res_times(points)
                 gt_and_timepred_tuples.append((sample_tkn,
                                               gt_boxes, all_pred_res_latencies))
 
@@ -435,7 +435,9 @@ if __name__ == "__main__":
     elif chosen_method == 'MURAL_0075_3res':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0075_0100_0150.yaml"
         ckpt_file = "../models/mural_pillarnet_0075_0100_0150_e20.pth"
-
+    elif chosen_method == 'MURAL_0100_4res':
+        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+        ckpt_file = "../models/mural_pillarnet_0100_4res_e20.pth"
     else:
         print('Unknown method, exiting.')
         sys.exit()

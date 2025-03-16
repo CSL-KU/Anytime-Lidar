@@ -121,9 +121,9 @@ MODEL:
             }
 
         POST_PROCESSING:
-            SCORE_THRESH: 0.1
+            SCORE_THRESH: 0.3
             POST_CENTER_LIMIT_RANGE: [-61.2, -61.2, -10.0, 61.2, 61.2, 10.0]
-            MAX_OBJ_PER_SAMPLE: 500
+            MAX_OBJ_PER_SAMPLE: 192
             NMS_CONFIG:
                 NMS_TYPE: nms_gpu
                 NMS_THRESH: 0.2
@@ -135,7 +135,9 @@ MODEL:
 
         EVAL_METRIC: kitti
 
-
+    DEADLINE_SEC: 10.0
+    ONNX_PATH: deploy_files/onnx_files/pillarnet0160
+    METHOD: 2
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4

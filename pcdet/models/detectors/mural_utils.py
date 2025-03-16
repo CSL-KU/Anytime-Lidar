@@ -127,12 +127,20 @@ class MultiPillarCounter(torch.nn.Module):
         #return the nonzero slice inds
         return pillar_counts
 
-    def forward(self, points_xy : torch.Tensor) -> torch.Tensor:
+    @torch.jit.export
+    def fork_forward(self, points : torch.Tensor) -> torch.jit.Future[List[torch.Tensor]]:
+        points_xy = points[:, 1:3]
+        fut = torch.jit.fork(self.forward, points_xy, split_counts=True)
+        return fut
+
+    def forward(self, points_xy : torch.Tensor, split_counts : bool = False) -> List[torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min
         counts = [self.forward_one_res(points_xy_s, res_idx) \
                 for res_idx in range(len(self.grid_sizes))]
-        all_pillar_counts = torch.cat(counts, dim=1)
-        return all_pillar_counts # later make it int
+        all_pillar_counts = [torch.cat(counts, dim=1)]
+        if split_counts:
+            all_pillar_counts = self.split_pillar_counts(all_pillar_counts[0].int().cpu())
+        return all_pillar_counts
 
     @torch.jit.export
     def split_pillar_counts(self, all_pillar_counts : torch.Tensor) -> List[torch.Tensor]:
