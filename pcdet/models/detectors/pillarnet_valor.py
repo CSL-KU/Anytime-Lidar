@@ -4,6 +4,7 @@ from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engin
 import torch
 import time
 import onnx
+import json
 import pickle
 import os
 import sys
@@ -35,6 +36,7 @@ class PillarNetVALOR(Detector3DTemplate):
                 vsize_calc.interpolate_pillar_sizes(self.max_grid_l,
                  rd, pc_range.tolist(), step=32)
         rd = new_resdivs
+        self._eval_dict['resolution_selections'] = [0] * len(rd)
 
         self.model_cfg.VFE.RESOLUTION_DIV = rd
         self.model_cfg.VFE.RESDIV_MASK = resdiv_mask
@@ -115,7 +117,6 @@ class PillarNetVALOR(Detector3DTemplate):
         print(self.filter_pc_range)
         self.calib_pc_range = self.filter_pc_range.clone()
 
-        #NOTE, this seems to work but I am not absolute
         t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
         pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
         mpc = MultiPillarCounter(pillar_sizes, self.vfe.point_cloud_range.cpu())
@@ -129,14 +130,19 @@ class PillarNetVALOR(Detector3DTemplate):
         self.calibrators = [ValorCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
+        self.use_oracle_res_predictor = False
         self.res_predictor = None
-        try:
-            with open('random_forest_model.pkl', 'rb') as f:
-                self.res_predictor = pickle.load(f)
-                print('Loaded resolution predictor.')
-        except:
-            pass
-        self.sched_step = 0
+        if self.use_oracle_res_predictor:
+            with open('oracle_test.json', 'r') as f:
+                self.oracle_respred = json.load(f)
+            print('USING ORACLE RESOLUTION PREDICTOR!')
+        else:
+            try:
+                with open('random_forest_model.pkl', 'rb') as f:
+                    self.res_predictor = pickle.load(f)
+                    print('Loaded resolution predictor.')
+            except:
+                pass
         self.sched_time_point_ms = 0
         self.batch_norm_interpolated = False
 
@@ -199,16 +205,11 @@ class PillarNetVALOR(Detector3DTemplate):
                 x_minmax[i, 0] = 0
                 x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
 
+            sched_get_minmax = False
             if fixed_res_idx > -1:
                 if not self.is_calibrating():
                     self.res_idx = fixed_res_idx
-                if self.valo_opt_on:
-                    points_xy_s = points[:, 1:3] - self.mpc_script.pc_range_min
-                    pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
-                    nz_slice_inds = pillar_counts[0].cpu().nonzero()
-                    xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-                    x_minmax[self.res_idx, 0] = xmin
-                    x_minmax[self.res_idx, 1] = xmax
+                sched_get_minmax = True
             elif self.deadline_based_selection:
                 abs_dl_sec = batch_dict['abs_deadline_sec']
                 if self.method == VALO_OPT_OFF_WCET_SCHED:
@@ -265,48 +266,65 @@ class PillarNetVALOR(Detector3DTemplate):
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
+            elif self.use_oracle_res_predictor:
+                sample_token = batch_dict['metadata'][0]['token']
+                if not self.is_calibrating():
+                    self.res_idx = self.oracle_respred[sample_token]
+                sched_get_minmax = True
             elif self.res_predictor is not None:
                 assert batch_dict['scene_reset'] == (self.latest_batch_dict is None) # just to make sure
                 if self.latest_batch_dict is not None:
                     # If you want to sched periodically rel to scene start, uncomment
-                    #tdiff = int(self.sim_cur_time_ms - self.sched_time_point_ms)
-                    #if tdiff >= 5000:
-                    #    self.sched_step += 1
-                    #    self.sched_time_point_ms = self.sim_cur_time_ms
+                    tdiff = int(self.sim_cur_time_ms - self.sched_time_point_ms)
+                    if self.is_calibrating() or tdiff >= 2000:
+                        # takes 13 ms for 3 resolutions
+                        self.sched_time_point_ms = self.sim_cur_time_ms
 
-                    if self.sched_step > 0:
-                        self.sched_step -= 1
                         pd = self.latest_batch_dict['final_box_dicts'][0]
 
                         # Random forest based prediction
                         ev = self.sampled_egovels[self.dataset_indexes[0]] # current one
 
-                        obj_velos = pd['pred_boxes'][:, 7:9].numpy()
-                        mask = np.logical_not(np.isnan(obj_velos).any(1))
-                        obj_velos = obj_velos[mask]
+                        boxes = pd['pred_boxes'].numpy()
+                        obj_velos = boxes[:, 7:9]
+                        velmask = np.isnan(obj_velos).any(1)
+                        obj_velos[velmask] = 0.
                         rel_velos = obj_velos - ev
-                        obj_velos = np.linalg.norm(obj_velos, axis=1)
+                        #obj_velos = np.linalg.norm(obj_velos, axis=1)
                         rel_velos = np.linalg.norm(rel_velos, axis=1)
+                        relvel_mean = np.mean(rel_velos)
+                        relvel_perc5, relvel_perc95 = np.percentile(rel_velos, (5, 95))
 
-                        NUM_BINS=10
-                        MAX_CAR_VEL = 15
-                        MAX_REL_VEL = 2*MAX_CAR_VEL
-                        objvel_dist = np.bincount((obj_velos/MAX_CAR_VEL*NUM_BINS).astype(int),
-                                                  minlength=NUM_BINS)[:NUM_BINS]
-                        relvel_dist = np.bincount((rel_velos/MAX_REL_VEL*NUM_BINS).astype(int),
-                                                  minlength=NUM_BINS)[:NUM_BINS]
+                        objpos = boxes[:, :2]
+                        objpos = np.linalg.norm(objpos, axis=1)
+                        objpos_mean = np.mean(objpos)
+                        objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
 
-                        exec_time_ms = self.last_elapsed_time_musec / 1000
-                        inp_tuple = np.concatenate((objvel_dist, relvel_dist, [exec_time_ms]))
-                        inp_tuple = np.expand_dims(inp_tuple, 0)
+                        #Override x_minmax
+                        pred_exec_times, x_minmax = self.pred_all_res_times(points)
+
+                        inp_tuple = np.array([[*pred_exec_times,
+                                    objpos_perc5, objpos_mean, objpos_perc95,
+                                    np.linalg.norm(ev), relvel_perc5, relvel_perc95, relvel_mean,
+                        ]])
+                        pred_res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
                         if not self.is_calibrating():
-                            self.res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
+                            self.res_idx = pred_res_idx
+                        sched_get_minmax = False
+                    else:
+                        sched_get_minmax = True
                 elif not self.is_calibrating():
-                    self.res_idx = 2 # middle, since random forest was trained with its input
+                    self.sched_time_point_ms = -2000 #enforce scheduling next time
+                    self.res_idx = 2 # random forest was trained with its input
+                    sched_get_minmax = True
 
-            self.sched_step += batch_dict['scene_reset']
-            if self.sched_step > 0:
-                self.sched_time_point_ms = self.sim_cur_time_ms
+            if self.valo_opt_on and sched_get_minmax:
+                points_xy_s = points[:, 1:3] - self.mpc_script.pc_range_min
+                pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
+                nz_slice_inds = pillar_counts[0].cpu().nonzero()
+                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
+                x_minmax[self.res_idx, 0] = xmin
+                x_minmax[self.res_idx, 1] = xmax
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = x_minmax[self.res_idx] # must do this!
@@ -563,13 +581,10 @@ class PillarNetVALOR(Detector3DTemplate):
 
             if collect_calib_data[res_idx]:
                 self.calibrators[res_idx].collect_data(calib_fnames[res_idx])
-                # After this, the calibration data should be processed with dynamic deadline
             self.calibration_off()
-            self.sched_step = 0
             self.sched_time_point_ms = 0
         self.clear_stats()
         self.res_idx = cur_res_idx
-        #self.res_idx = 4 # DONT SET THIS WHEN USING THE NOTEBOOK TO COLLECT DATA
         return None
 
     def pred_all_res_times(self, points):
@@ -578,6 +593,7 @@ class PillarNetVALOR(Detector3DTemplate):
         all_pillar_counts = self.mpc_script(points_xy).int().cpu()
         all_pillar_counts = self.mpc_script.split_pillar_counts(all_pillar_counts)
         latencies = [0.] * self.num_res
+        x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         for i in range(self.num_res):
             pillar_counts = all_pillar_counts[i]
             if self.valo_opt_on:
@@ -585,8 +601,9 @@ class PillarNetVALOR(Detector3DTemplate):
                 xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
             else:
                 xmin, xmax = 0, self.mpc_script.num_slices[i] - 1
-
+            x_minmax[i, 0] = xmin
+            x_minmax[i, 1] = xmax
             latencies[i] = self.calibrators[i].pred_exec_time_ms(num_points,
                     pillar_counts.numpy(), (xmax - xmin + 1).item())
 
-        return latencies
+        return latencies, x_minmax

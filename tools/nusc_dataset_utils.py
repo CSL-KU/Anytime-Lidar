@@ -14,10 +14,7 @@ from nuscenes.utils.data_classes import Box
 from pyquaternion import Quaternion
 import matplotlib.pyplot as plt
 
-import nuscenes.utils.splits #import train, val, mini_train, mini_val
-
-#all_scenes = set(nuscenes.utils.splits.train + nuscenes.utils.splits.val \
-#        + nuscenes.utils.splits.mini_train + nuscenes.utils.splits.mini_val)
+import nuscenes.utils.splits
 all_scenes = set(nuscenes.utils.splits.train + nuscenes.utils.splits.val)
 nusc = None
 
@@ -65,11 +62,11 @@ def generate_pose_dict():
     global nusc
     token_to_cs_and_pose = {}
 
-    global all_scenes
+    #global all_scenes
     for scene in nusc.scene:
-        if scene['name'] not in all_scenes:
+        #if scene['name'] not in all_scenes:
             #print(f'Skipping {scene["name"]}')
-            continue
+        #    continue
         tkn = scene['first_sample_token']
         while tkn != "":
             #print('token:',tkn)
@@ -105,16 +102,16 @@ def generate_pose_dict():
 def generate_anns_dict():
     print('generating annotations dict')
     global nusc
-    global all_scenes
+    #global all_scenes
     global map_name_from_general_to_detection
     global classes
 
     token_to_anns = {}
 
     for scene in nusc.scene:
-        if scene['name'] not in all_scenes:
+        #if scene['name'] not in all_scenes:
             #print(f'Skipping {scene["name"]}')
-            continue
+        #    continue
         tkn = scene['first_sample_token']
         #print(scene['name'])
         categories_in_scene = set()
@@ -226,11 +223,11 @@ def populate_annos_v2(step):
     all_new_sample_datas = []
     all_new_samples = []
     all_new_annos = []
-    global all_scenes
+    #global all_scenes
     for scene in nusc.scene:
-        if scene['name'] not in all_scenes:
+        #if scene['name'] not in all_scenes:
             #print(f'Skipping {scene["name"]}')
-            continue
+        #    continue
         #print('Processing scene', scene['name'])
         sd_records = scene_to_sd[scene['token']]
         sd_records_cam = scene_to_sd_cam[scene['token']]
@@ -377,11 +374,11 @@ def prune_annos(step):
     new_nusc_samples = []
     discarded_nusc_samples = []
     global nusc
-    global all_scenes
+    #global all_scenes
     for scene in nusc.scene:
-        if scene['name'] not in all_scenes:
-            #print(f'Skipping {scene["name"]}')
-            continue
+        #if scene['name'] not in all_scenes:
+        #    print(f'Skipping {scene["name"]}')
+        #    continue
         # skip skip skip get, skip skip skip get...
         samples_to_del = [] # sample token : replacement sample
         samples_to_connect = []
@@ -401,11 +398,11 @@ def prune_annos(step):
                     samples_to_del.append(sample)
                     sample_tkn = sample['next']
 
-        #print(f'samples to connect {len(samples_to_connect)}')
-        #print(f'samples to del {len(samples_to_del)}')
         # Update the scene
         scene['first_sample_token'] = samples_to_connect[0]['token']
         scene['last_sample_token'] = samples_to_connect[-1]['token']
+
+        assert len(set([s['scene_token'] for s in samples_to_connect])) == 1
 
         #update samples
         samples_to_connect[0]['prev'] = ''
@@ -421,6 +418,8 @@ def prune_annos(step):
 
     tokens_c = set([s['token'] for s in new_nusc_samples])
     ts_arr_c = np.array([s['timestamp'] for s in new_nusc_samples])
+    assert (ts_arr_c != 0).all()
+    new_samples_scene_tokens = np.array([s['scene_token'] for s in new_nusc_samples])
     tokens_d = set([s['token'] for s in discarded_nusc_samples])
 
     new_nusc_sample_datas = []
@@ -435,10 +434,13 @@ def prune_annos(step):
             # point to the sample with closest timestamp
 
             sd_ts = sd['timestamp']
-            diffs = np.abs(ts_arr_c - sd_ts)
+            assert sd_ts != 0
+            scene_token_of_sd = nusc.get('sample', tkn)['scene_token']
+            mask = (new_samples_scene_tokens != scene_token_of_sd)
+            diffs = np.abs(ts_arr_c - sd_ts) + (999999 * mask)
             min_idx = np.argmin(diffs)
             s = new_nusc_samples[min_idx]
-            assert nusc.get('sample', tkn)['scene_token'] == s['scene_token']
+            assert scene_token_of_sd == s['scene_token']
             sd['sample_token'] = s['token']
 
     new_nusc_sample_annos=[]
@@ -587,36 +589,14 @@ def calc_scene_velos():
 
 def prune_training_data_from_tables():
     global nusc
+    global all_scenes
 
-#    val_scenes = set(['scene-0003', 'scene-0012', 'scene-0013', 'scene-0014', 'scene-0015', 'scene-0016', 'scene-0017', 'scene-0018',
-#     'scene-0035', 'scene-0036', 'scene-0038', 'scene-0039', 'scene-0092', 'scene-0093', 'scene-0094', 'scene-0095',
-#     'scene-0096', 'scene-0097', 'scene-0098', 'scene-0099', 'scene-0100', 'scene-0101', 'scene-0102', 'scene-0103',
-#     'scene-0104', 'scene-0105', 'scene-0106', 'scene-0107', 'scene-0108', 'scene-0109', 'scene-0110', 'scene-0221',
-#     'scene-0268', 'scene-0269', 'scene-0270', 'scene-0271', 'scene-0272', 'scene-0273', 'scene-0274', 'scene-0275',
-#     'scene-0276', 'scene-0277', 'scene-0278', 'scene-0329', 'scene-0330', 'scene-0331', 'scene-0332', 'scene-0344',
-#     'scene-0345', 'scene-0346', 'scene-0519', 'scene-0520', 'scene-0521', 'scene-0522', 'scene-0523', 'scene-0524',
-#     'scene-0552', 'scene-0553', 'scene-0554', 'scene-0555', 'scene-0556', 'scene-0557', 'scene-0558', 'scene-0559',
-#     'scene-0560', 'scene-0561', 'scene-0562', 'scene-0563', 'scene-0564', 'scene-0565', 'scene-0625', 'scene-0626',
-#     'scene-0627', 'scene-0629', 'scene-0630', 'scene-0632', 'scene-0633', 'scene-0634', 'scene-0635', 'scene-0636',
-#     'scene-0637', 'scene-0638', 'scene-0770', 'scene-0771', 'scene-0775', 'scene-0777', 'scene-0778', 'scene-0780',
-#     'scene-0781', 'scene-0782', 'scene-0783', 'scene-0784', 'scene-0794', 'scene-0795', 'scene-0796', 'scene-0797',
-#     'scene-0798', 'scene-0799', 'scene-0800', 'scene-0802', 'scene-0904', 'scene-0905', 'scene-0906', 'scene-0907',
-#     'scene-0908', 'scene-0909', 'scene-0910', 'scene-0911', 'scene-0912', 'scene-0913', 'scene-0914', 'scene-0915',
-#     'scene-0916', 'scene-0917', 'scene-0919', 'scene-0920', 'scene-0921', 'scene-0922', 'scene-0923', 'scene-0924',
-#     'scene-0925', 'scene-0926', 'scene-0927', 'scene-0928', 'scene-0929', 'scene-0930', 'scene-0931', 'scene-0962',
-#     'scene-0963', 'scene-0966', 'scene-0967', 'scene-0968', 'scene-0969', 'scene-0971', 'scene-0972', 'scene-1059',
-#     'scene-1060', 'scene-1061', 'scene-1062', 'scene-1063', 'scene-1064', 'scene-1065', 'scene-1066', 'scene-1067',
-#     'scene-1068', 'scene-1069', 'scene-1070', 'scene-1071', 'scene-1072', 'scene-1073'])
-#
-#    calib_scenes = set(['scene-0061', 'scene-0655', 'scene-0757', 'scene-1077', 'scene-1094', 'scene-1100'])
-
-    val_scenes = set(nuscenes.utils.splits.val)
-#    val_scenes.update(calib_scenes)
+    #NOTE the splits.py should be modified before you run this
 
     keep_indexes = {nm: set() for nm in nusc.table_names}
 
     for scene in nusc.scene:
-        if scene['name'] in val_scenes:
+        if scene['name'] in all_scenes:
             keep_indexes['scene'].add(nusc.getind('scene', scene['token']))
             #keep_indexes['log'].add(nusc.getind('log', scene['log_token'])
 
