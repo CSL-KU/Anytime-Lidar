@@ -154,7 +154,7 @@ class PillarNetOpt(Detector3DTemplate):
         except:
             print('TensorRT wrapper for fused_ops throwed exception, creating the engine')
             create_trt_engine(onnx_path, trt_path, input_names[0])
-        self.dense_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
+            self.dense_convs_trt = TRTWrapper(trt_path, input_names, self.opt_dense_convs_output_names)
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')
