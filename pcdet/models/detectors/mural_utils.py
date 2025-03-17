@@ -117,12 +117,36 @@ class MultiPillarCounter(torch.nn.Module):
         print('pillar_sizes', self.pillar_sizes)
 
     @torch.jit.export
+    def forward_batch(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
+        points_xy_s = points_xy - self.pc_range_min
+        grid_sz = self.grid_sizes[0] # get biggest grid
+        num_res = len(self.grid_sizes)
+        batch_grid = torch.zeros([1, num_res, grid_sz[0], grid_sz[1]], device=points_xy_s.device,
+                dtype=torch.float32)
+
+        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, num_res, -1)
+        batch_point_coords = torch.floor(expanded_pts / self.pillar_sizes).long()
+
+        for i in range(num_res):
+            batch_grid[:, i, batch_point_coords[:, i, 1], batch_point_coords[:, i, 0]] = 1
+
+        pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid, self.num_slices[0], True)
+        pillar_counts = pillar_counts.int().permute(1,0,2).cpu()
+
+        pcl = []
+        for i in range(num_res):
+            ns, pc = self.num_slices[i], pillar_counts[i]
+            pcl.append(pc[:, :ns])
+
+        return pcl
+
+    @torch.jit.export
     def forward_one_res(self, points_xy_s : torch.Tensor, res_idx : int) -> torch.Tensor:
         grid_sz = self.grid_sizes[res_idx]
         point_coords = torch.floor(points_xy_s / self.pillar_sizes[res_idx]).long()
         grid = torch.zeros([1, 1, grid_sz[0], grid_sz[1]], device=points_xy_s.device)
         grid[:, :, point_coords[:, 1], point_coords[:, 0]] = 1.
-        pillar_counts = PillarRes18BackBone8x_pillar_calc(grid, self.num_slices[res_idx])
+        pillar_counts = PillarRes18BackBone8x_pillar_calc(grid, self.num_slices[res_idx], False)
 
         #return the nonzero slice inds
         return pillar_counts
