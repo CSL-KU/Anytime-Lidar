@@ -40,6 +40,15 @@ def get_middle_option(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step
         cur_grid_l += step
     return options[len(options)//2]
 
+def get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step):
+    options = []
+    cur_grid_l = min_grid_l + step
+    while cur_grid_l <= max_grid_l:
+        x = calc_area_and_pillar_sz(cur_grid_l, area_min_l_cm, area_max_l_cm)
+        if x[0] != 0.:
+            options.append(x)
+        cur_grid_l += step
+    return options
 
 def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
     grid_lens = [int(max_grid_l / rd) for rd in res_divs]
@@ -86,3 +95,17 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
 
     return all_pc_ranges, all_pillar_sizes, all_grid_lens, resdivs, resdiv_mask
 
+if __name__ == "__main__":
+    max_grid_l, min_grid_l = 512, 128
+    area_max_l_cm, area_min_l_cm = 102400, 102400
+    step = 8
+    options = get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step)
+    grid_sizes = []
+    for opt in options:
+        gs = (opt[1] - opt[0]) / opt[2]
+        print(opt, gs)
+        grid_sizes.append(gs)
+
+
+    resdivs = [grid_sizes[-1]/gs for gs in grid_sizes]
+    print(*reversed(resdivs))
