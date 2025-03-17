@@ -210,9 +210,10 @@ def post_forward_hook(module, inp_args, outp_args):
         if dl_missed:
             module._eval_dict['deadlines_missed'] += 1
             module.dl_miss_streak += 1
-            print('Deadline (ms)', round(batch_dict['deadline_sec'] * 1000.0, 1),
-                    ' missed,', tdiff * 1000.0, 'ms late. Total missed:',
-                    module._eval_dict['deadlines_missed'])
+            if module._eval_dict['deadlines_missed'] % 100 == 0:
+                print('Deadline (ms)', round(batch_dict['deadline_sec'] * 1000.0, 1),
+                        ' missed,', tdiff * 1000.0, 'ms late. Total missed:',
+                        module._eval_dict['deadlines_missed'])
 
             # Assume the program will abort the process when it misses the deadline
             if module.latest_valid_dets is not None:

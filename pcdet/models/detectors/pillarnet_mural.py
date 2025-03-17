@@ -34,6 +34,8 @@ class PillarNetMURAL(Detector3DTemplate):
         elif method_num == 10:
             return ("WS",) # wcet scheduling
         elif method_num == 11:
+            return ("FRC", "DS", "RI")
+        elif method_num == 12:
             return ("DCO", "FRC", "PS", "RI") # prev pillars scheduling
         else:
             return tuple()
@@ -554,6 +556,9 @@ class PillarNetMURAL(Detector3DTemplate):
             self.sched_time_point_ms = 0
         self.clear_stats()
         self.res_idx = cur_res_idx
+
+        if any(collect_calib_data):
+            sys.exit()
         return None
 
     def pred_all_res_times(self, points):

@@ -66,6 +66,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml" )
 
   CKPT_FILES=( \
@@ -75,6 +76,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "../models/pillarnet0200_e20.pth"
     "dummy"
     "../models/pillarnet0100_e20.pth"
+    "../models/mural_pillarnet_0100_4res_e20.pth"
     "../models/mural_pillarnet_0100_4res_e20.pth"
     "../models/mural_pillarnet_0100_4res_e20.pth"
     "../models/mural_pillarnet_0100_4res_e20.pth"

@@ -6,7 +6,7 @@ import os
 import sys
 import platform
 from typing import List
-from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 from ...utils import common_utils
 
 class DenseConvsPipeline(torch.nn.Module):
