@@ -215,6 +215,7 @@ class PillarNetMURAL(Detector3DTemplate):
                             self.res_idx = i
                             conf_found = True
                             break
+                    sched_get_minmax = True
                 else:
                     if (not self.use_prev_pillars) or scene_reset:
                         points_xy = points[:, 1:3]

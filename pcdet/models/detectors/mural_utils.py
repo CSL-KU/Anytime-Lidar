@@ -93,6 +93,7 @@ class MultiPillarCounter(torch.nn.Module):
     # Pass the args in cpu , pillar sizes should be [N,2], pc_range should be [6]
     grid_sizes: Final[List[List[int]]]
     num_slices: Final[List[int]]
+    num_res : Final[int]
     pillar_sizes : torch.Tensor
     pc_range_min: torch.Tensor
     pc_range_cpu: torch.Tensor
@@ -111,30 +112,33 @@ class MultiPillarCounter(torch.nn.Module):
         self.pillar_sizes = pillar_sizes.cuda()
         self.pc_range_cpu = pc_range
         self.pc_range_min = pc_range[[0,1]].cuda()
+        self.num_res = len(self.grid_sizes)
 
         print('num_slices', self.num_slices)
         print('grid_sizes', self.grid_sizes)
         print('pillar_sizes', self.pillar_sizes)
 
+
     @torch.jit.export
     def forward_batch(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min
         grid_sz = self.grid_sizes[0] # get biggest grid
-        num_res = len(self.grid_sizes)
-        batch_grid = torch.zeros([1, num_res, grid_sz[0], grid_sz[1]], device=points_xy_s.device,
-                dtype=torch.float32)
+        batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
+                                      device=points_xy.device, dtype=torch.float32)
 
-        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, num_res, -1)
+        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, self.num_res, -1)
         batch_point_coords = torch.floor(expanded_pts / self.pillar_sizes).long()
 
-        for i in range(num_res):
-            batch_grid[:, i, batch_point_coords[:, i, 1], batch_point_coords[:, i, 0]] = 1
+        inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
+        inds = inds.expand(batch_point_coords.size(0), -1).flatten()
+        batch_grid[:, inds, batch_point_coords[:, :, 1].flatten(),
+                   batch_point_coords[:, :, 0].flatten()] = 1.0
 
         pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid, self.num_slices[0], True)
         pillar_counts = pillar_counts.int().permute(1,0,2).cpu()
 
         pcl = []
-        for i in range(num_res):
+        for i in range(self.num_res):
             ns, pc = self.num_slices[i], pillar_counts[i]
             pcl.append(pc[:, :ns])
 
