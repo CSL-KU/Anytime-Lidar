@@ -293,11 +293,8 @@ class PillarNetMURAL(Detector3DTemplate):
                     sched_get_minmax = True
 
             if self.dense_conv_opt_on and sched_get_minmax:
-                points_xy_s = points[:, 1:3] - self.mpc_script.pc_range_min
-                pillar_counts = self.mpc_script.forward_one_res(points_xy_s, self.res_idx)
-                nz_slice_inds = pillar_counts[0].cpu().nonzero()
-                self.x_minmax[self.res_idx, 0] = nz_slice_inds[0, 0]
-                self.x_minmax[self.res_idx, 1] = nz_slice_inds[-1, 0]
+                self.x_minmax[self.res_idx] = self.mpc_script.get_minmax_inds(points[:, 1],
+                                                                              self.res_idx)
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = self.x_minmax[self.res_idx] # must do this!

@@ -144,6 +144,14 @@ class MultiPillarCounter(torch.nn.Module):
         return pcl
 
     @torch.jit.export
+    def get_minmax_inds(self, points_x : torch.Tensor, res_idx : int) -> torch.Tensor:
+        xmin, xmax = torch.aminmax(points_x)
+        minmax = torch.cat((xmin.unsqueeze(-1), xmax.unsqueeze(-1))) - self.pc_range_min[0]
+        minmax = (minmax / self.pillar_sizes[res_idx, 0]).cpu().int()
+        slice_sz = self.grid_sizes[res_idx][1] / self.num_slices[res_idx]
+        return (minmax / slice_sz).int()
+
+    @torch.jit.export
     def forward_one_res(self, points_xy_s : torch.Tensor, res_idx : int) -> torch.Tensor:
         grid_sz = self.grid_sizes[res_idx]
         point_coords = torch.floor(points_xy_s / self.pillar_sizes[res_idx]).long()
