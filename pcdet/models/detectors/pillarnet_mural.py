@@ -219,7 +219,7 @@ class PillarNetMURAL(Detector3DTemplate):
                 else:
                     if (not self.use_prev_pillars) or scene_reset:
                         points_xy = points[:, 1:3]
-                        all_pillar_counts = self.mpc_script.forward_batch(points_xy)
+                        all_pillar_counts = self.mpc_script(points_xy)
                         self.prev_pillar_counts = all_pillar_counts # for next sample
                     else:
                         all_pillar_counts = self.prev_pillar_counts

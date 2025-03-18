@@ -53,8 +53,8 @@ class MURALCalibrator():
         # quadratic predictor is ok for vfe
         self.vfe_num_l_groups = 1
         self.num_points_normalizer = 1000000.
-        self.vfe_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
-        self.vfe_time_reg_intercepts = np.ones((1,), dtype=float)
+        self.vfe_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=np.float32)
+        self.vfe_time_reg_intercepts = np.ones((1,), dtype=np.float32)
 
         self.bb3d_exist = ('BACKBONE_3D' in model.model_cfg)
         self.num_voxels_normalizer = 100000.
@@ -62,12 +62,12 @@ class MURALCalibrator():
             self.treat_bb3d_as_single_l_group = False
             if self.treat_bb3d_as_single_l_group:
                 self.bb3d_num_l_groups = 1
-                self.bb3d_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=float)
-                self.bb3d_time_reg_intercepts = np.ones((1,), dtype=float)
+                self.bb3d_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=np.float32)
+                self.bb3d_time_reg_intercepts = np.ones((1,), dtype=np.float32)
             else:
                 self.bb3d_num_l_groups = self.model.backbone_3d.num_layer_groups
-                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=float)
-                self.bb3d_time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=float)
+                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=np.float32)
+                self.bb3d_time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=np.float32)
 
         # key is wsize, value is ms
         self.dense_inp_slice_sz = self.model.dense_inp_slice_sz
@@ -163,7 +163,7 @@ class MURALCalibrator():
 
             coeffs.append(reg.coef_.flatten())
             intercepts.append(reg.intercept_[0])
-        return np.array(coeffs), np.array(intercepts)
+        return np.array(coeffs).astype(np.float32), np.array(intercepts).astype(np.float32)
 
     def quadratic_time_pred(self, data_arr, reg_coeffs, reg_intercepts, normalizer):
         data_arr_n_ = np.expand_dims(data_arr, -1) / normalizer
@@ -178,11 +178,11 @@ class MURALCalibrator():
         vfe_times = self.calib_data_dict.get('vfe_times_ms', list())
 
         if len(num_voxels)>0 and len(bb3d_times)>0:
-            num_voxels=expand_dim_if_one(np.array(num_voxels, dtype=float))
-            bb3d_times=expand_dim_if_one(np.array(bb3d_times, dtype=float))
+            num_voxels=expand_dim_if_one(np.array(num_voxels, dtype=np.float32))
+            bb3d_times=expand_dim_if_one(np.array(bb3d_times, dtype=np.float32))
         if len(num_points)>0 and len(vfe_times)>0:
-            num_points=np.array(num_points, dtype=float).flatten()
-            vfe_times=np.array(vfe_times, dtype=float).flatten()
+            num_points=np.array(num_points, dtype=np.float32).flatten()
+            vfe_times=np.array(vfe_times, dtype=np.float32).flatten()
         return num_voxels, bb3d_times, num_points, vfe_times
 
     def read_calib_data(self, fname='calib_data.json'):
@@ -281,18 +281,18 @@ class MURALCalibrator():
         num_samples = min(len(self.dataset), 512)
         print('Number of samples:', num_samples)
 
-        preprocess_ms_arr = np.empty(num_samples, dtype=float)
+        preprocess_ms_arr = np.empty(num_samples, dtype=np.float32)
         
-        num_points_arr = np.empty(num_samples, dtype=int)
-        vfe_ms_arr = np.empty(num_samples, dtype=float)
+        num_points_arr = np.empty(num_samples, dtype=np.int32)
+        vfe_ms_arr = np.empty(num_samples, dtype=np.float32)
 
-        num_voxels_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=int)
-        bb3d_ms_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=float)
+        num_voxels_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.int32)
+        bb3d_ms_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.float32)
 
         dense_ops_ms_dict = {}
 
-        postprocess_ms_arr = np.empty(num_samples, dtype=float)
-        e2e_ms_arr = np.empty(num_samples, dtype=float)
+        postprocess_ms_arr = np.empty(num_samples, dtype=np.float32)
+        e2e_ms_arr = np.empty(num_samples, dtype=np.float32)
 
         gc.disable()
         deadline_backup = self.model._default_deadline_sec

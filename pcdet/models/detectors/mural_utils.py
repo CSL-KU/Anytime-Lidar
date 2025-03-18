@@ -119,15 +119,14 @@ class MultiPillarCounter(torch.nn.Module):
         print('pillar_sizes', self.pillar_sizes)
 
 
-    @torch.jit.export
-    def forward_batch(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min
         grid_sz = self.grid_sizes[0] # get biggest grid
         batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
                                       device=points_xy.device, dtype=torch.float32)
 
         expanded_pts = points_xy_s.unsqueeze(1).expand(-1, self.num_res, -1)
-        batch_point_coords = torch.floor(expanded_pts / self.pillar_sizes).long()
+        batch_point_coords = (expanded_pts / self.pillar_sizes).int()
 
         inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
         inds = inds.expand(batch_point_coords.size(0), -1).flatten()
@@ -158,10 +157,10 @@ class MultiPillarCounter(torch.nn.Module):
     @torch.jit.export
     def fork_forward(self, points : torch.Tensor) -> torch.jit.Future[List[torch.Tensor]]:
         points_xy = points[:, 1:3]
-        fut = torch.jit.fork(self.forward, points_xy, split_counts=True)
+        fut = torch.jit.fork(self.forward_old, points_xy, split_counts=True)
         return fut
 
-    def forward(self, points_xy : torch.Tensor, split_counts : bool = False) -> List[torch.Tensor]:
+    def forward_old(self, points_xy : torch.Tensor, split_counts : bool = False) -> List[torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min
         counts = [self.forward_one_res(points_xy_s, res_idx) \
                 for res_idx in range(len(self.grid_sizes))]
