@@ -213,10 +213,10 @@ class PillarNetMURAL(Detector3DTemplate):
                     sched_get_minmax = True
                 else:
                     points_xy = points[:, 1:3]
-                    all_pillar_counts, x_minmax_ = self.mpc_script.forward_new(
-                            points_xy)
+                    all_pillar_counts, x_minmax_tmp = self.mpc_script.forward_new(
+                            points_xy, self.dense_conv_opt_on)
                     if self.dense_conv_opt_on:
-                        self.x_minmax = x_minmax_
+                        self.x_minmax = x_minmax_tmp
                     num_points = points.size(0)
                     for i in range(self.num_res):
                         pillar_counts = all_pillar_counts[i]

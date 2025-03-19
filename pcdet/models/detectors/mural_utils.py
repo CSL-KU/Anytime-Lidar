@@ -121,7 +121,8 @@ class MultiPillarCounter(torch.nn.Module):
 
 
     @torch.jit.export
-    def forward_new(self, points_xy : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_new(self, points_xy : torch.Tensor, get_xminmax : bool) \
+            -> Tuple[torch.Tensor, torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min
 
         grid_sz = self.grid_sizes[0] # get biggest grid
@@ -138,12 +139,13 @@ class MultiPillarCounter(torch.nn.Module):
 
         pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc_v2(batch_grid,
                                                                self.num_slices[0])
-        mask = (pc0 > 0).cpu()
         x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
-        for i, row in enumerate(mask): # for each resolution
-            inds = torch.where(row)[0]
-            x_minmax[i,0], x_minmax[i,1] = inds[0], inds[-1]
-
+        if get_xminmax:
+            mask = (pc0 > 0).cpu()
+            for i, row in enumerate(mask): # for each resolution
+                inds = torch.where(row)[0]
+                x_minmax[i,0], x_minmax[i,1] = inds[0], inds[-1]
+            x_minmax = x_minmax
         pillar_counts = pillar_counts.T.cpu().int()
 
         return pillar_counts, x_minmax

@@ -209,13 +209,14 @@ class PillarBackBone8x(nn.Module):
 #static method
 def PillarRes18BackBone8x_pillar_calc_v2(bev_img : torch.Tensor, num_slices : int) \
         -> Tuple[torch.Tensor,torch.Tensor]:
+    bi_sz = bev_img.shape
+    p0_ = bev_img.view(bi_sz[0], bi_sz[1], bi_sz[2], num_slices, \
+            bi_sz[3]//num_slices).sum(dim=[0, 2, 4])
+
     x1 = torch.nn.functional.max_pool2d(bev_img, kernel_size=3, stride=2, padding=1)
     x2 = torch.nn.functional.max_pool2d(x1, kernel_size=3, stride=2, padding=1)
     x3 = torch.nn.functional.max_pool2d(x2, kernel_size=3, stride=2, padding=1)
     dims = [0, 2, 3] # leave C (num res)
-    bi_sz = bev_img.shape
-    p0_ = bev_img.view(bi_sz[0], bi_sz[1], bi_sz[2], num_slices, \
-            bi_sz[3]//num_slices).sum(dim=[0, 2, 4])
     p1 = x1.sum(dim=dims)
     p2 = x2.sum(dim=dims)
     p3 = x3.sum(dim=dims)
