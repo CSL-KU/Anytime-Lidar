@@ -1,6 +1,7 @@
 import torch
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
-from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc
+from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc, PillarRes18BackBone8x_pillar_calc_v2
+
 from typing import Dict, List, Tuple, Optional, Final
 
 def set_bn_resolution(resawarebns, res_idx):
@@ -118,6 +119,34 @@ class MultiPillarCounter(torch.nn.Module):
         print('grid_sizes', self.grid_sizes)
         print('pillar_sizes', self.pillar_sizes)
 
+
+    @torch.jit.export
+    def forward_new(self, points_xy : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        points_xy_s = points_xy - self.pc_range_min
+
+        grid_sz = self.grid_sizes[0] # get biggest grid
+        batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
+                                      device=points_xy.device, dtype=torch.float32)
+
+        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, self.num_res, -1)
+        batch_point_coords = (expanded_pts / self.pillar_sizes).int()
+
+        inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
+        inds = inds.expand(batch_point_coords.size(0), -1).flatten()
+        batch_grid[:, inds, batch_point_coords[:, :, 1].flatten(),
+                   batch_point_coords[:, :, 0].flatten()] = 1.0
+
+        pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc_v2(batch_grid,
+                                                               self.num_slices[0])
+        mask = (pc0 > 0).cpu()
+        x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+        for i, row in enumerate(mask): # for each resolution
+            inds = torch.where(row)[0]
+            x_minmax[i,0], x_minmax[i,1] = inds[0], inds[-1]
+
+        pillar_counts = pillar_counts.T.cpu().int()
+
+        return pillar_counts, x_minmax
 
     def forward(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
         points_xy_s = points_xy - self.pc_range_min

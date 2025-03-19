@@ -77,13 +77,9 @@ class PillarNetMURAL(Detector3DTemplate):
         self.interpolate_batch_norms = ("RI" in self.method_str)
         self.dense_conv_opt_on = ("DCO" in self.method_str)
         self.enable_forecasting_to_fut = ("FRC" in self.method_str)
-        self.use_prev_pillars = ("PS" in self.method_str)
         self.wcet_scheduling = ("WS" in self.method_str)
 
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.dense_conv_opt_on
-
-        if self.use_prev_pillars:
-            print('Using previous pillar counts')
 
         self.deadline_based_selection = True
         if self.deadline_based_selection:
@@ -167,7 +163,6 @@ class PillarNetMURAL(Detector3DTemplate):
         self.sched_time_point_ms = 0
         self.batch_norm_interpolated = False
         self.x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
-        self.prev_pillar_counts = None
 
     def forward(self, batch_dict):
         if self.training:
@@ -217,19 +212,14 @@ class PillarNetMURAL(Detector3DTemplate):
                             break
                     sched_get_minmax = True
                 else:
-                    if (not self.use_prev_pillars) or scene_reset:
-                        points_xy = points[:, 1:3]
-                        all_pillar_counts = self.mpc_script(points_xy)
-                        self.prev_pillar_counts = all_pillar_counts # for next sample
-                    else:
-                        all_pillar_counts = self.prev_pillar_counts
+                    points_xy = points[:, 1:3]
+                    all_pillar_counts, x_minmax_ = self.mpc_script.forward_new(
+                            points_xy)
+                    if self.dense_conv_opt_on:
+                        self.x_minmax = x_minmax_
                     num_points = points.size(0)
                     for i in range(self.num_res):
                         pillar_counts = all_pillar_counts[i]
-                        if self.dense_conv_opt_on:
-                            nz_slice_inds = pillar_counts[0].nonzero()
-                            self.x_minmax[i, 0] = nz_slice_inds[0, 0]
-                            self.x_minmax[i, 1] = nz_slice_inds[-1, 0]
                         time_left = (abs_dl_sec - time.time()) * 1000
                         pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
                                 pillar_counts.numpy(),
@@ -308,9 +298,6 @@ class PillarNetMURAL(Detector3DTemplate):
             if self.fused_convs_trt[self.res_idx] is None:
                 set_bn_resolution(self.res_aware_2d_batch_norms, self.res_idx)
 
-            if self.use_prev_pillars and not scene_reset:
-                mpc_fut = self.mpc_script.fork_forward(points)
-
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
             points = batch_dict['points']
@@ -367,8 +354,6 @@ class PillarNetMURAL(Detector3DTemplate):
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
 
-            if self.use_prev_pillars and not scene_reset:
-                self.prev_pillar_counts = torch.jit.wait(mpc_fut)
             self.measure_time_end('CenterHead-GenBox')
 
             return batch_dict

@@ -6,6 +6,7 @@ import torch
 from ...utils.spconv_utils import replace_feature, spconv
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
 from pcdet.ops.norm_funcs.fn_instance_norm import FnInstanceNorm
+from typing import Tuple
 
 def post_act_block(in_channels, out_channels, kernel_size, indice_key=None, stride=1, padding=0,
                    conv_type='subm', norm_fn=None):
@@ -204,6 +205,22 @@ class PillarBackBone8x(nn.Module):
         })
 
         return batch_dict
+
+#static method
+def PillarRes18BackBone8x_pillar_calc_v2(bev_img : torch.Tensor, num_slices : int) \
+        -> Tuple[torch.Tensor,torch.Tensor]:
+    x1 = torch.nn.functional.max_pool2d(bev_img, kernel_size=3, stride=2, padding=1)
+    x2 = torch.nn.functional.max_pool2d(x1, kernel_size=3, stride=2, padding=1)
+    x3 = torch.nn.functional.max_pool2d(x2, kernel_size=3, stride=2, padding=1)
+    dims = [0, 2, 3] # leave C (num res)
+    bi_sz = bev_img.shape
+    p0_ = bev_img.view(bi_sz[0], bi_sz[1], bi_sz[2], num_slices, \
+            bi_sz[3]//num_slices).sum(dim=[0, 2, 4])
+    p1 = x1.sum(dim=dims)
+    p2 = x2.sum(dim=dims)
+    p3 = x3.sum(dim=dims)
+    p0 = p0_.sum(dim=1)
+    return p0_, torch.stack((p0, p1, p2, p3)) # return (num_res, num_slc) (num_layer, numres)
 
 #static method
 def PillarRes18BackBone8x_pillar_calc(bev_img : torch.Tensor, num_slices: int, keep_ch_dim : bool) -> torch.Tensor:
