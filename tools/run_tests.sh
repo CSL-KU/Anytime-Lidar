@@ -15,8 +15,11 @@ export USE_AMP=${USE_AMP:-"false"}
 export PMODE=${PMODE:-"UNKNOWN_POWER_MODE"}
 
 if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
-    CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
+    #CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
+
+    CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    CKPT_FILE="../models/mural_pillarnet_0100_0128_0200_e20.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -58,30 +61,30 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
   CFG_FILES=( \
     "./cfgs/nuscenes_models/pillarnet0100.yaml"
     "./cfgs/nuscenes_models/pillarnet0128.yaml"
-    "./cfgs/nuscenes_models/pillarnet0160.yaml"
     "./cfgs/nuscenes_models/pillarnet0200.yaml"
     "dummy"
+    "dummy"
     "./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml" )
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml" )
 
   CKPT_FILES=( \
     "../models/pillarnet0100_e20.pth"
     "../models/pillarnet0128_e20.pth"
-    "../models/pillarnet0160_e20.pth"
     "../models/pillarnet0200_e20.pth"
     "dummy"
+    "dummy"
     "../models/pillarnet0100_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth"
-    "../models/mural_pillarnet_0100_4res_e20.pth" )
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth" )
 
   for m in ${!CFG_FILES[@]}
   do
