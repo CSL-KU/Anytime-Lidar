@@ -23,20 +23,18 @@ ctypes.CDLL(pth, mode=ctypes.RTLD_GLOBAL)
 class PillarNetMURAL(Detector3DTemplate):
     def method_num_to_str_list(method_num):
         if method_num == 6:
-            # dense conv opt, forecasting, dynamic scheduling, res interpolation
-            return ("DCO", "FRC", "DS", "RI")
+            # dynamic scheduling, dense conv opt, res interpolation, forecasting
+            return ("DS", "DCO", "RI", "FRC")
         elif method_num == 7:
-            return ("DCO", "FRC", "DS")
+            return ("DS", "DCO", "RI")
         elif method_num == 8:
-            return ("DCO", "DS")
+            return ("DS", "DCO")
         elif method_num == 9:
             return ("DS",)
         elif method_num == 10:
             return ("WS",) # wcet scheduling
         elif method_num == 11:
-            return ("FRC", "DS", "RI")
-        elif method_num == 12:
-            return ("DCO", "FRC", "PS", "RI") # prev pillars scheduling
+            return ("WS", "DCO", "RI", "FRC")
         else:
             return tuple()
 
