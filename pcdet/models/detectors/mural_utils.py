@@ -1,6 +1,6 @@
 import torch
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
-from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc, PillarRes18BackBone8x_pillar_calc_v2
+from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc
 
 from typing import Dict, List, Tuple, Optional, Final
 
@@ -140,7 +140,7 @@ class MultiPillarCounter(torch.nn.Module):
         batch_grid[:, inds, batch_point_coords[:, :, 1].flatten(),
                    batch_point_coords[:, :, 0].flatten()] = 1.0
 
-        pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc_v2(batch_grid,
+        pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid,
                                                                self.num_slices[0])
         x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         if get_xminmax:
