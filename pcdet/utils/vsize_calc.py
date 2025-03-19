@@ -50,7 +50,15 @@ def get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step):
         cur_grid_l += step
     return options
 
-def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
+def option_to_params(opt, pc_range, pillar_h=0.2):
+    area_left_lim, area_right_lim, new_pillar_size = opt
+    new_grid_l = int((area_right_lim-area_left_lim)/new_pillar_size)
+    new_pc_range = [area_left_lim, area_left_lim, pc_range[2],
+            area_right_lim, area_right_lim, pc_range[5]]
+    psize = [new_pillar_size, new_pillar_size, pillar_h]
+    return new_pc_range, psize, new_grid_l
+
+def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32, pillar_h=0.2):
     grid_lens = [int(max_grid_l / rd) for rd in res_divs]
     area_l_cm = int((pc_range[3] - pc_range[0]) * 1000)
     area_min_l_cm = area_l_cm - 1500 #(area_l_cm % 1000)
@@ -67,7 +75,7 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
         all_pc_ranges.append(pc_range)
         psize = (area_l_cm // grid_lens[i]) / 1000
         # The 0.2 can be any number since it is ignored
-        psize = [psize, psize, 0.2]
+        psize = [psize, psize, pillar_h]
         all_pillar_sizes.append(psize)
 
         area_left_lim, area_right_lim, new_pillar_size = get_middle_option(
@@ -75,6 +83,7 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
         if area_left_lim == 0.:
             print('Couldn\'t find middle pillar size!')
             continue
+
         all_grid_lens.append(int((area_right_lim-area_left_lim)/new_pillar_size))
         resdiv_mask.append(False)
 
@@ -82,13 +91,13 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
                 area_right_lim, area_right_lim, pc_range[5]]
         all_pc_ranges.append(new_pc_range)
 
-        psize = [new_pillar_size, new_pillar_size, 0.2]
+        psize = [new_pillar_size, new_pillar_size, pillar_h]
         all_pillar_sizes.append(psize)
     all_grid_lens.append(grid_lens[-1])
     resdiv_mask.append(True)
     all_pc_ranges.append(pc_range)
     psize = (area_l_cm // grid_lens[-1]) / 1000
-    psize = [psize, psize, 0.2]
+    psize = [psize, psize, pillar_h]
     all_pillar_sizes.append(psize)
 
     resdivs = [all_grid_lens[0]/gl for gl in all_grid_lens]
@@ -98,7 +107,7 @@ def interpolate_pillar_sizes(max_grid_l, res_divs, pc_range, step=32):
 if __name__ == "__main__":
     max_grid_l, min_grid_l = 512, 128
     area_max_l_cm, area_min_l_cm = 102400, 102400
-    step = 8
+    step = 32
     options = get_all_options(max_grid_l, min_grid_l, area_max_l_cm, area_min_l_cm, step)
     grid_sizes = []
     for opt in options:

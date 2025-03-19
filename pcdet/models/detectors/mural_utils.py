@@ -97,40 +97,43 @@ class MultiPillarCounter(torch.nn.Module):
     num_res : Final[int]
     pillar_sizes : torch.Tensor
     pc_range_min: torch.Tensor
-    pc_range_cpu: torch.Tensor
 
-    def __init__(self, pillar_sizes : torch.Tensor, pc_range : torch.Tensor,
+    def __init__(self, pillar_sizes : torch.Tensor, pc_ranges : torch.Tensor,
                  slice_sz: int = 32):
         super().__init__()
-        xy_length = pc_range[[3,4]] - pc_range[[0,1]]
-        grid_sizes = torch.empty((pillar_sizes.size(0), 2), dtype=torch.int) # cpu
-        self.num_slices = [0] * pillar_sizes.size(0)
-        for i, ps in enumerate(pillar_sizes):
+        if pillar_sizes.size(1) > 2:
+            pillar_sizes = pillar_sizes[:, :2]
+
+        self.num_res = len(pillar_sizes)
+
+        grid_sizes = torch.empty((self.num_res, 2), dtype=torch.int)
+        num_slices = [0] * self.num_res
+        pc_range_mins = torch.empty((self.num_res, 2))
+        for i, (ps, pc_range) in enumerate(zip(pillar_sizes, pc_ranges)):
+            xy_length = pc_range[[3,4]] - pc_range[[0,1]]
             grid_sizes[i] = torch.round(xy_length / ps)
-            self.num_slices[i] = (grid_sizes[i, 0] // slice_sz).item()
+            num_slices[i] = (grid_sizes[i, 0] // slice_sz).item()
+            pc_range_mins[i] = pc_range[[0,1]]
+
         self.grid_sizes = grid_sizes.tolist()
-
         self.pillar_sizes = pillar_sizes.cuda()
-        self.pc_range_cpu = pc_range
-        self.pc_range_min = pc_range[[0,1]].cuda()
-        self.num_res = len(self.grid_sizes)
+        self.pc_range_mins = pc_range_mins.cuda()
+        self.num_slices = num_slices
 
-        print('num_slices', self.num_slices)
+        print('pillar_sizes', pillar_sizes)
+        #print('pc_range_mins', pc_range_mins)
+        print('num_slices', num_slices)
         print('grid_sizes', self.grid_sizes)
-        print('pillar_sizes', self.pillar_sizes)
-
 
     @torch.jit.export
-    def forward_new(self, points_xy : torch.Tensor, get_xminmax : bool) \
+    def forward(self, points_xy : torch.Tensor, get_xminmax : bool) \
             -> Tuple[torch.Tensor, torch.Tensor]:
-        points_xy_s = points_xy - self.pc_range_min
-
         grid_sz = self.grid_sizes[0] # get biggest grid
         batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
                                       device=points_xy.device, dtype=torch.float32)
 
-        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, self.num_res, -1)
-        batch_point_coords = (expanded_pts / self.pillar_sizes).int()
+        expanded_pts = points_xy.unsqueeze(1).expand(-1, self.num_res, -1)
+        batch_point_coords = ((expanded_pts - self.pc_range_mins) / self.pillar_sizes).int()
 
         inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
         inds = inds.expand(batch_point_coords.size(0), -1).flatten()
@@ -150,80 +153,11 @@ class MultiPillarCounter(torch.nn.Module):
 
         return pillar_counts, x_minmax
 
-    def forward(self, points_xy : torch.Tensor) -> List[torch.Tensor]:
-        points_xy_s = points_xy - self.pc_range_min
-        grid_sz = self.grid_sizes[0] # get biggest grid
-        batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
-                                      device=points_xy.device, dtype=torch.float32)
-
-        expanded_pts = points_xy_s.unsqueeze(1).expand(-1, self.num_res, -1)
-        batch_point_coords = (expanded_pts / self.pillar_sizes).int()
-
-        inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
-        inds = inds.expand(batch_point_coords.size(0), -1).flatten()
-        batch_grid[:, inds, batch_point_coords[:, :, 1].flatten(),
-                   batch_point_coords[:, :, 0].flatten()] = 1.0
-
-        pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid, self.num_slices[0], True)
-        pillar_counts = pillar_counts.int().permute(1,0,2).cpu()
-
-        pcl = []
-        for i in range(self.num_res):
-            ns, pc = self.num_slices[i], pillar_counts[i]
-            pcl.append(pc[:, :ns])
-
-        return pcl
-
     @torch.jit.export
     def get_minmax_inds(self, points_x : torch.Tensor, res_idx : int) -> torch.Tensor:
         xmin, xmax = torch.aminmax(points_x)
-        minmax = torch.cat((xmin.unsqueeze(-1), xmax.unsqueeze(-1))) - self.pc_range_min[0]
+        minmax = torch.cat((xmin.unsqueeze(-1), xmax.unsqueeze(-1))) - self.pc_range_mins[res_idx, 0]
         minmax = (minmax / self.pillar_sizes[res_idx, 0]).cpu().int()
         slice_sz = self.grid_sizes[res_idx][1] / self.num_slices[res_idx]
         return (minmax / slice_sz).int()
-
-    @torch.jit.export
-    def forward_one_res(self, points_xy_s : torch.Tensor, res_idx : int) -> torch.Tensor:
-        grid_sz = self.grid_sizes[res_idx]
-        point_coords = torch.floor(points_xy_s / self.pillar_sizes[res_idx]).long()
-        grid = torch.zeros([1, 1, grid_sz[0], grid_sz[1]], device=points_xy_s.device)
-        grid[:, :, point_coords[:, 1], point_coords[:, 0]] = 1.
-        pillar_counts = PillarRes18BackBone8x_pillar_calc(grid, self.num_slices[res_idx], False)
-
-        #return the nonzero slice inds
-        return pillar_counts
-
-    @torch.jit.export
-    def fork_forward(self, points : torch.Tensor) -> torch.jit.Future[List[torch.Tensor]]:
-        points_xy = points[:, 1:3]
-        fut = torch.jit.fork(self.forward_old, points_xy, split_counts=True)
-        return fut
-
-    def forward_old(self, points_xy : torch.Tensor, split_counts : bool = False) -> List[torch.Tensor]:
-        points_xy_s = points_xy - self.pc_range_min
-        counts = [self.forward_one_res(points_xy_s, res_idx) \
-                for res_idx in range(len(self.grid_sizes))]
-        all_pillar_counts = [torch.cat(counts, dim=1)]
-        if split_counts:
-            all_pillar_counts = self.split_pillar_counts(all_pillar_counts[0].int().cpu())
-        return all_pillar_counts
-
-    @torch.jit.export
-    def split_pillar_counts(self, all_pillar_counts : torch.Tensor) -> List[torch.Tensor]:
-        chunks, bgn = [], 0
-        for num_slice in self.num_slices:
-            chunks.append(all_pillar_counts[:, bgn:bgn+num_slice])
-            bgn+=num_slice
-        return chunks
-
-    @torch.jit.export
-    def slice_inds_to_point_cloud_range(self, res_idx : int, minx : torch.Tensor, maxx : torch.Tensor):
-        ns = self.num_slices[res_idx]
-        minx_perc = minx / ns
-        maxx_perc = (maxx+1) / ns
-        rng = (self.pc_range_cpu[3] - self.pc_range_cpu[0])
-        minmax = torch.empty(2)
-        minmax[0] = (minx_perc * rng) + self.pc_range_cpu[0]
-        minmax[1] = (maxx_perc * rng) + self.pc_range_cpu[0]
-        return minmax.cuda()
 

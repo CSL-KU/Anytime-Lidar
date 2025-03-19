@@ -49,12 +49,30 @@ class PillarNetMURAL(Detector3DTemplate):
         rd = model_cfg.get('RESOLUTION_DIV', [1.0])
         pc_range = self.dataset.point_cloud_range
         self.max_grid_l = self.dataset.grid_size[0]
+        grid_slice_sz = 32
         if "RI" in self.method_str:
+            pc_range_l = pc_range.tolist()
             all_pc_ranges, all_pillar_sizes, all_grid_lens, new_resdivs, resdiv_mask = \
-                    vsize_calc.interpolate_pillar_sizes(self.max_grid_l, rd, pc_range.tolist(),
-                    step=32)
+                    vsize_calc.interpolate_pillar_sizes(self.max_grid_l, rd, pc_range_l,
+                    step=grid_slice_sz)
+            #Additional resolution lower than lowest trained resolution
+            area_l_cm = int((pc_range_l[3] - pc_range_l[0]) * 1000)
+            area_min_l_cm = area_l_cm - 1500
+            area_max_l_cm = area_l_cm + 1500
+            min_grid_len = all_grid_lens[-1]
+
+            opt = vsize_calc.calc_area_and_pillar_sz(min_grid_len-(grid_slice_sz*4), area_min_l_cm, area_max_l_cm)
+            new_pc_range, new_psize, new_grid_l = vsize_calc.option_to_params(opt, pc_range_l, pillar_h=0.2)
+            all_pc_ranges.append(new_pc_range)
+            all_pillar_sizes.append(new_psize)
+            all_grid_lens.append(new_grid_l)
+            resdiv_mask.append(False)
+            new_resdivs = [all_grid_lens[0]/gl for gl in all_grid_lens]
             rd = new_resdivs
+            all_pillar_sizes = torch.tensor(all_pillar_sizes)
         else:
+            t = torch.tensor(rd) * self.vfe.voxel_size.cpu()[0]
+            all_pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
             all_pc_ranges = [pc_range.tolist()] * len(rd)
             resdiv_mask = [True] * len(rd)
 
@@ -135,9 +153,7 @@ class PillarNetMURAL(Detector3DTemplate):
         print(self.filter_pc_range)
         self.calib_pc_range = self.filter_pc_range.clone()
 
-        t = torch.tensor(self.resolution_dividers) * self.vfe.voxel_size.cpu()[0]
-        pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
-        mpc = MultiPillarCounter(pillar_sizes, self.vfe.point_cloud_range.cpu())
+        mpc = MultiPillarCounter(all_pillar_sizes, torch.tensor(all_pc_ranges), grid_slice_sz)
         mpc.eval()
         self.mpc_script = torch.jit.script(mpc)
 
@@ -213,8 +229,7 @@ class PillarNetMURAL(Detector3DTemplate):
                     sched_get_minmax = True
                 else:
                     points_xy = points[:, 1:3]
-                    all_pillar_counts, x_minmax_tmp = self.mpc_script.forward_new(
-                            points_xy, self.dense_conv_opt_on)
+                    all_pillar_counts, x_minmax_tmp = self.mpc_script(points_xy, self.dense_conv_opt_on)
                     if self.dense_conv_opt_on:
                         self.x_minmax = x_minmax_tmp
                     num_points = points.size(0)
