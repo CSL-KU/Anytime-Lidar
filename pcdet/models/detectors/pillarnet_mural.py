@@ -28,7 +28,7 @@ class PillarNetMURAL(Detector3DTemplate):
         elif method_num == 7:
             return ("DS", "DCO", "RI")
         elif method_num == 8:
-            return ("DS", "DCO")
+            return ("DS", "RI")
         elif method_num == 9:
             return ("DS",)
         elif method_num == 10:
@@ -177,6 +177,7 @@ class PillarNetMURAL(Detector3DTemplate):
         self.sched_time_point_ms = 0
         self.batch_norm_interpolated = False
         self.x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+        self.e2e_min_times_ms = None
 
     def forward(self, batch_dict):
         if self.training:
@@ -227,16 +228,24 @@ class PillarNetMURAL(Detector3DTemplate):
                     sched_get_minmax = True
                 else:
                     points_xy = points[:, 1:3]
-                    all_pillar_counts, x_minmax_tmp = self.mpc_script(points_xy, self.dense_conv_opt_on)
+                    if self.e2e_min_times_ms is not None:
+                        keepmask = (self.e2e_min_times_ms <= (batch_dict['deadline_sec']*1000))
+                        first_res_idx = torch.where(keepmask)[0][0]
+                    else:
+                        keepmask = torch.ones(self.num_res, dtype=torch.bool)
+                        first_res_idx = 0
+                    all_pillar_counts, x_minmax_tmp = self.mpc_script(points_xy,
+                                                                      self.dense_conv_opt_on,
+                                                                      first_res_idx)
                     if self.dense_conv_opt_on:
-                        self.x_minmax = x_minmax_tmp
+                        self.x_minmax[first_res_idx:] = x_minmax_tmp[first_res_idx:]
                     num_points = points.size(0)
-                    for i in range(self.num_res):
-                        pillar_counts = all_pillar_counts[i]
-                        time_left = (abs_dl_sec - time.time()) * 1000
+                    for i in range(first_res_idx, self.num_res):
+                        pillar_counts = all_pillar_counts[i-first_res_idx]
                         pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
                                 pillar_counts.numpy(),
                                 (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
+                        time_left = (abs_dl_sec - time.time()) * 1000
                         if not self.is_calibrating() and pred_latency < time_left:
                             self.res_idx = i
                             conf_found = True
@@ -552,6 +561,8 @@ class PillarNetMURAL(Detector3DTemplate):
             self.sched_time_point_ms = 0
         self.clear_stats()
         self.res_idx = cur_res_idx
+
+        self.e2e_min_times_ms = torch.tensor([c.get_e2e_min_ms() for c in self.calibrators])
 
         if any(collect_calib_data):
             sys.exit()

@@ -83,6 +83,9 @@ class MURALCalibrator():
     def get_e2e_wcet_ms(self):
         return self.e2e_wcet_ms
 
+    def get_e2e_min_ms(self):
+        return self.e2e_min_ms
+
     # NOTE batch size has to be 1 !
     def pred_exec_time_ms(self, num_points : int, pillar_counts: np.ndarray, num_slices: int,
                           consider_prep_time=False) -> float:
@@ -270,6 +273,7 @@ class MURALCalibrator():
             print('End to end execution time stats (ms):')
             min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(arr)
             self.e2e_wcet_ms = perc99_
+            self.e2e_min_ms = min_
 
     def collect_data(self, fname="calib_data.json"):
         print('Calibration starting...')

@@ -126,28 +126,30 @@ class MultiPillarCounter(torch.nn.Module):
         print('grid_sizes', self.grid_sizes)
 
     @torch.jit.export
-    def forward(self, points_xy : torch.Tensor, get_xminmax : bool) \
+    def forward(self, points_xy : torch.Tensor, get_xminmax : bool, first_res_idx : int = 0) \
             -> Tuple[torch.Tensor, torch.Tensor]:
-        grid_sz = self.grid_sizes[0] # get biggest grid
-        batch_grid = torch.zeros([1, self.num_res, grid_sz[0], grid_sz[1]],
+        fri = first_res_idx
+        cur_num_res = self.num_res - fri
+        grid_sz = self.grid_sizes[fri] # get biggest grid
+        batch_grid = torch.zeros([1, cur_num_res, grid_sz[0], grid_sz[1]],
                                       device=points_xy.device, dtype=torch.float32)
 
-        expanded_pts = points_xy.unsqueeze(1).expand(-1, self.num_res, -1)
-        batch_point_coords = ((expanded_pts - self.pc_range_mins) / self.pillar_sizes).int()
+        expanded_pts = points_xy.unsqueeze(1).expand(-1, cur_num_res, -1)
+        batch_point_coords = ((expanded_pts - self.pc_range_mins[fri:]) / self.pillar_sizes[fri:]).int()
 
-        inds = torch.arange(self.num_res, device=points_xy.device).unsqueeze(0)
+        inds = torch.arange(cur_num_res, device=points_xy.device).unsqueeze(0)
         inds = inds.expand(batch_point_coords.size(0), -1).flatten()
         batch_grid[:, inds, batch_point_coords[:, :, 1].flatten(),
                    batch_point_coords[:, :, 0].flatten()] = 1.0
 
         pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid,
-                                                               self.num_slices[0])
+                                                               self.num_slices[fri])
         x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         if get_xminmax:
             mask = (pc0 > 0).cpu()
             for i, row in enumerate(mask): # for each resolution
                 inds = torch.where(row)[0]
-                x_minmax[i,0], x_minmax[i,1] = inds[0], inds[-1]
+                x_minmax[fri+i,0], x_minmax[fri+i,1] = inds[0], inds[-1]
             x_minmax = x_minmax
         pillar_counts = pillar_counts.T.cpu().int()
 
