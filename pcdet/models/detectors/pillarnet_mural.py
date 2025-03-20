@@ -234,12 +234,12 @@ class PillarNetMURAL(Detector3DTemplate):
                     else:
                         keepmask = torch.ones(self.num_res, dtype=torch.bool)
                         first_res_idx = 0
-                    all_pillar_counts, x_minmax_tmp = self.mpc_script(points_xy,
-                                                                      self.dense_conv_opt_on,
-                                                                      first_res_idx)
+                    pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
                     if self.dense_conv_opt_on:
-                        self.x_minmax[first_res_idx:] = x_minmax_tmp[first_res_idx:]
+                        x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
+                        self.x_minmax[first_res_idx:] = x_minmax_tmp
                     num_points = points.size(0)
+                    all_pillar_counts = all_pillar_counts.cpu()
                     for i in range(first_res_idx, self.num_res):
                         pillar_counts = all_pillar_counts[i-first_res_idx]
                         pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,

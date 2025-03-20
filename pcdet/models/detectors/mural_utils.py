@@ -1,4 +1,6 @@
 import torch
+import numba
+import numpy as np
 from pcdet.ops.norm_funcs.res_aware_bnorm import ResAwareBatchNorm1d, ResAwareBatchNorm2d
 from pcdet.models.backbones_3d.spconv_backbone_2d import PillarRes18BackBone8x_pillar_calc
 
@@ -20,6 +22,20 @@ def get_all_resawarebn(model):
         elif isinstance(module, ResAwareBatchNorm2d):
             resaware2dbns.append(module)
     return resaware1dbns, resaware2dbns
+
+@numba.jit(nopython=True)
+def get_xminmax_from_pc0(pc0):
+    xminmax = np.empty((pc0.shape[0], 2), dtype=np.int32)
+    for i in range(pc0.shape[0]):
+        min_idx, max_idx = -1, -1
+        for j in range(pc0.shape[1]):
+            if pc0[i,j] != 0:
+                if min_idx == -1:
+                    min_idx = j
+                max_idx = j
+        xminmax[i, 0] = min_idx
+        xminmax[i, 1] = max_idx
+    return xminmax
 
 @torch.jit.script
 def get_slice_range(down_scale_factor : int, x_min: int, x_max: int, maxsz: int) \
@@ -125,8 +141,8 @@ class MultiPillarCounter(torch.nn.Module):
         print('num_slices', num_slices)
         print('grid_sizes', self.grid_sizes)
 
-    @torch.jit.export
-    def forward(self, points_xy : torch.Tensor, get_xminmax : bool, first_res_idx : int = 0) \
+    #@torch.jit.export
+    def forward(self, points_xy : torch.Tensor, first_res_idx : int = 0) \
             -> Tuple[torch.Tensor, torch.Tensor]:
         fri = first_res_idx
         cur_num_res = self.num_res - fri
@@ -135,7 +151,8 @@ class MultiPillarCounter(torch.nn.Module):
                                       device=points_xy.device, dtype=torch.float32)
 
         expanded_pts = points_xy.unsqueeze(1).expand(-1, cur_num_res, -1)
-        batch_point_coords = ((expanded_pts - self.pc_range_mins[fri:]) / self.pillar_sizes[fri:]).int()
+        batch_point_coords = ((expanded_pts - self.pc_range_mins[fri:]) / \
+                self.pillar_sizes[fri:]).int()
 
         inds = torch.arange(cur_num_res, device=points_xy.device).unsqueeze(0)
         inds = inds.expand(batch_point_coords.size(0), -1).flatten()
@@ -144,16 +161,7 @@ class MultiPillarCounter(torch.nn.Module):
 
         pc0, pillar_counts = PillarRes18BackBone8x_pillar_calc(batch_grid,
                                                                self.num_slices[fri])
-        x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
-        if get_xminmax:
-            mask = (pc0 > 0).cpu()
-            for i, row in enumerate(mask): # for each resolution
-                inds = torch.where(row)[0]
-                x_minmax[fri+i,0], x_minmax[fri+i,1] = inds[0], inds[-1]
-            x_minmax = x_minmax
-        pillar_counts = pillar_counts.T.cpu().int()
-
-        return pillar_counts, x_minmax
+        return pc0, pillar_counts.T
 
     @torch.jit.export
     def get_minmax_inds(self, points_x : torch.Tensor, res_idx : int) -> torch.Tensor:

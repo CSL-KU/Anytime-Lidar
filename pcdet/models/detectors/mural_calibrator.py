@@ -53,7 +53,7 @@ class MURALCalibrator():
         # quadratic predictor is ok for vfe
         self.vfe_num_l_groups = 1
         self.num_points_normalizer = 1000000.
-        self.vfe_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=np.float32)
+        self.vfe_time_reg_coeffs = np.ones((1,self.time_reg_degree), dtype=np.float32)
         self.vfe_time_reg_intercepts = np.ones((1,), dtype=np.float32)
 
         self.bb3d_exist = ('BACKBONE_3D' in model.model_cfg)
@@ -62,11 +62,13 @@ class MURALCalibrator():
             self.treat_bb3d_as_single_l_group = False
             if self.treat_bb3d_as_single_l_group:
                 self.bb3d_num_l_groups = 1
-                self.bb3d_time_reg_coeffs = np.ones((self.time_reg_degree,), dtype=np.float32)
+                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree,),
+                                                    dtype=np.float32)
                 self.bb3d_time_reg_intercepts = np.ones((1,), dtype=np.float32)
             else:
                 self.bb3d_num_l_groups = self.model.backbone_3d.num_layer_groups
-                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree), dtype=np.float32)
+                self.bb3d_time_reg_coeffs = np.ones((self.bb3d_num_l_groups, self.time_reg_degree),
+                                                    dtype=np.float32)
                 self.bb3d_time_reg_intercepts = np.ones((self.bb3d_num_l_groups,), dtype=np.float32)
 
         # key is wsize, value is ms
@@ -77,6 +79,7 @@ class MURALCalibrator():
         self.calib_data_dict = None
         self.last_pred = np.zeros(5)
         self.e2e_wcet_ms = 999.0
+        self.e2e_times_ms_arr = np.zeros(512)
 
         self.data_sched_thr = float(os.environ.get('DATA_SCHED_THR', 0.7))
 
@@ -85,6 +88,14 @@ class MURALCalibrator():
 
     def get_e2e_min_ms(self):
         return self.e2e_min_ms
+
+    def quadratic_time_pred(self, data_arr, reg_coeffs, reg_intercepts, normalizer):
+        data_arr_n = data_arr / normalizer
+        data_arr_n_sq = np.square(data_arr_n)
+        time_preds = data_arr_n * reg_coeffs[:, 0] + data_arr_n_sq * reg_coeffs[:, 1] + \
+                reg_intercepts
+
+        return time_preds
 
     # NOTE batch size has to be 1 !
     def pred_exec_time_ms(self, num_points : int, pillar_counts: np.ndarray, num_slices: int,
@@ -167,12 +178,6 @@ class MURALCalibrator():
             coeffs.append(reg.coef_.flatten())
             intercepts.append(reg.intercept_[0])
         return np.array(coeffs).astype(np.float32), np.array(intercepts).astype(np.float32)
-
-    def quadratic_time_pred(self, data_arr, reg_coeffs, reg_intercepts, normalizer):
-        data_arr_n_ = np.expand_dims(data_arr, -1) / normalizer
-        data_arr_n_ = np.concatenate((data_arr_n_, np.square(data_arr_n_)), axis=-1)
-        time_preds = np.sum(data_arr_n_ * reg_coeffs, axis=-1) + reg_intercepts
-        return time_preds
 
     def get_calib_data_arranged(self):
         num_voxels = self.calib_data_dict.get('num_voxels', list())
@@ -269,9 +274,9 @@ class MURALCalibrator():
             print('postprocess_wcet_ms', self.postprocess_wcet_ms)
 
         if 'e2e_times_ms' in self.calib_data_dict:
-            arr = np.array(self.calib_data_dict['e2e_times_ms'])
+            self.e2e_times_ms_arr = np.array(self.calib_data_dict['e2e_times_ms'])
             print('End to end execution time stats (ms):')
-            min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(arr)
+            min_, mean_, perc1_, perc5_, perc95_, perc99_, max_ = get_stats(self.e2e_times_ms_arr)
             self.e2e_wcet_ms = perc99_
             self.e2e_min_ms = min_
 
