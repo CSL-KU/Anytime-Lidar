@@ -69,7 +69,7 @@ class PillarNetMURAL(Detector3DTemplate):
             rd = new_resdivs
             all_pillar_sizes = torch.tensor(all_pillar_sizes)
         else:
-            t = torch.tensor(rd) * self.vfe.voxel_size.cpu()[0]
+            t = torch.tensor(rd) * self.dataset.voxel_size[0]
             all_pillar_sizes = t.repeat_interleave(2).reshape(-1, 2)
             all_pc_ranges = [pc_range.tolist()] * len(rd)
             resdiv_mask = [True] * len(rd)
