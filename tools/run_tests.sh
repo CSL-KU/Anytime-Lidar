@@ -94,7 +94,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     TSKST="taskset -c 2-7"
     MTD=$m
 
-    if [ $m -eq 4 ]; then
+    if [ $CFG_FILE == "dummy" ]; then
       continue
     fi
 
