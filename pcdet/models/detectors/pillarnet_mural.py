@@ -230,26 +230,30 @@ class PillarNetMURAL(Detector3DTemplate):
                     points_xy = points[:, 1:3]
                     if self.e2e_min_times_ms is not None:
                         keepmask = (self.e2e_min_times_ms <= (batch_dict['deadline_sec']*1000))
-                        first_res_idx = torch.where(keepmask)[0][0]
+                        first_res_idx = torch.where(keepmask)[0]
+                        if first_res_idx.size(0) <= 1: # no need for scheduling
+                            first_res_idx = self.num_res - 1
+                            sched_get_minmax = True
                     else:
-                        keepmask = torch.ones(self.num_res, dtype=torch.bool)
                         first_res_idx = 0
-                    pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
-                    if self.dense_conv_opt_on:
-                        x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
-                        self.x_minmax[first_res_idx:] = x_minmax_tmp
-                    num_points = points.size(0)
-                    all_pillar_counts = all_pillar_counts.cpu()
-                    for i in range(first_res_idx, self.num_res):
-                        pillar_counts = all_pillar_counts[i-first_res_idx]
-                        pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
-                                pillar_counts.numpy(),
-                                (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
-                        time_left = (abs_dl_sec - time.time()) * 1000
-                        if not self.is_calibrating() and pred_latency < time_left:
-                            self.res_idx = i
-                            conf_found = True
-                            break
+
+                    if first_res_idx < self.num_res - 1:
+                        pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
+                        if self.dense_conv_opt_on:
+                            x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
+                            self.x_minmax[first_res_idx:] = x_minmax_tmp
+                        num_points = points.size(0)
+                        all_pillar_counts = all_pillar_counts.cpu()
+                        for i in range(first_res_idx, self.num_res):
+                            pillar_counts = all_pillar_counts[i-first_res_idx]
+                            pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
+                                    pillar_counts.numpy(),
+                                    (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
+                            time_left = (abs_dl_sec - time.time()) * 1000
+                            if not self.is_calibrating() and pred_latency < time_left:
+                                self.res_idx = i
+                                conf_found = True
+                                break
 
                 if not self.is_calibrating() and not conf_found:
                     self.res_idx = self.num_res - 1
