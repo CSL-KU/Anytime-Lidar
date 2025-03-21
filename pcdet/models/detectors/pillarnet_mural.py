@@ -35,6 +35,8 @@ class PillarNetMURAL(Detector3DTemplate):
             return ("WS",) # wcet scheduling
         elif method_num == 11:
             return ("WS", "DCO", "RI", "FRC")
+        elif method_num == 12:
+            return ("DS", "DCO")
         else:
             return tuple()
 
@@ -206,12 +208,11 @@ class PillarNetMURAL(Detector3DTemplate):
             for i in range(self.num_res):
                 self.x_minmax[i, 0] = 0
                 self.x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
+            x_minmax_calculated = False
 
-            sched_get_minmax = False
             if fixed_res_idx > -1:
                 if not self.is_calibrating():
                     self.res_idx = fixed_res_idx
-                sched_get_minmax = True
             elif self.deadline_based_selection:
                 conf_found = False
                 abs_dl_sec = batch_dict['abs_deadline_sec']
@@ -225,7 +226,6 @@ class PillarNetMURAL(Detector3DTemplate):
                             self.res_idx = i
                             conf_found = True
                             break
-                    sched_get_minmax = True
                 else:
                     points_xy = points[:, 1:3]
                     if self.e2e_min_times_ms is not None:
@@ -233,7 +233,6 @@ class PillarNetMURAL(Detector3DTemplate):
                         first_res_idx = torch.where(keepmask)[0]
                         if first_res_idx.size(0) <= 1: # no need for scheduling
                             first_res_idx = self.num_res - 1
-                            sched_get_minmax = True
                         else:
                             first_res_idx = first_res_idx[0].item()
                     else:
@@ -244,6 +243,7 @@ class PillarNetMURAL(Detector3DTemplate):
                         if self.dense_conv_opt_on:
                             x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
                             self.x_minmax[first_res_idx:] = x_minmax_tmp
+                            x_minmax_calculated = True
                         num_points = points.size(0)
                         all_pillar_counts = all_pillar_counts.cpu()
                         for i in range(first_res_idx, self.num_res):
@@ -263,7 +263,6 @@ class PillarNetMURAL(Detector3DTemplate):
                 sample_token = batch_dict['metadata'][0]['token']
                 if not self.is_calibrating():
                     self.res_idx = self.oracle_respred[sample_token]
-                sched_get_minmax = True
             elif self.res_predictor is not None:
                 assert scene_reset == (self.latest_batch_dict is None) # just to make sure
                 if self.latest_batch_dict is not None:
@@ -295,6 +294,7 @@ class PillarNetMURAL(Detector3DTemplate):
 
                         #Override x_minmax
                         pred_exec_times, self.x_minmax = self.pred_all_res_times(points)
+                        x_minmax_calculated = True
 
                         inp_tuple = np.array([[*pred_exec_times,
                                     objpos_perc5, objpos_mean, objpos_perc95,
@@ -303,14 +303,11 @@ class PillarNetMURAL(Detector3DTemplate):
                         pred_res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
                         if not self.is_calibrating():
                             self.res_idx = pred_res_idx
-                    else:
-                        sched_get_minmax = True
                 elif not self.is_calibrating():
                     self.sched_time_point_ms = -2000 #enforce scheduling next time
                     self.res_idx = 2 # random forest was trained with its input
-                    sched_get_minmax = True
 
-            if self.dense_conv_opt_on and sched_get_minmax:
+            if self.dense_conv_opt_on and not x_minmax_calculated:
                 self.x_minmax[self.res_idx] = self.mpc_script.get_minmax_inds(points[:, 1],
                                                                               self.res_idx)
 
@@ -577,19 +574,20 @@ class PillarNetMURAL(Detector3DTemplate):
     def pred_all_res_times(self, points):
         points_xy = points[:, 1:3]
         num_points = points_xy.size(0)
-        all_pillar_counts = self.mpc_script(points_xy, True)
+        pc0, all_pillar_counts = self.mpc_script(points_xy, 0)
+        if self.dense_conv_opt_on:
+            x_minmax = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
+        else:
+            x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+            for i in range(self.num_res):
+                x_minmax[i, 0] = 0
+                x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
+
         latencies = [0.] * self.num_res
-        x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
+        all_pillar_counts = all_pillar_counts.cpu().numpy()
         for i in range(self.num_res):
             pillar_counts = all_pillar_counts[i]
-            if self.dense_conv_opt_on:
-                nz_slice_inds = pillar_counts[0].nonzero()
-                xmin, xmax = nz_slice_inds[0, 0], nz_slice_inds[-1, 0]
-            else:
-                xmin, xmax = 0, self.mpc_script.num_slices[i] - 1
-            x_minmax[i, 0] = xmin
-            x_minmax[i, 1] = xmax
             latencies[i] = self.calibrators[i].pred_exec_time_ms(num_points,
-                    pillar_counts.numpy(), (xmax - xmin + 1).item())
+                    pillar_counts, (x_minmax[i,1] - x_minmax[i,0] + 1).item())
 
         return latencies, x_minmax
