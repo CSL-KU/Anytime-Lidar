@@ -234,6 +234,8 @@ class PillarNetMURAL(Detector3DTemplate):
                         if first_res_idx.size(0) <= 1: # no need for scheduling
                             first_res_idx = self.num_res - 1
                             sched_get_minmax = True
+                        else:
+                            first_res_idx = first_res_idx[0].item()
                     else:
                         first_res_idx = 0
 
