@@ -415,11 +415,11 @@ class Detector3DTemplate(nn.Module):
         scene_token = self.token_to_scene[latest_token]
         if scene_token != self.prev_scene_token:
             deadline_sec_override, reset = 0., True # don't do override for now
+            self.scene_init_ts = self.token_to_ts[latest_token]
         else:
             deadline_sec_override, reset = 0., False
         self.prev_scene_token = scene_token
 
-        self.scene_init_ts = self.token_to_ts[latest_token]
 
         return deadline_sec_override, reset 
 

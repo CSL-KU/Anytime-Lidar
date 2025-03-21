@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import platform
 from typing import Dict, List, Tuple, Optional, Final
-from .forecaster import split_dets
+from .forecaster import split_dets, Forecaster
 from .mural_utils import *
 from ...utils import common_utils, vsize_calc
 
@@ -94,7 +94,8 @@ class PillarNetMURAL(Detector3DTemplate):
 
         self.interpolate_batch_norms = ("RI" in self.method_str)
         self.dense_conv_opt_on = ("DCO" in self.method_str)
-        self.enable_forecasting_to_fut = ("FRC" in self.method_str)
+        self.enable_forecasting_to_fut = ("FRC" in self.method_str) and self.ignore_dl_miss
+        self.enable_forecasting = ("FRC" in self.method_str) and not self.ignore_dl_miss
         self.wcet_scheduling = ("WS" in self.method_str)
 
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.dense_conv_opt_on
@@ -181,6 +182,12 @@ class PillarNetMURAL(Detector3DTemplate):
         self.x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         self.e2e_min_times_ms = None
 
+        if self.enable_forecasting:
+            pc_range, tcount = tuple(all_pc_ranges[0]), 1
+            self.forecaster = torch.jit.script(Forecaster(pc_range, tcount,
+                    self.score_thresh, num_det_heads=self.dense_head.num_det_heads,
+                    cls_id_to_det_head_idx_map=self.dense_head.cls_id_to_det_head_idx_map))
+
     def forward(self, batch_dict):
         if self.training:
             assert False # not supported
@@ -210,9 +217,9 @@ class PillarNetMURAL(Detector3DTemplate):
                 self.x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
             x_minmax_calculated = False
 
+            pred_res_idx = self.num_res - 1
             if fixed_res_idx > -1:
-                if not self.is_calibrating():
-                    self.res_idx = fixed_res_idx
+                pred_res_idx = fixed_res_idx
             elif self.deadline_based_selection:
                 conf_found = False
                 abs_dl_sec = batch_dict['abs_deadline_sec']
@@ -222,8 +229,8 @@ class PillarNetMURAL(Detector3DTemplate):
                     time_left = (abs_dl_sec - time.time()) * 1000
                     for i in range(self.num_res):
                         pred_latency = self.calibrators[i].get_e2e_wcet_ms() - time_passed
-                        if not self.is_calibrating() and pred_latency < time_left:
-                            self.res_idx = i
+                        if pred_latency < time_left:
+                            pred_res_idx = i
                             conf_found = True
                             break
                 else:
@@ -252,17 +259,16 @@ class PillarNetMURAL(Detector3DTemplate):
                                     pillar_counts.numpy(),
                                     (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
                             time_left = (abs_dl_sec - time.time()) * 1000
-                            if not self.is_calibrating() and pred_latency < time_left:
-                                self.res_idx = i
+                            if pred_latency < time_left:
+                                pred_res_idx = i
                                 conf_found = True
                                 break
 
-                if not self.is_calibrating() and not conf_found:
-                    self.res_idx = self.num_res - 1
+                if not conf_found:
+                    pred_res_idx = self.num_res - 1
             elif self.use_oracle_res_predictor:
                 sample_token = batch_dict['metadata'][0]['token']
-                if not self.is_calibrating():
-                    self.res_idx = self.oracle_respred[sample_token]
+                pred_res_idx = self.oracle_respred[sample_token]
             elif self.res_predictor is not None:
                 assert scene_reset == (self.latest_batch_dict is None) # just to make sure
                 if self.latest_batch_dict is not None:
@@ -301,11 +307,12 @@ class PillarNetMURAL(Detector3DTemplate):
                                     np.linalg.norm(ev), relvel_perc5, relvel_perc95, relvel_mean,
                         ]])
                         pred_res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
-                        if not self.is_calibrating():
-                            self.res_idx = pred_res_idx
                 elif not self.is_calibrating():
                     self.sched_time_point_ms = -2000 #enforce scheduling next time
-                    self.res_idx = 2 # random forest was trained with its input
+                    pred_res_idx = 2 # random forest was trained with its input
+
+            if not self.is_calibrating():
+                self.res_idx = pred_res_idx
 
             if self.dense_conv_opt_on and not x_minmax_calculated:
                 self.x_minmax[self.res_idx] = self.mpc_script.get_minmax_inds(points[:, 1],
@@ -341,6 +348,7 @@ class PillarNetMURAL(Detector3DTemplate):
                 self.optimize(x_conv4)
 
             self.measure_time_start('DenseOps')
+            forecasted_dets = self.do_forecast(batch_dict)
             if self.dense_conv_opt_on:
                 lim1 = xmin*self.dense_inp_slice_sz
                 lim2 = (xmax+1)*self.dense_inp_slice_sz
@@ -357,24 +365,10 @@ class PillarNetMURAL(Detector3DTemplate):
                 for i, topk_out in enumerate(topk_outputs):
                     topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
 
-            forecasted_dets = None
-            if self.enable_forecasting_to_fut:
-                forecasted_dets = self.sampled_dets[self.dataset_indexes[0]]
-                if forecasted_dets is not None:
-                    forecasted_pd = forecasted_dets[0]
-                    # Deprioritize the forecasted for NMS
-                    scores = forecasted_pd['pred_scores']
-                    forecasted_pred_scores = torch.full(scores.shape,
-                            self.score_thresh * 0.9, dtype=scores.dtype)
-                    # Split
-                    forecasted_dets = split_dets(
-                            self.dense_head_scrpt.cls_id_to_det_head_idx_map,
-                            self.dense_head_scrpt.num_det_heads,
-                            forecasted_pd['pred_boxes'],
-                            forecasted_pred_scores,
-                            forecasted_pd['pred_labels'] - 1,
-                            False) # moves results to gpu if true
-
+            if forecasted_dets is not None and self.enable_forecasting:
+                forecasted_dets = torch.jit.wait(forecasted_dets)
+                if len(forecasted_dets) != self.dense_head.num_det_heads:
+                    forecasted_dets = None # NOTE this appears to be a bug
             batch_dict['final_box_dicts'] = self.dense_head_scrpt.forward_genbox(
                     batch_dict['batch_size'], pred_dicts,
                     topk_outputs, forecasted_dets)
@@ -382,6 +376,41 @@ class PillarNetMURAL(Detector3DTemplate):
             self.measure_time_end('CenterHead-GenBox')
 
             return batch_dict
+
+    def do_forecast(self, batch_dict):
+        lbd, forecasted_dets = self.latest_batch_dict, None
+        if self.enable_forecasting_to_fut:
+            # Pickup the already forecasted data which happened at post processing
+            forecasted_dets = self.sampled_dets[self.dataset_indexes[0]]
+            if forecasted_dets is not None:
+                forecasted_pd = forecasted_dets[0]
+                # Deprioritize the forecasted for NMS
+                scores = forecasted_pd['pred_scores']
+                forecasted_pred_scores = torch.full(scores.shape,
+                        self.score_thresh * 0.9, dtype=scores.dtype)
+                # Split
+                forecasted_dets = split_dets(
+                        self.dense_head_scrpt.cls_id_to_det_head_idx_map,
+                        self.dense_head_scrpt.num_det_heads,
+                        forecasted_pd['pred_boxes'],
+                        forecasted_pred_scores,
+                        forecasted_pd['pred_labels'] - 1,
+                        False) # moves results to gpu if true
+        elif self.enable_forecasting and lbd is not None:
+            # Fully on cpu
+            last_pred_dict = lbd['final_box_dicts'][0]
+            last_token = lbd['metadata'][0]['token']
+            last_pose = self.token_to_pose[last_token]
+            last_ts = self.token_to_ts[last_token] - self.scene_init_ts
+            cur_token = batch_dict['metadata'][0]['token']
+            cur_pose = self.token_to_pose[cur_token]
+            cur_ts = self.token_to_ts[cur_token] - self.scene_init_ts
+
+            # NOTE beware that that is returned here is a future object !
+            forecasted_dets = self.forecaster.fork_forward_1tile(last_pred_dict,
+                    last_pose, last_ts, cur_pose, cur_ts)
+
+        return forecasted_dets
 
     # takes already sliced input
     def forward_eval_dense(self, x_conv4):
