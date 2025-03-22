@@ -17,7 +17,7 @@ method_colors= [
     'tab:green',
     'tab:brown',
     'tab:blue', 
-    'tab:orange',  #'xkcd:coral', 
+    'tab:purple',  #'xkcd:coral', 
     'xkcd:coral', 
     'tab:pink',
     'tab:orange',
@@ -28,17 +28,18 @@ method_colors= [
 ]
 
 method_num_to_str = [
-        '00Pillarnet010',
-        '01Pillarnet015',
-        '02Pillarnet020',
-        '03Pillarnet024',
-        '04Pillarnet030',
-        '05VALO-010',
-        '06MURAL',
-        '07MURAL-NDCO-NF',
-        '08MURAL-NF',
-        '09MURAL-NS',
-        '10MURAL-NEWTP',
+        '00Pillarnet0100',
+        '01Pillarnet0128',
+        '03Pillarnet0200',
+        '',
+        '',
+        '05VALO-0100',
+        '06DS-DCO-RI-FRC',
+        '07DS-DCO-RI',
+        '08DS-RI',
+        '09DS',
+        '10WS',
+        '11WS-DCO-RI-FRC',
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -76,27 +77,24 @@ if __name__ == '__main__':
 
     plot_sets=[]
 
-#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-#            'Pillarnet010',
-#            'Pillarnet015',
-#            'Pillarnet020',
-#            'Pillarnet024',
-#            'Pillarnet030',
-#            'VALO-010',
-#            'MURAL',
-#    ]})
-#
-#    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-#            'VALO-010',
-#            'MURAL',
-#    ]})
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+        'Pillarnet0100',
+        'Pillarnet0128',
+        'Pillarnet0200',
+        'VALO-0100',
+        'DS-DCO-RI-FRC',
+    ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-            'MURAL',
-#            'MURAL-NF',
-#            'MURAL-NDCO-NF',
-#            'MURAL-NS',
-            'MURAL-NEWTP',
+        'DS-DCO-RI-FRC',
+        'DS-DCO-RI',
+        'DS-RI',
+        'DS',
+    ]})
+
+    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+        'DS-DCO-RI-FRC',
+        'WS-DCO-RI-FRC',
     ]})
 
     plot_set_choice = int(sys.argv[2])
