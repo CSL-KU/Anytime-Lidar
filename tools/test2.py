@@ -25,7 +25,7 @@ from pcdet.utils import common_utils
 from pcdet.models.model_utils.tensorrt_utils.trtwrapper import TRTWrapper
 from nuscenes import NuScenes
 #from eval_utils.res_pred_utils import get_2d_egovel
-from pcdet.models.detectors.valor_calibrator import get_stats
+from pcdet.models.detectors.mural_calibrator import get_stats
 
 import matplotlib.pyplot as plt
 import nuscenes
@@ -52,7 +52,7 @@ def calc_tail_ms(cur_time_point_ms, data_period_ms):
 def build_model(cfg_file, ckpt_file, default_deadline_sec):
     cfg_from_yaml_file(cfg_file, cfg)
     
-    set_cfgs = ['MODEL.METHOD', '8',
+    set_cfgs = ['MODEL.METHOD', '7',
             'MODEL.DEADLINE_SEC', str(default_deadline_sec),
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
@@ -435,9 +435,9 @@ if __name__ == "__main__":
     elif chosen_method == 'MURAL_0075_3res':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0075_0100_0150.yaml"
         ckpt_file = "../models/mural_pillarnet_0075_0100_0150_e20.pth"
-    elif chosen_method == 'MURAL_0100_4res':
-        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
-        ckpt_file = "../models/mural_pillarnet_0100_4res_e20.pth"
+    elif chosen_method == 'MURAL_0100_0128_0200':
+        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+        ckpt_file = "../models/mural_pillarnet_0100_0128_0200_e20.pth"
     else:
         print('Unknown method, exiting.')
         sys.exit()
