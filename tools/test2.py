@@ -49,10 +49,10 @@ def get_dataset(cfg):
 def calc_tail_ms(cur_time_point_ms, data_period_ms):
     return cur_time_point_ms - math.floor(cur_time_point_ms / data_period_ms) * data_period_ms
 
-def build_model(cfg_file, ckpt_file, default_deadline_sec):
+def build_model(cfg_file, ckpt_file, default_deadline_sec, method):
     cfg_from_yaml_file(cfg_file, cfg)
     
-    set_cfgs = ['MODEL.METHOD', '7',
+    set_cfgs = ['MODEL.METHOD', method,
             'MODEL.DEADLINE_SEC', str(default_deadline_sec),
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
@@ -398,46 +398,33 @@ if __name__ == "__main__":
     forecasting = (forecasting == "forecast")
 
     num_res = 1
-    if chosen_method == 'Pillarnet010':
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet010.yaml"
-        ckpt_file = "../models/pillarnet010_epoch20.pth"
-    elif chosen_method == 'Pillarnet015':
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet015.yaml"
-        ckpt_file = "../models/pillarnet015_epoch20.pth"
-    elif chosen_method == 'Pillarnet020':
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet020.yaml"
-        ckpt_file = "../models/pillarnet020_epoch20.pth"
-    elif chosen_method == 'Pillarnet024':
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet024.yaml"
-        ckpt_file = "../models/pillarnet024_epoch20.pth"
-    elif chosen_method == 'Pillarnet030':
-        cfg_file  = "./cfgs/nuscenes_models/pillarnet030.yaml"
-        ckpt_file = "../models/pillarnet030_epoch20.pth"
+    method = 0
+    if chosen_method == 'Pillarnet0100':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet0100.yaml"
+        ckpt_file = "../models/pillarnet0100_e20.pth"
+    elif chosen_method == 'Pillarnet0128':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet0128.yaml"
+        ckpt_file = "../models/pillarnet0128_e20.pth"
+    elif chosen_method == 'Pillarnet0160':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet0160.yaml"
+        ckpt_file = "../models/pillarnet0160_e20.pth"
+    elif chosen_method == 'Pillarnet0200':
+        cfg_file  = "./cfgs/nuscenes_models/pillarnet0200.yaml"
+        ckpt_file = "../models/pillarnet0200_e20.pth"
     elif chosen_method == 'VALO': # VALO Pillarnet 01
-        cfg_file  = "./cfgs/nuscenes_models/cbgs_dyn_pillar015_res2d_centerpoint_valo.yaml"
-        ckpt_file = "../models/pillarnet015_epoch20.pth"
-    elif chosen_method == 'VALOR': # VALOR Pillarnet 5 res
-        cfg_file  = "./cfgs/nuscenes_models/pillar01_015_02_024_03_valor.yaml"
-        ckpt_file = "../models/pillar01_015_02_024_03_valor_epoch40.pth"
-        #ckpt_file = "../output/nuscenes_models/pillar01_015_02_024_03_valor/default/ckpt/checkpoint_epoch_25.pth"
-        num_res = 5
-    elif chosen_method == 'VALORmew': # VALOR Pillarnet LS 5res
-        cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
-        ckpt_file = "../output/nuscenes_models/multires/pillar_010_011_012_014_016_valor/default/ckpt/checkpoint_epoch_25.pth"
-        num_res = 5
-    elif chosen_method == 'MEW':
-        cfg_file  = "./cfgs/nuscenes_models/multires/pillar_010_011_012_014_016_valor.yaml"
-        ckpt_file = "../models/pillar_010_011_012_014_016_valor_e30.pth"
-        num_res = 5
-    elif chosen_method == 'MURAL':
-        cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_016_020_032.yaml"
-        ckpt_file = "../models/mural_pillarnet_016_020_032_e20.pth"
+        cfg_file  = "./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
+        ckpt_file = "../models/pillarnet0100_e20.pth"
+        method = 5
     elif chosen_method == 'MURAL_0075_3res':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0075_0100_0150.yaml"
         ckpt_file = "../models/mural_pillarnet_0075_0100_0150_e20.pth"
+        num_res = 3
+        method = 12
     elif chosen_method == 'MURAL_0100_0128_0200':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
         ckpt_file = "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+        num_res = 3
+        method = 12
     else:
         print('Unknown method, exiting.')
         sys.exit()
@@ -450,7 +437,7 @@ if __name__ == "__main__":
         for resolution_idx in range(1): #num_res):
             # os.environ["FINE_GRAINED_EVAL"] = ("1" if resolution_idx >= 0 else "0")
             t1 = time.time()
-            model = build_model(cfg_file, ckpt_file, default_deadline_sec)
+            model = build_model(cfg_file, ckpt_file, default_deadline_sec, method)
 
             if build_gt_database:
                 # FOR DATASET GEN ONLY
