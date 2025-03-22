@@ -366,7 +366,7 @@ class MURALCalibrator():
             max_width = dense_ops_inp_sz[3]
             #print(sorted(list(dense_ops_ms_dict.keys())))
             slc_sz = self.dense_inp_slice_sz
-            min_inp_width = 32
+            min_inp_width = slc_sz * 2
             for target_width in range(min_inp_width, max_width+1, slc_sz):
                 if str(target_width) not in dense_ops_ms_dict:
                     dense_ops_ms_dict[str(target_width)] = []

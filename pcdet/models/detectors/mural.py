@@ -51,7 +51,7 @@ class MURAL(Detector3DTemplate):
         rd = model_cfg.get('RESOLUTION_DIV', [1.0])
         pc_range = self.dataset.point_cloud_range
         self.max_grid_l = self.dataset.grid_size[0]
-        grid_slice_sz = 32 #
+        grid_slice_sz = 32 if self.dettype == 'PillarNet' else 8
         if "RI" in self.method_str:
             pc_range_l = pc_range.tolist()
             all_pc_ranges, all_pillar_sizes, all_grid_lens, new_resdivs, resdiv_mask = \
@@ -106,7 +106,7 @@ class MURAL(Detector3DTemplate):
 
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.dense_conv_opt_on
 
-        self.deadline_based_selection = True
+        self.deadline_based_selection = False
         if self.deadline_based_selection:
             print('Deadline scheduling is enabled!')
 
@@ -171,7 +171,7 @@ class MURAL(Detector3DTemplate):
 
         self.dense_head_scrpt = None
         self.inp_tensor_sizes = [np.ones(4, dtype=int)] * self.num_res
-        self.dense_inp_slice_sz = 4 if self.dettype == 'PillarNet' else 32
+        self.dense_inp_slice_sz = 4 if self.dettype == 'PillarNet' else 8
         self.calibrators = [MURALCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
@@ -534,8 +534,8 @@ class MURAL(Detector3DTemplate):
                 N, C, H, W = (int(s) for s in fwd_data.shape)
                 # NOTE assumes the point cloud range is a square H == max W
                 max_W = H
-                min_shape = (N, C, H, 32)
-                opt_shape = (N, C, H, max_W  - 32)
+                min_shape = (N, C, H, self.dense_inp_slice_sz)
+                opt_shape = (N, C, H, max_W  - self.dense_inp_slice_sz)
                 max_shape = (N, C, H, max_W)
                 create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
             else:
