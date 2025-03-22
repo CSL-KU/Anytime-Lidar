@@ -295,8 +295,9 @@ class MURALCalibrator():
         num_points_arr = np.empty(num_samples, dtype=np.int32)
         vfe_ms_arr = np.empty(num_samples, dtype=np.float32)
 
-        num_voxels_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.int32)
-        bb3d_ms_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.float32)
+        if self.bb3d_exist:
+            num_voxels_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.int32)
+            bb3d_ms_arr = np.empty((num_samples, self.bb3d_num_l_groups), dtype=np.float32)
 
         dense_ops_ms_dict = {}
 
@@ -365,7 +366,7 @@ class MURALCalibrator():
             max_width = dense_ops_inp_sz[3]
             #print(sorted(list(dense_ops_ms_dict.keys())))
             slc_sz = self.dense_inp_slice_sz
-            min_inp_width = 16
+            min_inp_width = 32
             for target_width in range(min_inp_width, max_width+1, slc_sz):
                 if str(target_width) not in dense_ops_ms_dict:
                     dense_ops_ms_dict[str(target_width)] = []

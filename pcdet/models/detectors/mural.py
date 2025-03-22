@@ -20,7 +20,7 @@ pth = os.environ['PCDET_PATH']
 pth = os.path.join(pth, "pcdet/trt_plugins/slice_and_batch_nhwc/build/libslice_and_batch_lib.so")
 ctypes.CDLL(pth, mode=ctypes.RTLD_GLOBAL)
 
-class PillarNetMURAL(Detector3DTemplate):
+class MURAL(Detector3DTemplate):
     def method_num_to_str_list(method_num):
         if method_num == 6:
             # dynamic scheduling, dense conv opt, res interpolation, forecasting
@@ -44,12 +44,14 @@ class PillarNetMURAL(Detector3DTemplate):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
         self.method = int(self.model_cfg.METHOD)
-        self.method_str = PillarNetMURAL.method_num_to_str_list(self.method)
+        self.method_str = MURAL.method_num_to_str_list(self.method)
+        self.dettype = self.model_cfg.DETECTOR_TYPE
+        assert self.dettype == 'PillarNet' or self.dettype == 'PointPillarsCP'
 
         rd = model_cfg.get('RESOLUTION_DIV', [1.0])
         pc_range = self.dataset.point_cloud_range
         self.max_grid_l = self.dataset.grid_size[0]
-        grid_slice_sz = 32
+        grid_slice_sz = 32 #
         if "RI" in self.method_str:
             pc_range_l = pc_range.tolist()
             all_pc_ranges, all_pillar_sizes, all_grid_lens, new_resdivs, resdiv_mask = \
@@ -81,8 +83,12 @@ class PillarNetMURAL(Detector3DTemplate):
         self.model_cfg.VFE.RESOLUTION_DIV = rd
         self.model_cfg.VFE.RESDIV_MASK = resdiv_mask
         self.model_cfg.VFE.ALL_PC_RANGES = all_pc_ranges
-        self.model_cfg.BACKBONE_3D.RESOLUTION_DIV = rd
-        self.model_cfg.BACKBONE_3D.RESDIV_MASK = resdiv_mask
+        if self.dettype == 'PillarNet':
+            self.model_cfg.BACKBONE_3D.RESOLUTION_DIV = rd
+            self.model_cfg.BACKBONE_3D.RESDIV_MASK = resdiv_mask
+        elif self.dettype == 'PointPillarsCP':
+            self.model_cfg.MAP_TO_BEV.RESOLUTION_DIV = rd
+            self.model_cfg.MAP_TO_BEV.RESDIV_MASK = resdiv_mask
         self.model_cfg.BACKBONE_2D.RESOLUTION_DIV = rd
         self.model_cfg.BACKBONE_2D.RESDIV_MASK = resdiv_mask
         self.model_cfg.DENSE_HEAD.RESOLUTION_DIV = rd
@@ -122,12 +128,17 @@ class PillarNetMURAL(Detector3DTemplate):
         self.update_time_dict({
             'Sched' : [],
             'VFE' : [],
-            'Backbone3D': [],
+            ('Backbone3D' if self.dettype == 'PillarNet' else 'MapToBEV'): [],
             'DenseOps':[],
             'CenterHead-GenBox': [],
         })
 
-        self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
+        if self.dettype == 'PillarNet':
+            self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
+            self.map_to_bev = None
+        if self.dettype == 'PointPillarsCP':
+            self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
+            self.backbone_3d = None
         print('Model size is:', self.get_model_size_MB(), 'MB')
 
         self.num_res = len(self.resolution_dividers)
@@ -160,7 +171,7 @@ class PillarNetMURAL(Detector3DTemplate):
 
         self.dense_head_scrpt = None
         self.inp_tensor_sizes = [np.ones(4, dtype=int)] * self.num_res
-        self.dense_inp_slice_sz = 4
+        self.dense_inp_slice_sz = 4 if self.dettype == 'PillarNet' else 32
         self.calibrators = [MURALCalibrator(self, ri, self.mpc_script.num_slices[ri]) \
                 for ri in range(self.num_res)]
 
@@ -246,17 +257,23 @@ class PillarNetMURAL(Detector3DTemplate):
                         first_res_idx = 0
 
                     if first_res_idx < self.num_res - 1:
-                        pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
-                        if self.dense_conv_opt_on:
-                            x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
-                            self.x_minmax[first_res_idx:] = x_minmax_tmp
-                            x_minmax_calculated = True
+                        if self.backbone_3d is not None:
+                            pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
+                            if self.dense_conv_opt_on:
+                                x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
+                                self.x_minmax[first_res_idx:] = x_minmax_tmp
+                                x_minmax_calculated = True
+                            all_pillar_counts = all_pillar_counts.cpu()
+                        else:
+                            if self.dense_conv_opt_on:
+                                self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
+                                x_minmax_calculated = True
                         num_points = points.size(0)
-                        all_pillar_counts = all_pillar_counts.cpu()
                         for i in range(first_res_idx, self.num_res):
-                            pillar_counts = all_pillar_counts[i-first_res_idx]
+                            pillar_counts = all_pillar_counts[i-first_res_idx].numpy() \
+                                    if self.backbone_3d is not None else None
                             pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
-                                    pillar_counts.numpy(),
+                                    pillar_counts,
                                     (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
                             time_left = (abs_dl_sec - time.time()) * 1000
                             if pred_latency < time_left:
@@ -315,8 +332,7 @@ class PillarNetMURAL(Detector3DTemplate):
                 self.res_idx = pred_res_idx
 
             if self.dense_conv_opt_on and not x_minmax_calculated:
-                self.x_minmax[self.res_idx] = self.mpc_script.get_minmax_inds(points[:, 1],
-                                                                              self.res_idx)
+                self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = self.x_minmax[self.res_idx] # must do this!
@@ -334,26 +350,35 @@ class PillarNetMURAL(Detector3DTemplate):
             self.measure_time_start('VFE')
             points = batch_dict['points']
             batch_dict['pillar_coords'], batch_dict['pillar_features'] = self.vfe(points)
+
+            if self.map_to_bev is not None:
+                self.measure_time_start('MapToBEV')
+                self.map_to_bev.adjust_grid_size_wrt_resolution(self.res_idx)
+                conv_inp = self.map_to_bev(batch_dict['pillar_features'],
+                        batch_dict['pillar_coords'],
+                        batch_dict['batch_size'])
+                self.measure_time_end('MapToBEV')
             self.measure_time_end('VFE')
 
-            self.measure_time_start('Backbone3D')
-            if self.is_calibrating():
-                batch_dict['record_time'] = True # returns bb3d_layer_time_events
-            batch_dict['record_int_vcounts'] = True # returns bb3d_num_voxels, no overhead
-            batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
-            x_conv4 = batch_dict['x_conv4_out']
-            self.measure_time_end('Backbone3D')
+            if self.backbone_3d is not None:
+                self.measure_time_start('Backbone3D')
+                if self.is_calibrating():
+                    batch_dict['record_time'] = True # returns bb3d_layer_time_events
+                batch_dict['record_int_vcounts'] = True # returns bb3d_num_voxels, no overhead
+                batch_dict = self.backbone_3d.forward_up_to_dense(batch_dict)
+                conv_inp = batch_dict['x_conv4_out']
+                self.measure_time_end('Backbone3D')
 
             if not self.optimization_done[self.res_idx]:
-                self.optimize(x_conv4)
+                self.optimize(conv_inp)
 
             self.measure_time_start('DenseOps')
             forecasted_dets = self.do_forecast(batch_dict)
             if self.dense_conv_opt_on:
                 lim1 = xmin*self.dense_inp_slice_sz
                 lim2 = (xmax+1)*self.dense_inp_slice_sz
-                x_conv4 = x_conv4[..., lim1:lim2].contiguous()
-            pred_dicts, topk_outputs = self.forward_eval_dense(x_conv4)
+                conv_inp = conv_inp[..., lim1:lim2].contiguous()
+            pred_dicts, topk_outputs = self.forward_eval_dense(conv_inp)
 
             self.dense_head_scrpt.adjust_voxel_size_wrt_resolution(self.res_idx)
             if not self.dense_conv_opt_on:
@@ -362,8 +387,10 @@ class PillarNetMURAL(Detector3DTemplate):
 
             self.measure_time_start('CenterHead-GenBox')
             if self.dense_conv_opt_on:
+                if self.dettype == 'CenterPointPP':
+                    lim1 //= 4
                 for i, topk_out in enumerate(topk_outputs):
-                    topk_out[-1] += lim1 # NOTE assume the tensor resolution is same
+                    topk_out[-1] += lim1
 
             if forecasted_dets is not None and self.enable_forecasting:
                 forecasted_dets = torch.jit.wait(forecasted_dets)
@@ -413,23 +440,23 @@ class PillarNetMURAL(Detector3DTemplate):
         return forecasted_dets
 
     # takes already sliced input
-    def forward_eval_dense(self, x_conv4):
+    def forward_eval_dense(self, conv_inp):
         if self.dense_conv_opt_on:
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
-                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
+                        {'conv_inp': conv_inp}, self.trt_outputs[self.res_idx])
                 pred_dicts, topk_outputs = self.convert_trt_outputs(self.trt_outputs[self.res_idx])
             else:
-                outputs = self.opt_dense_convs(x_conv4)
+                outputs = self.opt_dense_convs(conv_inp)
                 out_dict = {name:outp for name, outp in zip(self.opt_outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
         else:
             if self.fused_convs_trt[self.res_idx] is not None:
                 self.trt_outputs[self.res_idx] = self.fused_convs_trt[self.res_idx](
-                        {'x_conv4': x_conv4}, self.trt_outputs[self.res_idx])
+                        {'conv_inp': conv_inp}, self.trt_outputs[self.res_idx])
                 outputs = [self.trt_outputs[self.res_idx][nm] for nm in self.opt_outp_names]
             else:
-                outputs = self.opt_dense_convs(x_conv4)
+                outputs = self.opt_dense_convs(conv_inp)
             pred_dicts = self.dense_head.convert_out_to_pred_dicts(outputs)
             topk_outputs = None
 
@@ -450,10 +477,11 @@ class PillarNetMURAL(Detector3DTemplate):
         self.dense_head.adjust_voxel_size_wrt_resolution(self.res_idx)
 
         if self.opt_dense_convs is None:
-            self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d, self.backbone_2d, self.dense_head)
+            self.opt_dense_convs = DenseConvsPipeline(self.backbone_3d,
+                    self.backbone_2d, self.dense_head, self.dettype)
             self.opt_dense_convs.eval()
 
-        input_names = ['x_conv4']
+        input_names = ['conv_inp']
         print('Resolution idx:', self.res_idx, 'Input:', input_names[0], fwd_data.size())
         if self.dense_conv_opt_on:
             self.opt_dense_convs_output_names_pd = [name + str(i) for i in range(self.dense_head.num_det_heads) \
@@ -475,7 +503,7 @@ class PillarNetMURAL(Detector3DTemplate):
         onnx_path = self.model_cfg.ONNX_PATH + opt + f'_H{grid_sz}.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
-                "x_conv4": {
+                "conv_inp": {
                     3: "width",
                 },
             } if self.dense_conv_opt_on else {}
@@ -506,8 +534,8 @@ class PillarNetMURAL(Detector3DTemplate):
                 N, C, H, W = (int(s) for s in fwd_data.shape)
                 # NOTE assumes the point cloud range is a square H == max W
                 max_W = H
-                min_shape = (N, C, H, 16)
-                opt_shape = (N, C, H, max_W  - 16)
+                min_shape = (N, C, H, 32)
+                opt_shape = (N, C, H, max_W  - 32)
                 max_shape = (N, C, H, max_W)
                 create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
             else:
@@ -576,7 +604,7 @@ class PillarNetMURAL(Detector3DTemplate):
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            name = self.model_name + '_m' + str(self.method)
+            name = self.dettype + self.model_name + '_m' + str(self.method)
             calib_fnames[res_idx] = f"calib_files/{name}_{power_mode}_res{res_idx}.json"
             try:
                 self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])

@@ -17,7 +17,16 @@ class PointPillarScatter(nn.Module):
         self.nx, self.ny, self.nz = grid_size.tolist()
         assert self.nz == 1
 
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
+        self.grid_sizes = []
+        for resdiv in res_divs:
+            alt_grid_size = [int(gs / resdiv) for gs in grid_size[:2]]
+            self.grid_sizes.append(alt_grid_size)
+
         self.channels_first = kwargs.get('channels_first', True)
+
+    def adjust_grid_size_wrt_resolution(self, res_idx):
+        self.nx, self.ny = self.grid_sizes[res_idx]
 
     def forward(self, pillar_features : torch.Tensor, coords : torch.Tensor, 
             batch_size : int = 1) -> torch.Tensor:

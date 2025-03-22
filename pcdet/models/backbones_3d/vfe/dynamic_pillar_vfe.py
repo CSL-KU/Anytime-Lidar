@@ -67,6 +67,11 @@ class DynamicPillarVFE(VFETemplate):
         if self.with_distance:
             num_point_features += 1
 
+        res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
+        norm_method = self.model_cfg.get('NORM_METHOD', 'Batch')
+        all_pc_ranges = self.model_cfg.get('ALL_PC_RANGES', None)
+        resdiv_mask = self.model_cfg.get('RESDIV_MASK', [True] * len(res_divs))
+
         self.num_filters = self.model_cfg.NUM_FILTERS
         assert len(self.num_filters) > 0
         num_filters = [num_point_features] + list(self.num_filters)
@@ -77,30 +82,52 @@ class DynamicPillarVFE(VFETemplate):
             in_filters = num_filters[i]
             out_filters = num_filters[i + 1]
             pfn_layers.append(
-                PFNLayerV2(in_filters, out_filters, self.use_norm, last_layer=(i >= len(num_filters) - 2))
+                PFNLayerV2(in_filters, out_filters, self.use_norm, last_layer=(i >= len(num_filters) - 2),
+                res_divs=res_divs, resdiv_mask=resdiv_mask, norm_method=norm_method)
             )
         self.pfn_layers = nn.ModuleList(pfn_layers)
 
-        self.voxel_x = voxel_size[0]
-        self.voxel_y = voxel_size[1]
-        self.voxel_z = voxel_size[2]
-        self.x_offset = self.voxel_x / 2 + point_cloud_range[0]
-        self.y_offset = self.voxel_y / 2 + point_cloud_range[1]
-        self.z_offset = self.voxel_z / 2 + point_cloud_range[2]
+        self.voxel_params = []
+        for i, resdiv in enumerate(res_divs):
+            if all_pc_ranges is not None:
+                point_cloud_range = all_pc_ranges[i]
 
-        self.scale_xy = grid_size[0] * grid_size[1]
-        self.scale_y = grid_size[1]
-        
-        self.grid_size = torch.tensor(grid_size).cuda()
-        self.voxel_size = torch.tensor(voxel_size).cuda()
-        self.point_cloud_range = torch.tensor(point_cloud_range).cuda()
+            grid_size_tmp = [int(gs / resdiv) for gs in grid_size[:2]]
+            Xlen = point_cloud_range[3] - point_cloud_range[0]
+            Ylen = point_cloud_range[4] - point_cloud_range[1]
+            voxel_size_tmp = [Xlen/grid_size_tmp[0], Ylen/grid_size_tmp[1]]
+            self.voxel_params.append((
+                    voxel_size_tmp[0], #voxel_x
+                    voxel_size_tmp[1], #voxel_y
+                    voxel_size[2], #voxel_z
+                    voxel_size_tmp[0] / 2 + point_cloud_range[0], #x_offset
+                    voxel_size_tmp[1] / 2 + point_cloud_range[1], #y_offset
+                    voxel_size[2] / 2 + point_cloud_range[2], #z_offset
+                    grid_size_tmp[0] * grid_size_tmp[1], #scale_xy
+                    grid_size_tmp[1], #scale_y
+                    torch.tensor(grid_size_tmp).cuda(), # grid_size
+                    torch.tensor(voxel_size_tmp + [voxel_size[2]]).cuda(),
+                    torch.tensor(point_cloud_range).cuda()
+            ))
+
+        self.set_params(0)
+
+    # Allows switching between different pillar sizes
+    def set_params(self, idx):
+        self.voxel_x, self.voxel_y, self.voxel_z, \
+                self.x_offset, self.y_offset, self.z_offset,  \
+                self.scale_xy, self.scale_y, \
+                self.grid_size, self.voxel_size, \
+                self.point_cloud_range = self.voxel_params[idx]
+
+    def adjust_voxel_size_wrt_resolution(self, res_idx):
+        self.set_params(res_idx)
 
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        # NOTE range filter should be executed before this
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
@@ -136,7 +163,7 @@ class DynamicPillarVFE(VFETemplate):
                                    unq_coords % self.scale_y,
                                    (unq_coords % self.scale_xy) // self.scale_y), dim=1)
 
-        return voxel_coords, features, unq_inv, points_mean.size(0)
+        return voxel_coords, features, unq_inv, torch.max(unq_inv) + 1
 
     def forward_nn(self, features : torch.Tensor, unq_inv : torch.Tensor, num_out_inds : int) -> torch.Tensor:
 

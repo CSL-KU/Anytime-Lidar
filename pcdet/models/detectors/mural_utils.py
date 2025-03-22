@@ -75,17 +75,21 @@ def slice_tensor(down_scale_factor : int, x_min: int, x_max: int, inp : torch.Te
 
 # This will be used to generate the onnx
 class DenseConvsPipeline(torch.nn.Module):
-    def __init__(self, backbone_3d, backbone_2d, dense_head):
+    def __init__(self, backbone_3d, backbone_2d, dense_head, dettype):
         super().__init__()
         self.backbone_3d = backbone_3d
         self.backbone_2d = backbone_2d
         self.dense_head = dense_head
         self.optimize_attr_convs = dense_head.model_cfg.OPTIMIZE_ATTR_CONVS
+        self.dettype = dettype
 
     def forward(self, x_conv4 : torch.Tensor) -> List[torch.Tensor]:
-        x_conv5 = self.backbone_3d.forward_dense(x_conv4)
-        data_dict = self.backbone_2d({"multi_scale_2d_features" : 
-            {"x_conv4": x_conv4, "x_conv5": x_conv5}})
+        if self.dettype == 'PillarNet':
+            x_conv5 = self.backbone_3d.forward_dense(x_conv4)
+            data_dict = self.backbone_2d({"multi_scale_2d_features" :
+                {"x_conv4": x_conv4, "x_conv5": x_conv5}})
+        elif self.dettype == 'PointPillarsCP':
+            data_dict = {'spatial_features_2d': self.backbone_2d(x_conv4)}
 
         if self.optimize_attr_convs:
             outputs = self.dense_head.forward_pre(data_dict['spatial_features_2d'])
@@ -111,8 +115,11 @@ class MultiPillarCounter(torch.nn.Module):
     grid_sizes: Final[List[List[int]]]
     num_slices: Final[List[int]]
     num_res : Final[int]
+    slice_sz : Final[int]
     pillar_sizes : torch.Tensor
     pc_range_min: torch.Tensor
+    pillar_sizes_cpu : torch.Tensor
+    pc_range_min_cpu: torch.Tensor
 
     def __init__(self, pillar_sizes : torch.Tensor, pc_ranges : torch.Tensor,
                  slice_sz: int = 32):
@@ -131,12 +138,16 @@ class MultiPillarCounter(torch.nn.Module):
             num_slices[i] = (grid_sizes[i, 0] // slice_sz).item()
             pc_range_mins[i] = pc_range[[0,1]]
 
+
+        self.slice_sz = slice_sz
         self.grid_sizes = grid_sizes.tolist()
+        self.pillar_sizes_cpu = pillar_sizes
+        self.pc_range_mins_cpu = pc_range_mins
         self.pillar_sizes = pillar_sizes.cuda()
         self.pc_range_mins = pc_range_mins.cuda()
         self.num_slices = num_slices
 
-        print('pillar_sizes', pillar_sizes)
+        print('pillar_sizes', self.pillar_sizes_cpu)
         #print('pc_range_mins', pc_range_mins)
         print('num_slices', num_slices)
         print('grid_sizes', self.grid_sizes)
@@ -164,10 +175,13 @@ class MultiPillarCounter(torch.nn.Module):
         return pc0, pillar_counts.T
 
     @torch.jit.export
-    def get_minmax_inds(self, points_x : torch.Tensor, res_idx : int) -> torch.Tensor:
+    def get_minmax_inds(self, points_x : torch.Tensor) -> torch.Tensor:
+        x_minmax = torch.empty((self.num_res, 2), dtype=torch.int)
         xmin, xmax = torch.aminmax(points_x)
-        minmax = torch.cat((xmin.unsqueeze(-1), xmax.unsqueeze(-1))) - self.pc_range_mins[res_idx, 0]
-        minmax = (minmax / self.pillar_sizes[res_idx, 0]).cpu().int()
-        slice_sz = self.grid_sizes[res_idx][1] / self.num_slices[res_idx]
-        return (minmax / slice_sz).int()
+        minmax = torch.cat((xmin.unsqueeze(-1), xmax.unsqueeze(-1))).cpu()
+        for i in range(self.num_res):
+            minmax_s = minmax - self.pc_range_mins_cpu[i, 0]
+            minmax_s = (minmax_s / self.pillar_sizes_cpu[i, 0]).int()
+            x_minmax[i] = minmax_s // self.slice_sz
+        return x_minmax
 

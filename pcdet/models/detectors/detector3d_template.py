@@ -379,8 +379,11 @@ class Detector3DTemplate(nn.Module):
         vfe_ms = self._time_dict['VFE'][-1]
         err[1] = predicted_ms_arr[1] - vfe_ms
 
-        bb3d_ms = self._time_dict['Backbone3D'][-1]
-        err[2] = predicted_ms_arr[2] - bb3d_ms
+        if self.backbone_3d is not None:
+            bb3d_ms = self._time_dict['Backbone3D'][-1]
+            err[2] = predicted_ms_arr[2] - bb3d_ms
+        else:
+            err[2] = 0
 
         dense_ops_ms = float(self._time_dict['DenseOps'][-1])
         err[3] = predicted_ms_arr[3] - dense_ops_ms
