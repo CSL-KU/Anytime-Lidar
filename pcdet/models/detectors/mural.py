@@ -106,7 +106,7 @@ class MURAL(Detector3DTemplate):
 
         self.model_cfg.DENSE_HEAD.OPTIMIZE_ATTR_CONVS = self.dense_conv_opt_on
 
-        self.deadline_based_selection = False
+        self.deadline_based_selection = not self.ignore_dl_miss
         if self.deadline_based_selection:
             print('Deadline scheduling is enabled!')
 
@@ -228,7 +228,6 @@ class MURAL(Detector3DTemplate):
                 self.x_minmax[i, 1] = self.mpc_script.num_slices[i] - 1
             x_minmax_calculated = False
 
-            pred_res_idx = self.num_res - 1
             if fixed_res_idx > -1:
                 pred_res_idx = fixed_res_idx
             elif self.deadline_based_selection:
@@ -287,7 +286,6 @@ class MURAL(Detector3DTemplate):
                 sample_token = batch_dict['metadata'][0]['token']
                 pred_res_idx = self.oracle_respred[sample_token]
             elif self.res_predictor is not None:
-                assert scene_reset == (self.latest_batch_dict is None) # just to make sure
                 if self.latest_batch_dict is not None:
                     # If you want to sched periodically rel to scene start, uncomment
                     tdiff = int(self.sim_cur_time_ms - self.sched_time_point_ms)
@@ -324,10 +322,13 @@ class MURAL(Detector3DTemplate):
                                     np.linalg.norm(ev), relvel_perc5, relvel_perc95, relvel_mean,
                         ]])
                         pred_res_idx = self.res_predictor.predict(inp_tuple)[0] # takes 5 ms
+                    else:
+                        pred_res_idx = self.res_idx # keep the same one
                 elif not self.is_calibrating():
                     self.sched_time_point_ms = -2000 #enforce scheduling next time
                     pred_res_idx = 2 # random forest was trained with its input
-
+            else:
+                pred_res_idx = self.num_res - 1
             if not self.is_calibrating():
                 self.res_idx = pred_res_idx
 
