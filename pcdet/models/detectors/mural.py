@@ -63,12 +63,14 @@ class MURAL(Detector3DTemplate):
             area_max_l_cm = area_l_cm + 1500
             min_grid_len = all_grid_lens[-1]
 
-            opt = vsize_calc.calc_area_and_pillar_sz(min_grid_len-(grid_slice_sz*4), area_min_l_cm, area_max_l_cm)
-            new_pc_range, new_psize, new_grid_l = vsize_calc.option_to_params(opt, pc_range_l, pillar_h=0.2)
-            all_pc_ranges.append(new_pc_range)
-            all_pillar_sizes.append(new_psize)
-            all_grid_lens.append(new_grid_l)
-            resdiv_mask.append(False)
+            diffs = (32, 64, 96) if self.dettype == 'PointPillarsCP' else (128,)
+            for diff in diffs:
+                opt = vsize_calc.calc_area_and_pillar_sz(min_grid_len-diff, area_min_l_cm, area_max_l_cm)
+                new_pc_range, new_psize, new_grid_l = vsize_calc.option_to_params(opt, pc_range_l, pillar_h=0.2)
+                all_pc_ranges.append(new_pc_range)
+                all_pillar_sizes.append(new_psize)
+                all_grid_lens.append(new_grid_l)
+                resdiv_mask.append(False)
             new_resdivs = [all_grid_lens[0]/gl for gl in all_grid_lens]
             rd = new_resdivs
             all_pillar_sizes = torch.tensor(all_pillar_sizes)
