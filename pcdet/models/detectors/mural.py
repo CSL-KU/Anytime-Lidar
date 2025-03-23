@@ -266,7 +266,6 @@ class MURAL(Detector3DTemplate):
                         else:
                             if self.dense_conv_opt_on:
                                 self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
-                                print(self.x_minmax)
                                 x_minmax_calculated = True
                         num_points = points.size(0)
                         for i in range(first_res_idx, self.num_res):
@@ -335,7 +334,6 @@ class MURAL(Detector3DTemplate):
 
             if self.dense_conv_opt_on and not x_minmax_calculated:
                 self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
-                #print(self.x_minmax)
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = self.x_minmax[self.res_idx] # must do this!
@@ -496,8 +494,6 @@ class MURAL(Detector3DTemplate):
         else:
             self.opt_outp_names = [name + str(i) for i in range(self.dense_head.num_det_heads) \
                     for name in self.dense_head.ordered_outp_names()]
-
-        #print('Fused operations output names:', self.opt_outp_names)
 
         # Create a onnx and tensorrt file for each resolution
 
