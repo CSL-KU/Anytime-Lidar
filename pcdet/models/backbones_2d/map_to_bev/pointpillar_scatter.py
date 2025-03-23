@@ -4,10 +4,11 @@ from typing import Dict, List, Tuple, Final
 
 class PointPillarScatter(nn.Module):
     num_bev_features : Final[int]
-    nz : Final[int]
-    ny : Final[int]
-    nx : Final[int]
     channels_first : Final[bool]
+    grid_sizes : Final[List[Tuple[int,int]]]
+    nz : Final[int]
+    ny : int
+    nx : int
 
     def __init__(self, model_cfg, grid_size, **kwargs):
         super().__init__()
@@ -20,12 +21,12 @@ class PointPillarScatter(nn.Module):
         res_divs = model_cfg.get('RESOLUTION_DIV', [1.0])
         self.grid_sizes = []
         for resdiv in res_divs:
-            alt_grid_size = [int(gs / resdiv) for gs in grid_size[:2]]
-            self.grid_sizes.append(alt_grid_size)
+            self.grid_sizes.append((int(self.nx / resdiv), int(self.ny / resdiv)))
 
         self.channels_first = kwargs.get('channels_first', True)
 
-    def adjust_grid_size_wrt_resolution(self, res_idx):
+    @torch.jit.export
+    def adjust_grid_size_wrt_resolution(self, res_idx : int):
         self.nx, self.ny = self.grid_sizes[res_idx]
 
     def forward(self, pillar_features : torch.Tensor, coords : torch.Tensor, 

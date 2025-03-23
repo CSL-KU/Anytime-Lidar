@@ -138,6 +138,7 @@ class MURAL(Detector3DTemplate):
             self.map_to_bev = None
         if self.dettype == 'PointPillarsCP':
             self.vfe, self.map_to_bev, self.backbone_2d, self.dense_head = self.module_list
+            self.map_to_bev_scrpt = torch.jit.script(self.map_to_bev)
             self.backbone_3d = None
         print('Model size is:', self.get_model_size_MB(), 'MB')
 
@@ -244,7 +245,6 @@ class MURAL(Detector3DTemplate):
                             conf_found = True
                             break
                 else:
-                    points_xy = points[:, 1:3]
                     if self.e2e_min_times_ms is not None:
                         keepmask = (self.e2e_min_times_ms <= (batch_dict['deadline_sec']*1000))
                         first_res_idx = torch.where(keepmask)[0]
@@ -254,9 +254,9 @@ class MURAL(Detector3DTemplate):
                             first_res_idx = first_res_idx[0].item()
                     else:
                         first_res_idx = 0
-
                     if first_res_idx < self.num_res - 1:
                         if self.backbone_3d is not None:
+                            points_xy = points[:, 1:3]
                             pc0, all_pillar_counts = self.mpc_script(points_xy, first_res_idx)
                             if self.dense_conv_opt_on:
                                 x_minmax_tmp = torch.from_numpy(get_xminmax_from_pc0(pc0.cpu().numpy()))
@@ -266,6 +266,7 @@ class MURAL(Detector3DTemplate):
                         else:
                             if self.dense_conv_opt_on:
                                 self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
+                                print(self.x_minmax)
                                 x_minmax_calculated = True
                         num_points = points.size(0)
                         for i in range(first_res_idx, self.num_res):
@@ -334,6 +335,7 @@ class MURAL(Detector3DTemplate):
 
             if self.dense_conv_opt_on and not x_minmax_calculated:
                 self.x_minmax = self.mpc_script.get_minmax_inds(points[:, 1])
+                #print(self.x_minmax)
 
             self._eval_dict['resolution_selections'][self.res_idx] += 1
             xmin, xmax = self.x_minmax[self.res_idx] # must do this!
@@ -354,8 +356,8 @@ class MURAL(Detector3DTemplate):
 
             if self.map_to_bev is not None:
                 self.measure_time_start('MapToBEV')
-                self.map_to_bev.adjust_grid_size_wrt_resolution(self.res_idx)
-                conv_inp = self.map_to_bev(batch_dict['pillar_features'],
+                self.map_to_bev_scrpt.adjust_grid_size_wrt_resolution(self.res_idx)
+                conv_inp = self.map_to_bev_scrpt(batch_dict['pillar_features'],
                         batch_dict['pillar_coords'],
                         batch_dict['batch_size'])
                 self.measure_time_end('MapToBEV')
@@ -388,7 +390,7 @@ class MURAL(Detector3DTemplate):
 
             self.measure_time_start('CenterHead-GenBox')
             if self.dense_conv_opt_on:
-                if self.dettype == 'CenterPointPP':
+                if self.dettype == 'PointPillarsCP':
                     lim1 //= 4
                 for i, topk_out in enumerate(topk_outputs):
                     topk_out[-1] += lim1
