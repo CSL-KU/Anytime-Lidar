@@ -1,7 +1,7 @@
 from .anytime_template_v2 import AnytimeTemplateV2
 from ..dense_heads.center_head_inf import scatter_sliced_tensors
 from ..backbones_2d.base_bev_backbone_sliced import prune_spatial_features
-from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper
+from ..model_utils.tensorrt_utils.trtwrapper import TRTWrapper, create_trt_engine
 from .forecaster import Forecaster
 import torch
 import time
@@ -10,6 +10,7 @@ import os
 import sys
 import numpy as np
 from typing import List
+from ...utils import common_utils
 
 import ctypes
 pth = os.environ['PCDET_PATH']
@@ -67,10 +68,12 @@ class CenterPointVALO(AnytimeTemplateV2):
         torch.backends.cudnn.benchmark = True
         if torch.backends.cudnn.benchmark:
             torch.backends.cudnn.benchmark_limit = 0
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        #torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        #torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+
+        allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
         torch.cuda.manual_seed(0)
         self.module_list = self.build_networks()
@@ -84,7 +87,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         if self.sched_bb3d:
             self.update_time_dict({'Backbone3D': []})
         self.update_time_dict( {
-            'FusedOps':[],
+            'DenseOps':[],
             'CenterHead-GenBox': [],
         })
 
@@ -98,6 +101,7 @@ class CenterPointVALO(AnytimeTemplateV2):
         self.inf_stream = torch.cuda.Stream()
         self.optimization1_done = False
         self.trt_outputs = None # Since output size of trt is fixed, use buffered
+        self.opt_dense_convs = None
 
         # Force forecasting to be disabled
         self.keep_forecasting_disabled = False
@@ -106,10 +110,16 @@ class CenterPointVALO(AnytimeTemplateV2):
                     self.tcount, self.score_thresh, self.forecasting_coeff, self.dense_head.num_det_heads,
                     self.dense_head.cls_id_to_det_head_idx_map))
 
+        self.dense_head_scrpt = None
+        self.filter_pc_range =  self.vfe.point_cloud_range + \
+                torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+
     def forward(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             # VFE doesn't take much of a time (5 ms), do not schedule its input
-            batch_dict = self.vfe.range_filter(batch_dict)
+            batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.filter_pc_range)
+            batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
             if self.sched_vfe:
                 self.measure_time_start('Sched1')
                 batch_dict = self.schedule1(batch_dict)
@@ -180,7 +190,7 @@ class CenterPointVALO(AnytimeTemplateV2):
             batch_dict = prune_spatial_features(batch_dict)
             self.measure_time_end('Sched2')
 
-            self.measure_time_start('FusedOps')
+            self.measure_time_start('DenseOps')
             sf = batch_dict['spatial_features']
             if self.fused_convs_trt is not None:
                 self.trt_outputs = self.fused_convs_trt({'spatial_features': sf}, self.trt_outputs)
@@ -192,7 +202,7 @@ class CenterPointVALO(AnytimeTemplateV2):
                 out_dict = {name:outp for name, outp in zip(outp_names, outputs)}
                 pred_dicts, topk_outputs = self.convert_trt_outputs(out_dict)
 
-            self.measure_time_end('FusedOps')
+            self.measure_time_end('DenseOps')
 
             if self.is_calibrating():
                 e4 = torch.cuda.Event(enable_timing=True)
@@ -246,7 +256,6 @@ class CenterPointVALO(AnytimeTemplateV2):
         self.opt_dense_convs.eval()
         self.opt_dense_convs(fwd_data, True) # do this so tile sizes are determined
 
-        generated_onnx=False
         onnx_path = self.model_cfg.ONNX_PATH + '.onnx'
         if not os.path.exists(onnx_path):
             dynamic_axes = {
@@ -266,15 +275,10 @@ class CenterPointVALO(AnytimeTemplateV2):
                     opset_version=17,
                     custom_opsets={"cuda_slicer": 17},
             )
-            generated_onnx=True
 
         power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
         if power_mode == 'UNKNOWN_POWER_MODE':
             print('WARNING! Power mode is unknown. Please export PMODE.')
-
-        if generated_onnx:
-            print('ONNX files created, please run again after creating TensorRT engines.')
-            sys.exit(0)
 
         tokens = self.model_cfg.ONNX_PATH.split('/')
         trt_path = '/'.join(tokens[:-2]) + f'/trt_engines/{power_mode}/{tokens[-1]}.engine'
@@ -283,7 +287,14 @@ class CenterPointVALO(AnytimeTemplateV2):
             self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
         except:
             print('TensorRT wrapper for fused_convs throwed exception, using eager mode')
-            self.fused_convs_trt = None
+            N, C, H, W = (int(s) for s in fwd_data.shape)
+            # NOTE assumes the point cloud range is a square H == max W
+            max_W = H
+            min_shape = (N, C, H, max_W // self.tcount)
+            opt_shape = (N, C, H, max_W // self.tcount * (self.tcount - 2))
+            max_shape = (N, C, H, max_W)
+            create_trt_engine(onnx_path, trt_path, input_names[0], min_shape, opt_shape, max_shape)
+            self.fused_convs_trt = TRTWrapper(trt_path, input_names, outp_names)
 
         optimize_end = time.time()
         print(f'Optimization took {optimize_end-optimize_start} seconds.')

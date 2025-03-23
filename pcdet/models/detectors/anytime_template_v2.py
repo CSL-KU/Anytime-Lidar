@@ -131,7 +131,7 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #self.move_indscalc_to_init = True
         ##########################################
 
-        self.resolution_dividers = self.model_cfg.BACKBONE_3D.get('RESOLUTION_DIV', [1.0])
+        self.resolution_dividers = self.model_cfg.get('RESOLUTION_DIV', [1.0])
         self.num_res = len(self.resolution_dividers)
         self.res_idx = 0
         self.calibrators = [None] * self.num_res

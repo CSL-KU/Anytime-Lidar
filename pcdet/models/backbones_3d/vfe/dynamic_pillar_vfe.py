@@ -126,6 +126,13 @@ class DynamicPillarVFE(VFETemplate):
     def get_output_feature_dim(self):
         return self.num_filters[-1]
 
+    @torch.no_grad()
+    def calc_points_coords(self, batch_dict):
+        points = batch_dict['points']
+        batch_dict['points_coords'] = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]])
+                / self.voxel_size[[0,1]]).int()
+        return batch_dict
+
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
