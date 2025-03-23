@@ -18,8 +18,11 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
     #CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
 
-    CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
-    CKPT_FILE="../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    #CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    #CKPT_FILE="../models/mural_pillarnet_0100_0128_0200_e20.pth"
+
+    CFG_FILE="./cfgs/nuscenes_models/PointPillarsCP0400.yaml"
+    CKPT_FILE="../models/PointPillarsCP0400_e20.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -58,7 +61,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
   OUT_DIR=exp_data_nsc_${1}
   mkdir -p $OUT_DIR
 
-  CFG_FILES=( \
+  CFG_FILES_=( \
     "./cfgs/nuscenes_models/pillarnet0100.yaml"
     "./cfgs/nuscenes_models/pillarnet0128.yaml"
     "./cfgs/nuscenes_models/pillarnet0200.yaml"
@@ -72,7 +75,7 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml" )
 
-  CKPT_FILES=( \
+  CKPT_FILES_=( \
     "../models/pillarnet0100_e20.pth"
     "../models/pillarnet0128_e20.pth"
     "../models/pillarnet0200_e20.pth"
@@ -85,6 +88,34 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "../models/mural_pillarnet_0100_0128_0200_e20.pth"
     "../models/mural_pillarnet_0100_0128_0200_e20.pth"
     "../models/mural_pillarnet_0100_0128_0200_e20.pth" )
+
+  CFG_FILES=( \
+    "./cfgs/nuscenes_models/PointPillarsCP0200.yaml"
+    "./cfgs/nuscenes_models/PointPillarsCP0256.yaml"
+    "./cfgs/nuscenes_models/PointPillarsCP0400.yaml"
+    "dummy"
+    "dummy"
+    "dummy" # ADD VALO LATER
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml" )
+
+  CKPT_FILES=( \
+    "../models/PointPillarsCP0200_e20.pth"
+    "../models/PointPillarsCP0256_e20.pth"
+    "../models/PointPillarsCP0400_e20.pth"
+    "dummy"
+    "dummy"
+    "dummy" # ADD VALO LATER
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth" )
 
   for m in ${!CFG_FILES[@]}
   do
