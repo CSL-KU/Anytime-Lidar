@@ -60,7 +60,7 @@ class PointPillarScatter(nn.Module):
         else:
             batch_spatial_features = batch_spatial_features.view(\
                     batch_size, self.ny, self.nx, self.num_bev_features * self.nz)
-        return batch_spatial_features
+        return batch_spatial_features.contiguous()
 
 class PointPillarScatter3d(nn.Module):
     num_bev_features_before_compression: Final[int]

@@ -129,6 +129,7 @@ class DynamicPillarVFE(VFETemplate):
     def forward_gen_pillars(self, points : torch.Tensor) \
             -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         points_coords = torch.floor((points[:, [1,2]] - self.point_cloud_range[[0,1]]) / self.voxel_size[[0,1]]).int()
+        points_xyz = points[:, [1, 2, 3]].contiguous()
 
         merge_coords = points[:, 0].int() * self.scale_xy + \
                        points_coords[:, 0] * self.scale_y + \
@@ -136,8 +137,7 @@ class DynamicPillarVFE(VFETemplate):
         
         unq_coords, unq_inv = torch.unique(merge_coords, return_inverse=True, dim=0)
 
-        points_xyz = points[:, [1, 2, 3]].contiguous()
-        points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, 0)
+        points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0)
         f_cluster = points_xyz - points_mean[unq_inv, :]
 
         f_center = torch.zeros_like(points_xyz)
