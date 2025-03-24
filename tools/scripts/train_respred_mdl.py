@@ -17,10 +17,11 @@ import pandas as pd
 #from visual_utils.bev_visualizer import visualize_bev_detections
 
 #NUMRES = 3
+INP_DATA_RES=2
 num_train_scenes = 75
 num_test_scenes = 75
 gen_dataset=True
-calc_detscores=False
+calc_detscores=True
 #NUM_BINS=10
 
 NUM_CLASSES = 10
@@ -182,8 +183,9 @@ def calc_resolution_detscores(sampled_dets, all_tslc_inds, all_gt_boxes, ridx):
     return tslc_scores
 
 
-def read_data(pth):
-    gt_database_path = glob.glob(pth + "/*gt_database*.pkl")
+def read_data(pth, typ):
+    end = ('1' if typ == 'train' else '0') + '.pkl'
+    gt_database_path = glob.glob(pth + "/*gt_database*" + end)
     print('Loading', gt_database_path[0])
     with open(gt_database_path[0], 'rb') as f:
         gt_tuples = pickle.load(f) # list of (sample_token, gt_boxes, time_preds)
@@ -194,7 +196,7 @@ def read_data(pth):
         all_gt_boxes.append(gtb)
         time_preds.append(tp)
 
-    eval_dict_paths = glob.glob(pth + "/*calib*.pkl")
+    eval_dict_paths = glob.glob(pth + "/*calib*" + end)
     num_res = len(eval_dict_paths)
     eval_dicts = [None] * num_res
     for evald_pth in eval_dict_paths:
@@ -269,7 +271,7 @@ def read_data(pth):
 
     # now work on what would be the input of the prediction model
     # use global best data
-    eval_d = eval_dicts[0]
+    eval_d = eval_dicts[INP_DATA_RES]
     egovels = eval_d['egovels']
     exec_times_ms = eval_d['exec_times_ms'] # use for it?
     sampled_dets = eval_d['objects']
@@ -374,8 +376,8 @@ def get_bad_data_mask(X, y):
 if __name__ == '__main__':
     inp_dir = sys.argv[1]
     if gen_dataset:
-        X_train, y_train, oracle_train = read_data(os.path.join(inp_dir, 'train'))
-        X_test, y_test, oracle_test = read_data(os.path.join(inp_dir, 'test'))
+        X_train, y_train, oracle_train = read_data(inp_dir, 'train')
+        X_test, y_test, oracle_test = read_data(inp_dir, 'test')
         print('Dumping generated dataset and oracle')
         with open(os.path.join(inp_dir, 'generated_dataset.pkl'), 'wb') as f:
             pickle.dump((X_train, y_train, X_test, y_test), f)

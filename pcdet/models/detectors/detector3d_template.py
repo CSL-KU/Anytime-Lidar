@@ -121,8 +121,11 @@ def post_forward_hook(module, inp_args, outp_args):
     if module.simulate_exec_time:
         #assert not module.is_calibrating()
         num_points = batch_dict['points'].size(0)
-        num_voxels = np.array(batch_dict['bb3d_num_voxels'])
-        xlen = batch_dict['tensor_slice_inds'][1] - batch_dict['tensor_slice_inds'][0]
+        num_voxels = batch_dict.get('bb3d_num_voxels', None)
+        if num_voxels is not None:
+            num_voxels = np.array(num_voxels)
+        xmin, xmax = batch_dict['tensor_slice_inds']
+        xlen = xmax - xmin + 1
         exec_time_ms = module.calibrators[module.res_idx].pred_exec_time_ms(
                 num_points, num_voxels, xlen, consider_prep_time=True)
         finish_time = batch_dict['start_time_sec'] + (exec_time_ms / 1000)

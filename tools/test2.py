@@ -75,7 +75,7 @@ def get_latest_exec_time(model):
     sched_ms =  model._time_dict['Sched'][-1]
     preprocess_ms = pp_ms + sched_ms
     vfe_ms = model._time_dict['VFE'][-1]
-    bb3d_ms = model._time_dict['Backbone3D'][-1]
+    bb3d_ms = model._time_dict.get('Backbone3D', [0])[-1]
     dense_ops_ms = float(model._time_dict['DenseOps'][-1])
     genbox_ms =  model._time_dict['CenterHead-GenBox'][-1]
     postp_ms =  model._time_dict['PostProcess'][-1]
@@ -423,6 +423,11 @@ if __name__ == "__main__":
     elif chosen_method == 'MURAL_0100_0128_0200':
         cfg_file  = "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
         ckpt_file = "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+        num_res = 3
+        method = 12
+    elif chosen_method == 'MURAL_CenterPointPP':
+        cfg_file="./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+        ckpt_file="../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
         num_res = 3
         method = 12
     else:

@@ -607,6 +607,7 @@ class MURAL(Detector3DTemplate):
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
             name = self.dettype + self.model_name + '_m' + str(self.method)
             calib_fnames[res_idx] = f"calib_files/{name}_{power_mode}_res{res_idx}.json"
+            print('Trying to load calib file:', calib_fnames[res_idx])
             try:
                 self.calibrators[res_idx].read_calib_data(calib_fnames[res_idx])
             except OSError:
