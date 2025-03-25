@@ -55,6 +55,14 @@ def tile_calculations(coords_x : torch.Tensor, tile_size_voxels: float, tcount :
     netc = torch.arange(tcount, dtype=torch.long)[counts_area > 0] # shouldn't take noticable time
     return tile_coords, netc, counts_area
 
+
+@torch.jit.script
+def get_netc(coords_x : torch.Tensor, tile_size_voxels: float, tcount : int):
+    tile_coords = torch.div(coords_x, tile_size_voxels, rounding_mode='trunc').long()
+    netc = torch.zeros(tcount, dtype=torch.bool, device=coords_x.device)
+    netc[tile_coords] = True
+    return tile_coords, torch.nonzero(netc).flatten().cpu()
+
 @torch.jit.script
 def tile_calculations_all(points_coords : torch.Tensor, tile_size_voxels : float,
             scale_xy : int, scale_y : int, tcount : int):
@@ -89,8 +97,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
             not self.use_voxelnext
 
         self.sched_algo = SchedAlgo.RoundRobin
-
-        self.sched_vfe = ('DynPillarVFE' == self.model_cfg.VFE.NAME or \
+        self.sched_vfe = (self.model_cfg.METHOD != SchedAlgo.RoundRobin_NoVFESched) and \
+            ('DynPillarVFE' == self.model_cfg.VFE.NAME or \
             'DynamicPillarVFESimple2D' == self.model_cfg.VFE.NAME)
         self.sched_bb3d = ('BACKBONE_3D' in self.model_cfg)
 
@@ -194,6 +202,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
         elif self.sched_vfe:
             point_tile_coords, netc, pcount_area = tile_calculations(
                     batch_dict['points_coords'][:, 0], cur_tile_size_voxels, self.tcount)
+        else:
+            point_tile_coords, netc = get_netc(batch_dict['points_coords'][:, 0],
+                                               cur_tile_size_voxels, self.tcount)
 
         netc = np.sort(netc.numpy())
         if pcount_area is not None:
@@ -390,11 +401,12 @@ class AnytimeTemplateV2(Detector3DTemplate):
 
         self.collect_calib_data = [False] * self.num_res
         self.calib_fnames = [""] * self.num_res
+        m = self.model_cfg.METHOD
         for res_idx in range(self.num_res):
             self.res_idx = res_idx
             self.calibrators[res_idx] = AnytimeCalibrator(self)
             power_mode = os.getenv('PMODE', 'UNKNOWN_POWER_MODE')
-            self.calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_res{res_idx}.json"
+            self.calib_fnames[res_idx] = f"calib_files/{self.model_name}_{power_mode}_m{m}.json"
             try:
                 self.calibrators[res_idx].read_calib_data(self.calib_fnames[res_idx])
             except OSError:

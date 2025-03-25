@@ -56,7 +56,8 @@ DATA_CONFIG:
           VOXEL_SIZE: [0.1, 0.1, 0.2]
 
 MODEL:
-    NAME: PillarNetMURAL
+    NAME: MURAL
+    DETECTOR_TYPE: PillarNet
     NAME_POSTFIX: p0100_4res
     # pillar sizes: 0.100 0.128 0.160 0.200
     RESOLUTION_DIV: [1.0, 1.28, 1.6, 2.0]
