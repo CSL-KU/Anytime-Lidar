@@ -73,7 +73,9 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
     "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
-    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml" )
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+    "./cfgs/nuscenes_models/valo_pillarnet_0100.yaml" )
 
   CKPT_FILES_=( \
     "../models/pillarnet0100_e20.pth"
@@ -87,7 +89,9 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "../models/mural_pillarnet_0100_0128_0200_e20.pth"
     "../models/mural_pillarnet_0100_0128_0200_e20.pth"
     "../models/mural_pillarnet_0100_0128_0200_e20.pth"
-    "../models/mural_pillarnet_0100_0128_0200_e20.pth" )
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+    "../models/pillarnet0100_e20.pth" )
 
   CFG_FILES=( \
     "./cfgs/nuscenes_models/PointPillarsCP0200.yaml"
@@ -101,7 +105,9 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
     "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
     "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
-    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml" )
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    "./cfgs/nuscenes_models/valo_pointpillars_cp_0200.yaml" )
 
   CKPT_FILES=( \
     "../models/PointPillarsCP0200_e20.pth"
@@ -115,7 +121,9 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
     "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
     "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
     "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
-    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth" )
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+    "../models/PointPillarsCP0200_e20.pth" )
 
   for m in ${!CFG_FILES[@]}
   do
