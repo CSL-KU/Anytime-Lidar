@@ -57,11 +57,11 @@ def tile_calculations(coords_x : torch.Tensor, tile_size_voxels: float, tcount :
 
 
 @torch.jit.script
-def get_netc(coords_x : torch.Tensor, tile_size_voxels: float, tcount : int):
-    tile_coords = torch.div(coords_x, tile_size_voxels, rounding_mode='trunc').long()
+def get_netc(coords_x : torch.Tensor, tile_size_points: float, tcount : int):
+    tile_coords = torch.div(coords_x, tile_size_points, rounding_mode='trunc').long()
     netc = torch.zeros(tcount, dtype=torch.bool, device=coords_x.device)
     netc[tile_coords] = True
-    return tile_coords, torch.nonzero(netc).flatten().cpu()
+    return torch.nonzero(netc).flatten().cpu()
 
 @torch.jit.script
 def tile_calculations_all(points_coords : torch.Tensor, tile_size_voxels : float,
@@ -117,8 +117,9 @@ class AnytimeTemplateV2(Detector3DTemplate):
         #self.total_num_tiles = self.tcount
 
         # divide the tiles in X axis only
-        self.tile_size_voxels = torch.tensor(\
-                self.dataset.grid_size[1] / self.tcount).float().item()
+        self.tile_size_voxels = float(self.dataset.grid_size[1] / self.tcount)
+        pc_range = self.dataset.point_cloud_range
+        self.tile_size_points = float((pc_range[3] - pc_range[0]) / self.tcount)
         if self.sched_bb3d:
             self.backbone_3d.tile_size_voxels = self.tile_size_voxels
 
@@ -192,21 +193,22 @@ class AnytimeTemplateV2(Detector3DTemplate):
                     self.tcount, torch.tensor([d for d in self.dividers]))
 
         pcount_area, vcount_area = None, None
-        torch.cuda.synchronize() # prevents tile calculations failure
         if self.sched_vfe and self.sched_bb3d:
-            points, points_coords = batch_dict['points'], batch_dict['points_coords']
+            batch_dict['points_coords'] = self.vfe.calc_points_coords(batch_dict['points'])
+            torch.cuda.synchronize() # prevents tile calculations failure
             point_tile_coords, netc, pcount_area, vcount_area = tile_calculations_all(
-                    points_coords, cur_tile_size_voxels, self.vfe.scale_xy,
+                    batch_dict['points_coords'], cur_tile_size_voxels, self.vfe.scale_xy,
                     self.vfe.scale_y, self.tcount)
         elif self.sched_bb3d:
             point_tile_coords, netc, vcount_area = tile_calculations(
                     batch_dict['voxel_coords'][:, -1], cur_tile_size_voxels, self.tcount)
         elif self.sched_vfe:
+            points_x_shifted = batch_dict['points'][:, 1] - self.vfe.point_cloud_range[0]
             point_tile_coords, netc, pcount_area = tile_calculations(
-                    batch_dict['points_coords'][:, 0], cur_tile_size_voxels, self.tcount)
+                    points_x_shifted, self.tile_size_points, self.tcount)
         else:
-            point_tile_coords, netc = get_netc(batch_dict['points_coords'][:, 0],
-                                               cur_tile_size_voxels, self.tcount)
+            points_x_shifted = batch_dict['points'][:, 1] - self.vfe.point_cloud_range[0]
+            netc = get_netc(points_x_shifted, self.tile_size_points, self.tcount)
 
         netc = np.sort(netc.numpy())
         if pcount_area is not None:
@@ -280,19 +282,26 @@ class AnytimeTemplateV2(Detector3DTemplate):
             chosen_tile_coords = tiles_queue[:tiles_idx]
 
             # Filter the points, let the voxel be generated from filtered points
-            tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
-                    torch.from_numpy(chosen_tile_coords).cuda())
-            if self.sched_vfe:
-                batch_dict['points'] = batch_dict['points'][tile_filter]
-            elif self.sched_bb3d:
-                batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
-                batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
+            if self.sched_vfe or self.sched_bb3d:
+                # don't deal with filtering if it will be cropped anyway
+                tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
+                        torch.from_numpy(chosen_tile_coords).cuda())
+                if self.sched_vfe:
+                    batch_dict['points'] = batch_dict['points'][tile_filter]
+                    del batch_dict['points_coords']
+                else:
+                    batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
+                    batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
+                    if 'pillar_coords' in batch_dict:
+                        batch_dict['pillar_coords'] = batch_dict['voxel_coords']
+                        batch_dict['pillar_features'] = batch_dict['voxel_features']
 
         self.last_tile_coord = chosen_tile_coords[-1].item()
 
         tidx = -1 if choose_all else tiles_idx-1
         if self.sched_vfe:
             predicted_vfe_time  = float(vfe_times[tidx])
+            self.add_dict['vfe_preds'].append(predicted_vfe_time)
             calibrator.last_pred[1] = predicted_vfe_time
 
         if self.sched_bb3d:
@@ -300,10 +309,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
             predicted_bb3d_time_layerwise = bb3d_times_layerwise[tidx]
             predicted_voxels = num_voxel_preds[tidx].astype(int).flatten()
             calibrator.last_pred[2] = predicted_bb3d_time
-
-        if self.sched_vfe:
-            self.add_dict['vfe_preds'].append(predicted_vfe_time)
-        if self.sched_bb3d:
             self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
             self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise.tolist())
             self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
@@ -429,6 +434,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.clear_stats()
             self.clear_add_dict()
             self.calibration_off()
+        if any(self.collect_calib_data):
+            sys.exit()
 
         return None
 

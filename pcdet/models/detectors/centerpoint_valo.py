@@ -119,7 +119,6 @@ class CenterPointVALO(AnytimeTemplateV2):
             # VFE doesn't take much of a time (5 ms), do not schedule its input
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
                                 self.filter_pc_range)
-            batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
             if self.sched_vfe:
                 self.measure_time_start('Sched1')
                 batch_dict = self.schedule1(batch_dict)
@@ -131,7 +130,8 @@ class CenterPointVALO(AnytimeTemplateV2):
 
             self.measure_time_start('VFE')
             points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            points_coords = batch_dict.get('points_coords', None)
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points, points_coords)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             self.measure_time_end('VFE')
 

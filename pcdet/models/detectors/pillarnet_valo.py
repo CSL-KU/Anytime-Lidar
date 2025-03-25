@@ -112,7 +112,6 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.filter_pc_range =  self.vfe.point_cloud_range + \
                 torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
 
-
     def forward(self, batch_dict):
         if self.training:
             assert False
@@ -124,7 +123,6 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
                                 self.filter_pc_range)
 
-            batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
             if self.sched_vfe:
                 self.measure_time_start('Sched1')
                 batch_dict = self.schedule1(batch_dict)
@@ -136,7 +134,8 @@ class PillarNetVALO(AnytimeTemplateV2):
 
             self.measure_time_start('VFE')
             points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            points_coords = batch_dict.get('points_coords', None)
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points, points_coords)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
             self.measure_time_end('VFE')
