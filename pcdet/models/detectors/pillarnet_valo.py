@@ -125,9 +125,14 @@ class PillarNetVALO(AnytimeTemplateV2):
                                 self.filter_pc_range)
 
             batch_dict = self.vfe.calc_points_coords(batch_dict) # needed for scheduling
-            self.measure_time_start('Sched1')
-            batch_dict = self.schedule1(batch_dict)
-            self.measure_time_end('Sched1')
+            if self.sched_vfe:
+                self.measure_time_start('Sched1')
+                batch_dict = self.schedule1(batch_dict)
+                self.measure_time_end('Sched1')
+
+            if self.is_calibrating():
+                e1 = torch.cuda.Event(enable_timing=True)
+                e1.record()
 
             self.measure_time_start('VFE')
             points = batch_dict['points']
@@ -135,6 +140,16 @@ class PillarNetVALO(AnytimeTemplateV2):
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
             self.measure_time_end('VFE')
+
+            if self.is_calibrating():
+                e2 = torch.cuda.Event(enable_timing=True)
+                e2.record()
+                batch_dict['vfe_layer_time_events'] = [e1, e2]
+
+            if not self.sched_vfe:
+                self.measure_time_start('Sched1')
+                batch_dict = self.schedule1(batch_dict)
+                self.measure_time_end('Sched1')
 
             if batch_dict['pillar_coords'].size(0) == 1:
                 # Can't infer anything out of this, use random data to prevent instancenorm error

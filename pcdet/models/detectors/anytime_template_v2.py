@@ -101,6 +101,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
             ('DynPillarVFE' == self.model_cfg.VFE.NAME or \
             'DynamicPillarVFESimple2D' == self.model_cfg.VFE.NAME)
         self.sched_bb3d = ('BACKBONE_3D' in self.model_cfg)
+        print('sched vfe:', self.sched_vfe)
+        print('sched bb3d:', self.sched_bb3d)
 
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT
