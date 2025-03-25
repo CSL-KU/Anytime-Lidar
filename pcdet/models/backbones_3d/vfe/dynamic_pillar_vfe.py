@@ -178,7 +178,7 @@ class DynamicPillarVFE(VFETemplate):
 
         return features
 
-    def forward(self, points : torch.Tensor, points_coords : Optional[torch.Tensor]) -> \
+    def forward(self, points : torch.Tensor, points_coords : Optional[torch.Tensor] = None) -> \
             Tuple[torch.Tensor, torch.Tensor]:
         voxel_coords, features, unq_inv, num_out_inds = self.forward_gen_pillars(points, points_coords)
         features = self.forward_nn(features, unq_inv, num_out_inds)
@@ -314,7 +314,7 @@ class DynamicPillarVFESimple2D(VFETemplate):
 
         return features
 
-    def forward(self, points : torch.Tensor, points_coords : Optional[torch.Tensor]) \
+    def forward(self, points : torch.Tensor, points_coords : Optional[torch.Tensor] = None) \
             -> Tuple[torch.Tensor, torch.Tensor]:
         pillar_coords, features, unq_inv, num_out_inds = self.forward_gen_pillars(points, points_coords)
         features = self.forward_nn(features, unq_inv, num_out_inds)
