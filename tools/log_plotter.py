@@ -23,23 +23,34 @@ method_colors= [
     'tab:orange',
     'tab:red',
     'tab:blue',
-    'tab:purple', 
+    'tab:orange', 
     'tab:blue', 
 ]
 
+#model_str = 'Pillarnet'
+model_str = 'PointpillarsCP'
+
+if model_str == 'Pillarnet':
+    PSZ = ("0.100", "0.128", "0.200")
+else:
+    PSZ = ("0.200", "0.256", "0.400")
+
+
 method_num_to_str = [
-        '00Pillarnet0100',
-        '01Pillarnet0128',
-        '03Pillarnet0200',
+        f'00{model_str}({PSZ[0]})',
+        f'01{model_str}({PSZ[1]})',
+        f'02{model_str}({PSZ[2]})',
         '',
         '',
-        '05VALO-0100',
+        f'05VALO++({PSZ[0]})',
         '06DS-DCO-RI-FRC',
         '07DS-DCO-RI',
         '08DS-RI',
         '09DS',
         '10WS',
         '11WS-DCO-RI-FRC',
+        '12DS-DCO',
+        f'13VALO({PSZ[0]})',
 ]
 
 method_remap = {i:i for i in range(len(method_num_to_str))}
@@ -78,10 +89,11 @@ if __name__ == '__main__':
     plot_sets=[]
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'Pillarnet0100',
-        'Pillarnet0128',
-        'Pillarnet0200',
-        'VALO-0100',
+        f'{model_str}({PSZ[0]})',
+        f'{model_str}({PSZ[1]})',
+        f'{model_str}({PSZ[2]})',
+        f'VALO({PSZ[0]})',
+        f'VALO++({PSZ[0]})',
         'DS-DCO-RI-FRC',
     ]})
 
@@ -90,6 +102,7 @@ if __name__ == '__main__':
         'DS-DCO-RI',
         'DS-RI',
         'DS',
+        'WS',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
@@ -99,8 +112,8 @@ if __name__ == '__main__':
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]
-    out_path="/home/humble/shared/exp_plots/set" + sys.argv[2]
-    for p in ["/home/humble/shared/exp_plots", out_path]:
+    out_path=f"exp_plots_{model_str}/set" + sys.argv[2]
+    for p in [f"exp_plots_{model_str}", out_path]:
         try:
             os.mkdir(p)
         except FileExistsError:
