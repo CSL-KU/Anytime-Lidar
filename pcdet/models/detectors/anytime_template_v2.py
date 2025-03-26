@@ -288,7 +288,8 @@ class AnytimeTemplateV2(Detector3DTemplate):
                         torch.from_numpy(chosen_tile_coords).cuda())
                 if self.sched_vfe:
                     batch_dict['points'] = batch_dict['points'][tile_filter]
-                    del batch_dict['points_coords']
+                    if 'points_coords' in batch_dict:
+                        del batch_dict['points_coords']
                 else:
                     batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
                     batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
