@@ -54,6 +54,7 @@ class PillarNetOpt(Detector3DTemplate):
         self.dense_convs_trt = None
         self.filter_pc_range =  self.vfe.point_cloud_range + \
                 torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+        self.traced_vfe = None
 
 
     def forward(self, batch_dict):
@@ -84,7 +85,9 @@ class PillarNetOpt(Detector3DTemplate):
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
                                 self.filter_pc_range)
             points = batch_dict['points']
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points)
+            if self.traced_vfe is None:
+                self.traced_vfe = torch.jit.trace(self.vfe, points)
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.traced_vfe(points)
             batch_dict['pillar_features'] = batch_dict['voxel_features']
             batch_dict['pillar_coords'] = batch_dict['voxel_coords']
             self.measure_time_end('VFE')

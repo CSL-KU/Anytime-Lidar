@@ -111,6 +111,7 @@ class PillarNetVALO(AnytimeTemplateV2):
         self.dense_head_scrpt = None
         self.filter_pc_range =  self.vfe.point_cloud_range + \
                 torch.tensor([0.01, 0.01, 0.01, -0.01, -0.01, -0.01]).cuda()
+        self.traced_vfe = None
 
     def forward(self, batch_dict):
         if self.training:
@@ -135,9 +136,17 @@ class PillarNetVALO(AnytimeTemplateV2):
             self.measure_time_start('VFE')
             points = batch_dict['points']
             points_coords = batch_dict.get('points_coords', None)
-            batch_dict['voxel_coords'], batch_dict['voxel_features'] = self.vfe(points, points_coords)
-            batch_dict['pillar_features'] = batch_dict['voxel_features']
-            batch_dict['pillar_coords'] = batch_dict['voxel_coords']
+            if self.traced_vfe is None:
+                if points_coords is None:
+                    self.traced_vfe = torch.jit.trace(self.vfe, points)
+                else:
+                    self.traced_vfe = torch.jit.trace(self.vfe, (points, points_coords))
+            if points_coords is None:
+                vc, vf = self.traced_vfe(points)
+            else:
+                vc, vf = self.traced_vfe(points, points_coords)
+            batch_dict['voxel_coords'], batch_dict['voxel_features'] = vc, vf
+            batch_dict['pillar_coords'], batch_dict['pillar_features'] = vc, vf
             self.measure_time_end('VFE')
 
             if self.is_calibrating():

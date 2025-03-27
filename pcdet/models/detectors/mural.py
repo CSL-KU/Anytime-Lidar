@@ -24,9 +24,9 @@ class MURAL(Detector3DTemplate):
     def method_num_to_str_list(method_num):
         if method_num == 6:
             # dynamic scheduling, dense conv opt, res interpolation, forecasting
-            return ("DS", "DCO", "RI", "FRC")
+            return ("DS", "RI", "DCO", "FRC")
         elif method_num == 7:
-            return ("DS", "DCO", "RI")
+            return ("DS", "RI", "DCO")
         elif method_num == 8:
             return ("DS", "RI")
         elif method_num == 9:
@@ -34,7 +34,7 @@ class MURAL(Detector3DTemplate):
         elif method_num == 10:
             return ("WS",) # wcet scheduling
         elif method_num == 11:
-            return ("WS", "DCO", "RI", "FRC")
+            return ("WS", "RI", "DCO", "FRC")
         elif method_num == 12:
             return ("DS", "DCO")
         else:
@@ -135,6 +135,7 @@ class MURAL(Detector3DTemplate):
             'CenterHead-GenBox': [],
         })
 
+
         if self.dettype == 'PillarNet':
             self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list
             self.map_to_bev = None
@@ -201,6 +202,8 @@ class MURAL(Detector3DTemplate):
             self.forecaster = torch.jit.script(Forecaster(pc_range, tcount,
                     self.score_thresh, num_det_heads=self.dense_head.num_det_heads,
                     cls_id_to_det_head_idx_map=self.dense_head.cls_id_to_det_head_idx_map))
+
+        self.traced_vfe = [None] * self.num_res
 
     def forward(self, batch_dict):
         if self.training:
@@ -344,15 +347,19 @@ class MURAL(Detector3DTemplate):
             resdiv = self.resolution_dividers[self.res_idx]
             batch_dict['resolution_divider'] = resdiv
 
-            self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
             set_bn_resolution(self.res_aware_1d_batch_norms, self.res_idx)
             if self.fused_convs_trt[self.res_idx] is None:
                 set_bn_resolution(self.res_aware_2d_batch_norms, self.res_idx)
 
+            if self.traced_vfe[self.res_idx] is None:
+                self.vfe.adjust_voxel_size_wrt_resolution(self.res_idx)
+                self.traced_vfe[self.res_idx] = torch.jit.trace(self.vfe, points)
+
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
             points = batch_dict['points']
-            batch_dict['pillar_coords'], batch_dict['pillar_features'] = self.vfe(points)
+            batch_dict['pillar_coords'], batch_dict['pillar_features'] = \
+                    self.traced_vfe[self.res_idx](points)
 
             if self.map_to_bev is not None:
                 self.measure_time_start('MapToBEV')

@@ -286,16 +286,14 @@ class AnytimeTemplateV2(Detector3DTemplate):
                 # don't deal with filtering if it will be cropped anyway
                 tile_filter = cuda_point_tile_mask.point_tile_mask(point_tile_coords, \
                         torch.from_numpy(chosen_tile_coords).cuda())
-                if self.sched_vfe:
-                    batch_dict['points'] = batch_dict['points'][tile_filter]
-                    if 'points_coords' in batch_dict:
-                        del batch_dict['points_coords']
-                else:
-                    batch_dict['voxel_coords'] = batch_dict['voxel_coords'][tile_filter]
-                    batch_dict['voxel_features'] = batch_dict['voxel_features'][tile_filter]
-                    if 'pillar_coords' in batch_dict:
-                        batch_dict['pillar_coords'] = batch_dict['voxel_coords']
-                        batch_dict['pillar_features'] = batch_dict['voxel_features']
+                filter_list = ['points', 'points_coords'] if self.sched_vfe else \
+                        ['voxel_coords', 'voxel_features']
+                for k in filter_list:
+                    if k in batch_dict:
+                        batch_dict[k] = batch_dict[k][tile_filter]
+                if not self.sched_vfe:
+                    batch_dict['pillar_coords'] = batch_dict['voxel_coords']
+                    batch_dict['pillar_features'] = batch_dict['voxel_features']
 
         self.last_tile_coord = chosen_tile_coords[-1].item()
 

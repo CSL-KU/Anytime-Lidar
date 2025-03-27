@@ -142,8 +142,11 @@ class DynamicPillarVFE(VFETemplate):
                        points_coords[:, 1]
         
         unq_coords, unq_inv = torch.unique(merge_coords, return_inverse=True, dim=0)
+        num_out_inds = torch.max(unq_inv) + 1
+        points_mean = torch.zeros((num_out_inds, points_xyz.size(1)),
+                dtype=points_xyz.dtype, device=points_xyz.device)
 
-        points_mean = torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0)
+        torch_scatter.scatter_mean(points_xyz, unq_inv, dim=0, out=points_mean)
         f_cluster = points_xyz - points_mean[unq_inv, :]
 
         f_center = torch.zeros_like(points_xyz)
@@ -169,7 +172,7 @@ class DynamicPillarVFE(VFETemplate):
                                    unq_coords % self.scale_y,
                                    (unq_coords % self.scale_xy) // self.scale_y), dim=1)
 
-        return voxel_coords, features, unq_inv, torch.max(unq_inv) + 1
+        return voxel_coords, features, unq_inv, num_out_inds
 
     def forward_nn(self, features : torch.Tensor, unq_inv : torch.Tensor, num_out_inds : int) -> torch.Tensor:
 

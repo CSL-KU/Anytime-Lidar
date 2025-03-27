@@ -21,8 +21,20 @@ if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
     #CKPT_FILE="../models/mural_pillarnet_0100_0128_0200_e20.pth"
 
-    CFG_FILE="./cfgs/nuscenes_models/PointPillarsCP0200.yaml"
+    #CFG_FILE="./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+    #CKPT_FILE="../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+
+    #CFG_FILE="./cfgs/nuscenes_models/valo_pillarnet_0100.yaml"
+    #CKPT_FILE="../models/pillarnet0100_e20.pth"
+
+    CFG_FILE="./cfgs/nuscenes_models/valo_pointpillars_cp_0200.yaml"
     CKPT_FILE="../models/PointPillarsCP0200_e20.pth"
+
+    #CFG_FILE="./cfgs/nuscenes_models/pillarnet0100.yaml"
+    #CKPT_FILE="../models/pillarnet0100_e20.pth"
+
+    #CFG_FILE="./cfgs/nuscenes_models/PointPillarsCP0200.yaml"
+    #CKPT_FILE="../models/PointPillarsCP0200_e20.pth"
 fi
 
 #CMD="$PROF_CMD $TASKSET python test.py --cfg_file=$CFG_FILE \
@@ -74,8 +86,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
       "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
       "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
       "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
-      "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
-      "./cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200.yaml"
+      "dummy"
+      "dummy"
       "./cfgs/nuscenes_models/valo_pillarnet_0100.yaml" )
   
     CKPT_FILES=( \
@@ -90,8 +102,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
       "../models/mural_pillarnet_0100_0128_0200_e20.pth"
       "../models/mural_pillarnet_0100_0128_0200_e20.pth"
       "../models/mural_pillarnet_0100_0128_0200_e20.pth"
-      "../models/mural_pillarnet_0100_0128_0200_e20.pth"
-      "../models/mural_pillarnet_0100_0128_0200_e20.pth"
+      "dummy"
+      "dummy"
       "../models/pillarnet0100_e20.pth" )
   fi
 
@@ -108,8 +120,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
       "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
       "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
       "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
-      "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
-      "./cfgs/nuscenes_models/mural_pp_centerpoint_0200_0256_0400.yaml"
+      "dummy"
+      "dummy"
       "./cfgs/nuscenes_models/valo_pointpillars_cp_0200.yaml" )
   
     CKPT_FILES=( \
@@ -124,8 +136,8 @@ elif [ $1 == 'methods' ] || [ $1 == 'methods_dyn' ]; then
       "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
       "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
       "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
-      "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
-      "../models/mural_pp_centerpoint_0200_0256_0400_e20.pth"
+      "dummy"
+      "dummy"
       "../models/PointPillarsCP0200_e20.pth" )
   fi
 
