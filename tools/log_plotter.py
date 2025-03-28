@@ -43,7 +43,7 @@ method_num_to_str = [
         '',
         '',
         f'05VALO++({PSZ[0]})',
-        '06DS-RI-DCO-FRC',
+        '06MURAL',
         '07DS-RI-DCO',
         '08DS-RI',
         '09DS',
@@ -93,12 +93,12 @@ if __name__ == '__main__':
         f'{model_str}({PSZ[1]})',
         f'{model_str}({PSZ[2]})',
         f'VALO({PSZ[0]})',
-        f'VALO++({PSZ[0]})',
-        'DS-RI-DCO-FRC',
+#        f'VALO++({PSZ[0]})',
+        'MURAL',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'DS-RI-DCO-FRC',
+        'MURAL',
         'DS-RI-DCO',
         'DS-RI',
         'DS',
