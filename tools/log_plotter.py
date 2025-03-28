@@ -27,8 +27,8 @@ method_colors= [
     'tab:blue', 
 ]
 
-#model_str = 'Pillarnet'
-model_str = 'PointpillarsCP'
+model_str = 'Pillarnet'
+#model_str = 'PointpillarsCP'
 
 if model_str == 'Pillarnet':
     PSZ = ("0.100", "0.128", "0.200")
@@ -43,8 +43,8 @@ method_num_to_str = [
         '',
         '',
         f'05VALO++({PSZ[0]})',
-        '06DS-DCO-RI-FRC',
-        '07DS-DCO-RI',
+        '06DS-RI-DCO-FRC',
+        '07DS-RI-DCO',
         '08DS-RI',
         '09DS',
         '10WS',
@@ -94,21 +94,21 @@ if __name__ == '__main__':
         f'{model_str}({PSZ[2]})',
         f'VALO({PSZ[0]})',
         f'VALO++({PSZ[0]})',
-        'DS-DCO-RI-FRC',
+        'DS-RI-DCO-FRC',
     ]})
 
     plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'DS-DCO-RI-FRC',
-        'DS-DCO-RI',
+        'DS-RI-DCO-FRC',
+        'DS-RI-DCO',
         'DS-RI',
         'DS',
         'WS',
     ]})
 
-    plot_sets.append({ nm:exps_dict[nm] for nm in [ \
-        'DS-DCO-RI-FRC',
-        'WS-DCO-RI-FRC',
-    ]})
+    #plot_sets.append({ nm:exps_dict[nm] for nm in [ \
+    #    'DS-RI-DCO-FRC',
+    #    'WS-RI-DCO-FRC',
+    #]})
 
     plot_set_choice = int(sys.argv[2])
     exps_dict=plot_sets[plot_set_choice]
