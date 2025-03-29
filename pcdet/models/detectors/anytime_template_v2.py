@@ -93,9 +93,6 @@ class AnytimeTemplateV2(Detector3DTemplate):
         if self.use_baseline_bb3d_predictor:
             print('***** Using baseline time predictor! *****')
 
-        self.enable_tile_drop = (self.model_cfg.METHOD != SchedAlgo.RoundRobin_NoTileDrop) and \
-            not self.use_voxelnext
-
         self.sched_algo = SchedAlgo.RoundRobin
         self.sched_vfe = (self.model_cfg.METHOD != SchedAlgo.RoundRobin_NoVFESched) and \
             ('DynPillarVFE' == self.model_cfg.VFE.NAME or \
@@ -103,6 +100,10 @@ class AnytimeTemplateV2(Detector3DTemplate):
         self.sched_bb3d = ('BACKBONE_3D' in self.model_cfg)
         print('sched vfe:', self.sched_vfe)
         print('sched bb3d:', self.sched_bb3d)
+
+        self.enable_tile_drop =  (self.model_cfg.METHOD != SchedAlgo.RoundRobin_NoTileDrop) and \
+                            (not self.use_voxelnext) and (self.sched_vfe or self.sched_bb3d)
+        print('tile dropping:', self.enable_tile_drop)
 
         if 'BACKBONE_2D' in self.model_cfg:
             self.model_cfg.BACKBONE_2D.TILE_COUNT = self.model_cfg.TILE_COUNT

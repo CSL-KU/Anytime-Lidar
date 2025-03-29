@@ -164,16 +164,6 @@ class CenterPointVALO(AnytimeTemplateV2):
                 e3 = torch.cuda.Event(enable_timing=True)
                 e3.record()
 
-            self.measure_time_start('MapToBEV')
-            if self.sched_bb3d:
-                batch_dict = self.map_to_bev(batch_dict)
-            else:
-                batch_dict['spatial_features'] = self.map_to_bev_scrpt(
-                        batch_dict['pillar_features'],
-                        batch_dict['voxel_coords'],
-                        batch_dict['batch_size'])
-            self.measure_time_end('MapToBEV')
-
             self.measure_time_start('Sched2')
             batch_dict = self.schedule2(batch_dict)
             lbd = self.latest_batch_dict
@@ -192,6 +182,16 @@ class CenterPointVALO(AnytimeTemplateV2):
                         last_pose, last_ts, cur_pose, cur_ts, batch_dict['scene_reset'])
             else:
                 fcdets_fut = None
+
+            self.measure_time_start('MapToBEV')
+            if self.sched_bb3d:
+                batch_dict = self.map_to_bev(batch_dict)
+            else:
+                batch_dict['spatial_features'] = self.map_to_bev_scrpt(
+                        batch_dict['pillar_features'],
+                        batch_dict['pillar_coords'],
+                        batch_dict['batch_size'])
+            self.measure_time_end('MapToBEV')
 
             if not self.optimization1_done:
                 self.optimize1(batch_dict['spatial_features'])
