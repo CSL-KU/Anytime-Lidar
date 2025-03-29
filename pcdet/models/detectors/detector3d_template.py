@@ -253,8 +253,8 @@ def post_forward_hook(module, inp_args, outp_args):
 
     if hasattr(module, 'calibrators'): # valor model
         predicted = module.calibrators[module.res_idx].last_pred
-        err = module.get_tpred_err(predicted)
-        module._eval_dict['time_pred_errs'].append(err.tolist())
+        err = module.get_tpred_err(predicted).tolist()
+        module._eval_dict['time_pred_errs'].append(err)
 
     return pred_dicts, recall_dict
 
@@ -388,8 +388,9 @@ class Detector3DTemplate(nn.Module):
         else:
             err[2] = 0
 
-        dense_ops_ms = float(self._time_dict['DenseOps'][-1])
-        err[3] = predicted_ms_arr[3] - dense_ops_ms
+        dense_ops_ms = self._time_dict['DenseOps'][-1]
+        sched2_ms = self._time_dict.get('Sched2', [0])[-1]
+        err[3] = predicted_ms_arr[3] - dense_ops_ms + sched2_ms
 
         genbox_ms =  self._time_dict['CenterHead-GenBox'][-1]
         postp_ms =  self._time_dict['PostProcess'][-1]

@@ -312,6 +312,11 @@ class AnytimeTemplateV2(Detector3DTemplate):
             self.add_dict['bb3d_preds'].append(predicted_bb3d_time)
             self.add_dict['bb3d_preds_layerwise'].append(predicted_bb3d_time_layerwise.tolist())
             self.add_dict['bb3d_voxel_preds'].append(predicted_voxels.tolist())
+
+        dhp_wcet_ms = calibrator.det_head_post_wcet_ms
+        calibrator.last_pred[3] = batch_dict['post_bb3d_times'][tidx] - dhp_wcet_ms
+        calibrator.last_pred[4] = dhp_wcet_ms
+
         batch_dict['chosen_tile_coords'] = chosen_tile_coords
         self.add_dict['chosen_tiles_1'].append(chosen_tile_coords.tolist())
 
