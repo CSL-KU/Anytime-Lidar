@@ -145,9 +145,9 @@ if __name__ == '__main__':
     #procs.append(Process(target=plot_func_baseline_eted_box, args=(out_path, exps_dict,)))
     #procs[-1].start()
 
-#    for name in ['MURAL', 'MURAL-NF', 'MURAL-NDCO-NF']:
-#        procs.append(Process(target=plot_res_select_stats, args=(out_path, exps_dict, name,)))
-#        procs[-1].start()
+    for name in ['MURAL']: #, 'MURAL-NF', 'MURAL-NDCO-NF']:
+        procs.append(Process(target=plot_res_select_stats, args=(out_path, exps_dict, name,)))
+        procs[-1].start()
 
     procs.append(Process(target=plot_func_dm, args=(out_path, exps_dict,)))
     procs[-1].start()

@@ -693,7 +693,8 @@ def plot_res_select_stats(out_path, exps_dict, method_name):
 
     rsels = np.stack(rsels).T
     width = 0.5
-    labels = [r'$0.10^2$ m', r'$0.128^2$ m', r'$0.16^2$ m', r'$0.20^2$ m']
+    labels = [r'$0.100^2$ m', r'$0.109^2$ m', r'$0.128^2$ m',
+              r'$0.151^2$ m', r'$0.200^2$ m', r'$0.263^2$ m']
     bottom = np.zeros(rsels.shape[1])
     for i in range(len(rsels)):
         ax.bar(np.arange(len(deadlines)), rsels[i], width, label=labels[i], bottom=bottom,
