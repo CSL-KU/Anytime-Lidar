@@ -214,8 +214,9 @@ class MURAL(Detector3DTemplate):
     def forward_eval(self, batch_dict):
         if self.interpolate_batch_norms and not self.batch_norm_interpolated:
             interpolate_batch_norms(self.res_aware_1d_batch_norms, self.max_grid_l)
-            interpolate_batch_norms(self.res_aware_2d_batch_norms, self.max_grid_l)
+            interpolate_batch_norms(self.res_aware_2d_batch_norms, self.max_grid_l) #, True)
             self.batch_norm_interpolated = True
+            print('Model size is:', self.get_model_size_MB(), 'MB')
 
         scene_reset = batch_dict['scene_reset']
 
@@ -304,19 +305,23 @@ class MURAL(Detector3DTemplate):
                         ev = self.sampled_egovels[self.dataset_indexes[0]] # current one
 
                         boxes = pd['pred_boxes'].numpy()
-                        obj_velos = boxes[:, 7:9]
-                        velmask = np.isnan(obj_velos).any(1)
-                        obj_velos[velmask] = 0.
-                        rel_velos = obj_velos - ev
-                        #obj_velos = np.linalg.norm(obj_velos, axis=1)
-                        rel_velos = np.linalg.norm(rel_velos, axis=1)
-                        relvel_mean = np.mean(rel_velos)
-                        relvel_perc5, relvel_perc95 = np.percentile(rel_velos, (5, 95))
+                        if len(boxes) > 0:
+                            obj_velos = boxes[:, 7:9]
+                            velmask = np.isnan(obj_velos).any(1)
+                            obj_velos[velmask] = 0.
+                            rel_velos = obj_velos - ev
+                            #obj_velos = np.linalg.norm(obj_velos, axis=1)
+                            rel_velos = np.linalg.norm(rel_velos, axis=1)
+                            relvel_mean = np.mean(rel_velos)
+                            relvel_perc5, relvel_perc95 = np.percentile(rel_velos, (5, 95))
 
-                        objpos = boxes[:, :2]
-                        objpos = np.linalg.norm(objpos, axis=1)
-                        objpos_mean = np.mean(objpos)
-                        objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
+                            objpos = boxes[:, :2]
+                            objpos = np.linalg.norm(objpos, axis=1)
+                            objpos_mean = np.mean(objpos)
+                            objpos_perc5, objpos_perc95 = np.percentile(objpos, (5, 95))
+                        else:
+                            objpos_perc5, objpos_mean, objpos_perc95 = 0., 0., 0.
+                            relvel_perc5, relvel_mean, relvel_perc95 = 0., 0., 0.
 
                         #Override x_minmax
                         pred_exec_times, self.x_minmax = self.pred_all_res_times(points)
