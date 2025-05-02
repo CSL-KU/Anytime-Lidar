@@ -95,6 +95,7 @@ class PillarNetOpt(Detector3DTemplate):
         with torch.cuda.stream(self.inf_stream):
             self.measure_time_start('Sched')
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
+                                self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)
             self.measure_time_end('Sched')
             self.measure_time_start('VFE')
