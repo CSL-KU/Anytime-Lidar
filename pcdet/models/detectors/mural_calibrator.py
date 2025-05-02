@@ -82,6 +82,7 @@ class MURALCalibrator():
         self.e2e_times_ms_arr = np.zeros(512)
 
         self.data_sched_thr = float(os.environ.get('DATA_SCHED_THR', 0.7))
+        self.repeat_points = 0
 
     def get_e2e_wcet_ms(self):
         return self.e2e_wcet_ms
@@ -315,6 +316,8 @@ class MURALCalibrator():
                 elapsed_sec = round(time.time() - time_begin, 2)
                 print(f'Processing samples {sample_idx-10}-{sample_idx} took {elapsed_sec} seconds.')
                 time_begin = time.time()
+
+            self.repeat_points = sample_idx % 4
 
             # Enforce different point clound ranges to hit different input sizes
             squeeze_amount_meters = sample_idx % int(pc_xwidth*0.5)

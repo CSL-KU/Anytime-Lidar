@@ -226,6 +226,9 @@ class MURAL(Detector3DTemplate):
         with torch.cuda.stream(self.inf_stream):
             # The time before this is measured as preprocess
             self.measure_time_start('Sched')
+            if self.is_calibrating() and self.calibrators[self.res_idx].repeat_points > 1:
+                pts = batch_dict['points']
+                batch_dict['points'] = pts.repeat(self.calibrators[self.res_idx].repeat_points, 1)
             points = common_utils.pc_range_filter(batch_dict['points'],
                                 self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)

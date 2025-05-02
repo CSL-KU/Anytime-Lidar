@@ -94,6 +94,9 @@ class PillarNetOpt(Detector3DTemplate):
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
             self.measure_time_start('Sched')
+            if self.is_calibrating() and self.calibrators[self.res_idx].repeat_points > 1:
+                pts = batch_dict['points']
+                batch_dict['points'] = pts.repeat(self.calibrators[self.res_idx].repeat_points, 1)
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
                                 self.calib_pc_range if self.is_calibrating() else
                                 self.filter_pc_range)
