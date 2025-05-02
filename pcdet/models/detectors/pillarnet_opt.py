@@ -40,6 +40,7 @@ class PillarNetOpt(Detector3DTemplate):
         self.module_list = self.build_networks()
 
         self.update_time_dict({
+            'Sched': [],
             'VFE' : [],
             'Backbone3D': [],
             'DenseOps':[],
@@ -92,9 +93,11 @@ class PillarNetOpt(Detector3DTemplate):
 
     def forward_eval(self, batch_dict):
         with torch.cuda.stream(self.inf_stream):
-            self.measure_time_start('VFE')
+            self.measure_time_start('Sched')
             batch_dict['points'] = common_utils.pc_range_filter(batch_dict['points'],
                                 self.filter_pc_range)
+            self.measure_time_end('Sched')
+            self.measure_time_start('VFE')
             points = batch_dict['points']
             if self.traced_vfe is None:
                 self.traced_vfe = torch.jit.trace(self.vfe, points)
