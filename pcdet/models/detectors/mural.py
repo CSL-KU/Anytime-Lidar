@@ -282,12 +282,19 @@ class MURAL(Detector3DTemplate):
                                     if self.backbone_3d is not None else None
                             pred_latency = self.calibrators[i].pred_exec_time_ms(num_points,
                                     pillar_counts,
-                                    (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item())
-                            time_left = (abs_dl_sec - time.time()) * 1000
-                            if pred_latency < time_left:
-                                pred_res_idx = i
-                                conf_found = True
-                                break
+                                    (self.x_minmax[i, 1] - self.x_minmax[i, 0] + 1).item(),
+                                    consider_prep_time=self.simulate_exec_time)
+                            if self.simulate_exec_time:
+                                if pred_latency < batch_dict['deadline_sec'] * 1000:
+                                    pred_res_idx = i
+                                    conf_found = True
+                                    break
+                            else:
+                                time_left = (abs_dl_sec - time.time()) * 1000
+                                if pred_latency < time_left:
+                                    pred_res_idx = i
+                                    conf_found = True
+                                    break
 
                 if not conf_found:
                     pred_res_idx = self.num_res - 1
