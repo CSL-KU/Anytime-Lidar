@@ -199,7 +199,7 @@ class MURALCalibrator():
         self.calib_data_dict = json.load(f)
         f.close()
 
-        self.preprocess_wcet_ms = np.percentile(self.calib_data_dict['preprocess_times_ms'], 99.)
+        self.preprocess_wcet_ms = np.percentile(self.calib_data_dict['preprocess_times_ms'], 50.)
 
         # Fit the linear model for bb3
         num_voxels, bb3d_times, num_points, vfe_times = self.get_calib_data_arranged()
@@ -267,7 +267,7 @@ class MURALCalibrator():
             latency99perc = np.percentile(latency, 99)
             self.dense_ops_times_ms[int(sz)//self.dense_inp_slice_sz - 1] = latency99perc
 
-        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 99)
+        self.postprocess_wcet_ms = np.percentile(self.calib_data_dict['postprocess_times_ms'], 50)
         if False:
             print('preprocess_wcet_ms', self.preprocess_wcet_ms)
             print('dense_ops_times_ms')
