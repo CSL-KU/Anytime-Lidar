@@ -102,18 +102,22 @@ private:
     bool verifyOutput(samplesCommon::BufferManager const& buffers);
 };
 
-class SliceAndBatchPluginCreator : public nvinfer1::IPluginCreatorV3One
+class SliceAndBatchPluginCreator : public nvinfer1::IPluginCreator
 {
 public:
     SliceAndBatchPluginCreator();
 
-    char const* getPluginName() const noexcept override;
+    AsciiChar const* getPluginName() const noexcept override;
 
-    char const* getPluginVersion() const noexcept override;
+    AsciiChar const* getPluginVersion() const noexcept override;
 
     PluginFieldCollection const* getFieldNames() noexcept override;
 
-    IPluginV3* createPlugin(char const* name, PluginFieldCollection const* fc, TensorRTPhase phase) noexcept override;
+    IPluginV2* createPlugin(AsciiChar const* name, PluginFieldCollection const* fc) noexcept override;
+
+    IPluginV2* deserializePlugin(AsciiChar const* name, void const* serialData, size_t serialLength) noexcept override;
+
+    void setPluginNamespace(AsciiChar const* pluginNamespace) noexcept override;
 
     char const* getPluginNamespace() const noexcept override;
 
@@ -121,4 +125,5 @@ public:
 private:
     nvinfer1::PluginFieldCollection mFC;
     std::vector<nvinfer1::PluginField> mPluginAttributes;
+    char mNamespace[64];
 };

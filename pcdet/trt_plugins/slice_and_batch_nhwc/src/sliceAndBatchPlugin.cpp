@@ -34,13 +34,14 @@
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <string>
 
 using namespace nvinfer1;
 using samplesCommon::SampleUniquePtr;
 
 //using half = __half;
 
-class SliceAndBatchPlugin : public IPluginV3, public IPluginV3OneCore, public IPluginV3OneBuild, public IPluginV3OneRuntime
+class SliceAndBatchPlugin : public IPluginV2DynamicExt
 {
 public:
     SliceAndBatchPlugin(SliceAndBatchPlugin const& p) = default;
@@ -49,6 +50,12 @@ public:
         : mSliceSize(sliceSize)
     {
         initFieldsToSerialize();
+        mNamespace[0] = '\0';
+    }
+
+    ~SliceAndBatchPlugin()
+    {
+        terminate();
     }
 
     void initFieldsToSerialize()
@@ -59,50 +66,37 @@ public:
         mFCToSerialize.fields = mDataToSerialize.data();
     }
 
-    // IPluginV3 methods
-    IPluginCapability* getCapabilityInterface(PluginCapabilityType type) noexcept override
-    {
-        try
-        {
-            if (type == PluginCapabilityType::kBUILD)
-            {
-                return static_cast<IPluginV3OneBuild*>(this);
-            }
-            if (type == PluginCapabilityType::kRUNTIME)
-            {
-                return static_cast<IPluginV3OneRuntime*>(this);
-            }
-            ASSERT(type == PluginCapabilityType::kCORE);
-            return static_cast<IPluginV3OneCore*>(this);
-        }
-        catch (std::exception const& e)
-        {
-            sample::gLogError << e.what() << std::endl;
-        }
-        return nullptr;
-    }
-
-    IPluginV3* clone() noexcept override
+    IPluginV2DynamicExt* clone() const noexcept override
     {
         auto clone = std::make_unique<SliceAndBatchPlugin>(*this);
         clone->initFieldsToSerialize();
         return clone.release();
     }
 
-    // IPluginV3OneCore methods
-    char const* getPluginName() const noexcept override
+    nvinfer1::DataType getOutputDataType(
+            int32_t index, nvinfer1::DataType const* inputTypes, int32_t nbInputs) const noexcept override
+    {
+        return DataType::kFLOAT;
+    }
+
+    AsciiChar const* getPluginType() const noexcept override
     {
         return "slice_and_batch_nhwc";
     }
 
-    char const* getPluginVersion() const noexcept override
+    AsciiChar const* getPluginVersion() const noexcept override
     {
         return "1";
     }
 
+    void setPluginNamespace(char const* libNamespace) noexcept override
+    {
+        std::strncpy(mNamespace, libNamespace, 32);
+    }
+
     char const* getPluginNamespace() const noexcept override
     {
-        return "";
+        return mNamespace;
     }
 
     // IPluginV3OneBuild methods
@@ -111,57 +105,71 @@ public:
         return 1;
     }
 
-    int32_t configurePlugin(DynamicPluginTensorDesc const* in, int32_t nbInputs, DynamicPluginTensorDesc const* out,
+    void configurePlugin(DynamicPluginTensorDesc const* in, int32_t nbInputs, DynamicPluginTensorDesc const* out,
         int32_t nbOutputs) noexcept override
+    {
+        return;
+    }
+
+    void configureWithFormat(Dims const* inputDims, int32_t nbInputs, Dims const* outputDims, int32_t nbOutputs,
+            DataType type, PluginFormat format, int32_t maxBatchSize) noexcept override
+    {
+        //pass
+    }
+
+    int32_t initialize() noexcept override
     {
         return 0;
     }
 
+    void terminate() noexcept override
+    {
+
+    }
+
+    void destroy() noexcept override
+    {
+        delete this;
+    }
+
     bool supportsFormatCombination(
-        int32_t pos, DynamicPluginTensorDesc const* inOut, int32_t nbInputs, int32_t nbOutputs) noexcept override
+        int pos, const PluginTensorDesc* inOut, int nbInputs, int nbOutputs) noexcept override
     {
         // NOTE accessing other than pos index caused error
         bool typeOk{false};
         if (pos == IOpos::IN_INP || pos == IOpos::OUT_SLICES)
         {
-            typeOk = (inOut[pos].desc.type == DataType::kFLOAT);
+            typeOk = (inOut[pos].type == DataType::kFLOAT);
         }
         else if(pos == IOpos::IN_INDS)
         {
-            typeOk = inOut[pos].desc.type == DataType::kINT32;
+            typeOk = inOut[pos].type == DataType::kINT32;
         }
 
-        typeOk = typeOk && (inOut[pos].desc.format == PluginFormat::kLINEAR);
+        typeOk = typeOk && (inOut[pos].format == PluginFormat::kLINEAR);
         return typeOk;
     }
 
-    int32_t getOutputDataTypes(
-        DataType* outputTypes, int32_t nbOutputs, DataType const* inputTypes, int32_t nbInputs) const noexcept override
-    {
-        outputTypes[0] = inputTypes[IOpos::IN_INP];
-        return 0;
-    }
-
-    int32_t getOutputShapes(DimsExprs const* inputs, int32_t nbInputs, DimsExprs const* shapeInputs,
-        int32_t nbShapeInputs, DimsExprs* outputs, int32_t nbOutputs, IExprBuilder& exprBuilder) noexcept override
+    DimsExprs getOutputDimensions(int outputIndex,
+        const DimsExprs* inputs, int nbInputs,
+        IExprBuilder& exprBuilder)  noexcept override
     {
         if (inputs[IOpos::IN_INP].nbDims != 4 || inputs[IOpos::IN_INDS].nbDims != 2)
         {
             sample::gLogError << "Input dims are wrong!" << std::endl;
-            return -1;
+//            return -1;
         }
 
-//        auto upperBound = exprBuilder.operation(DimensionOperation::kPROD, *inputs[0].d[0], *inputs[0].d[1]);
-//        auto optValue = exprBuilder.operation(DimensionOperation::kFLOOR_DIV, *upperBound, *exprBuilder.constant(2));
-//        auto numNonZeroSizeTensor = exprBuilder.declareSizeTensor(1, *optValue, *upperBound);
+        DimsExprs output; //(inputs[0]);
 
-        outputs[0].nbDims = 4;
-        outputs[0].d[0] = inputs[IOpos::IN_INDS].d[0];
-        outputs[0].d[1] = inputs[IOpos::IN_INP].d[3];
-        outputs[0].d[2] = exprBuilder.constant(mSliceSize);
-        outputs[0].d[3] = exprBuilder.constant(mSliceSize);
+        output.nbDims = 4;
+        output.d[0] = inputs[IOpos::IN_INDS].d[0];
+        output.d[1] = inputs[IOpos::IN_INP].d[3];
+        output.d[2] = exprBuilder.constant(mSliceSize);
+        output.d[3] = exprBuilder.constant(mSliceSize);
 
-        return 0;
+        return output;
+
     }
 
     // IPluginV3OneRuntime methods
@@ -187,32 +195,33 @@ public:
         return 0;
     }
 
-    int32_t onShapeChange(
-        PluginTensorDesc const* in, int32_t nbInputs, PluginTensorDesc const* out, int32_t nbOutputs) noexcept override
-    {
-        return 0;
-    }
-
-    IPluginV3* attachToContext(IPluginResourceContext* context) noexcept override
-    {
-        return clone();
-    }
-
-    PluginFieldCollection const* getFieldsToSerialize() noexcept override
+    PluginFieldCollection const* getFieldsToSerialize() noexcept
     {
         return &mFCToSerialize;
     }
 
-    size_t getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
-        DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept override
+    size_t getSerializationSize() const noexcept override
     {
-        //inputs[1].max.d[0]; I might want to use this later
-//        return 65536 * sizeof(int32_t); // considering a maximum of 60000 voxels
+        return sizeof(int); // mSliceSize
+    }
+
+    void serialize(void* buffer) const noexcept override
+    {
+        *(int*)buffer = mSliceSize;
+    }
+
+
+    size_t getWorkspaceSize(PluginTensorDesc const* inputs, int32_t nbInputs, PluginTensorDesc const* outputs,
+            int32_t nbOutputs) const noexcept override
+    {
         return 0;
     }
 
+
+
 private:
     int mSliceSize{5};
+    char mNamespace[64];
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize;
 };
@@ -224,14 +233,15 @@ SliceAndBatchPluginCreator::SliceAndBatchPluginCreator()
     mPluginAttributes.emplace_back(PluginField("slice_size", nullptr, PluginFieldType::kINT32, 5));
     mFC.nbFields = mPluginAttributes.size();
     mFC.fields = mPluginAttributes.data();
+    mNamespace[0] = '\0';
 }
 
-char const* SliceAndBatchPluginCreator::getPluginName() const noexcept
+AsciiChar const* SliceAndBatchPluginCreator::getPluginName() const noexcept
 {
     return "slice_and_batch_nhwc";
 }
 
-char const* SliceAndBatchPluginCreator::getPluginVersion() const noexcept
+AsciiChar const* SliceAndBatchPluginCreator::getPluginVersion() const noexcept
 {
     return "1";
 }
@@ -241,7 +251,7 @@ PluginFieldCollection const* SliceAndBatchPluginCreator::getFieldNames() noexcep
     return &mFC;
 }
 
-IPluginV3* SliceAndBatchPluginCreator::createPlugin(char const* name, PluginFieldCollection const* fc, TensorRTPhase phase) noexcept
+IPluginV2* SliceAndBatchPluginCreator::createPlugin(AsciiChar const* name, PluginFieldCollection const* fc) noexcept
 {
     try
     {
@@ -263,11 +273,24 @@ IPluginV3* SliceAndBatchPluginCreator::createPlugin(char const* name, PluginFiel
     return nullptr;
 }
 
-char const* SliceAndBatchPluginCreator::getPluginNamespace() const noexcept
+IPluginV2* SliceAndBatchPluginCreator::deserializePlugin(AsciiChar const* name, void const* serialData, size_t serialLength) noexcept
 {
-    return "";
+    int slice_size = *(int*)serialData;
+    SliceAndBatchPlugin* plugin = new SliceAndBatchPlugin(slice_size);
+    plugin->setPluginNamespace(mNamespace);
+
+    return plugin;
 }
 
+char const* SliceAndBatchPluginCreator::getPluginNamespace() const noexcept
+{
+    return mNamespace;
+}
+
+void SliceAndBatchPluginCreator::setPluginNamespace(AsciiChar const* pluginNamespace) noexcept
+{
+    std::strncpy(mNamespace, pluginNamespace, 32);
+}
 
 SampleSliceAndBatchPlugin::SampleSliceAndBatchPlugin(SliceAndBatchParams const& params)
     : mParams(params)
@@ -286,7 +309,9 @@ bool SampleSliceAndBatchPlugin::build()
         sample::gLogError << "Builder failed." << std::endl;
     }
 
-    auto network = SampleUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
+    auto network = SampleUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(
+            1U << static_cast<uint32_t>(
+            NetworkDefinitionCreationFlag::kEXPLICIT_BATCH)));
     if (!network)
     {
         sample::gLogError << "Network creation failed." << std::endl;
@@ -378,21 +403,24 @@ bool SampleSliceAndBatchPlugin::constructNetwork(SampleUniquePtr<nvinfer1::IBuil
     std::vector<PluginField> const vecPF{{"slice_size", &mParams.slice_size, PluginFieldType::kINT32, 5}};
     PluginFieldCollection pfc{static_cast<int32_t>(vecPF.size()), vecPF.data()};
 
-    auto pluginCreator = static_cast<IPluginCreatorV3One*>(getPluginRegistry()->getCreator("slice_and_batch_nhwc", "1", ""));
-    auto plugin = std::unique_ptr<IPluginV3>(pluginCreator->createPlugin("slice_and_batch_nhwc", &pfc, TensorRTPhase::kBUILD));
+    auto creator = getPluginRegistry()->getPluginCreator("slice_and_batch_nhwc", "1");
+    IPluginV2 *pluginObj = creator->createPlugin("slice_and_batch_nhwc", &pfc);
 
     sample::gLogInfo << "Plugin got created" << std::endl;
 
     std::vector<ITensor*> inputsVec{inp, inds};
-    auto pluginSliceAndBatchLayer = network->addPluginV3(inputsVec.data(), inputsVec.size(), nullptr, 0, *plugin);
-    ASSERT(pluginSliceAndBatchLayer != nullptr);
-    ASSERT(pluginSliceAndBatchLayer->getInput(0) != nullptr);
-    ASSERT(pluginSliceAndBatchLayer->getInput(1) != nullptr);
-    ASSERT(pluginSliceAndBatchLayer->getOutput(0) != nullptr);
+    auto layer = network->addPluginV2(inputsVec.data(), 2, *pluginObj);
+    ASSERT(layer != nullptr);
+    ASSERT(layer->getInput(0) != nullptr);
+    ASSERT(layer->getInput(1) != nullptr);
+    ASSERT(layer->getOutput(0) != nullptr);
 
-    pluginSliceAndBatchLayer->getOutput(0)->setName("slices");
+    layer->getOutput(0)->setName("slices");
 
-    network->markOutput(*(pluginSliceAndBatchLayer->getOutput(0)));
+    network->markOutput(*(layer->getOutput(0)));
+
+    // Destroy the plugin object
+    pluginObj->destroy();
 
     sample::gLogInfo << "Plugin added to network" << std::endl;
 
@@ -419,7 +447,7 @@ bool SampleSliceAndBatchPlugin::infer()
 
 
     // Create RAII buffer manager object
-    samplesCommon::BufferManager buffers(mEngine, ioVolumes);
+    samplesCommon::BufferManager buffers(mEngine);
 
     auto context = SampleUniquePtr<nvinfer1::IExecutionContext>(mEngine->createExecutionContext());
     if (!context)

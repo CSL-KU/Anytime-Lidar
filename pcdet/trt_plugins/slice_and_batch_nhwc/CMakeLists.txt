@@ -1,12 +1,10 @@
 cmake_minimum_required(VERSION 3.8 FATAL_ERROR)
 project(slice_and_batch_trt_plugin LANGUAGES CXX CUDA)
-#set(TRT_ROOT "/home/humble/shared/libraries/TensorRT-10.0.1.6")
-set(TRT_ROOT "/home/humble/shared/libraries/TensorRT-10.1.0.27")
+set(TRT_ROOT "/root/TensorRT")
 set(TRT_INCLUDES "${TRT_ROOT}/include;${TRT_ROOT}/samples/common;${TRT_ROOT}/samples")
-set(TRT_LIBS "${TRT_ROOT}/lib/aarch64-linux-gnu")
+set(TRT_LIBS "/usr/lib/aarch64-linux-gnu/")
 
-
-set(CMAKE_CUDA_ARCHITECTURES "87;")
+set(CMAKE_CUDA_ARCHITECTURES "61;87;")
 
 add_library(slice_and_batch_lib SHARED
   src/sliceAndBatchKernel.cu  src/sliceAndBatchKernel.h  src/sliceAndBatchPlugin.cpp src/sliceAndBatchPlugin.h
