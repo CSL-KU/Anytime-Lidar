@@ -1,12 +1,18 @@
-FROM nvcr.io/nvidia/l4t-ml:r35.2.1-py3
+FROM nvcr.io/nvidia/l4t-jetpack:r36.3.0
 ARG CUDA_ARCH
 RUN /bin/bash -c 'apt-get update; \
-        apt-get install -y vim tmux python-is-python3 htop ninja-build tree; \
-        pip install -v pccm wheel SharedArray scikit-learn scikit-image av2 kornia easydict tensorboardX'
+        apt-get install -y vim tmux python-is-python3 htop ninja-build tree python3-pip libopenblas-dev git cmake; \
+	python3 -m pip install --upgrade pip; \
+	pip install --no-cache https://developer.download.nvidia.com/compute/redist/jp/v60dp/pytorch/torch-2.3.0a0+6ddf5cf85e.nv24.04.14026654-cp310-cp310-linux_aarch64.whl; \
+	wget https://nvidia.box.com/shared/static/xpr06qe6ql3l6rj22cu3c45tz1wzi36p.whl -O torchvision-0.18.0a0+6043bc2-cp310-cp310-linux_aarch64.whl; \
+	pip install --no-cache torchvision-0.18.0a0+6043bc2-cp310-cp310-linux_aarch64.whl; \
+        pip install -v pccm wheel SharedArray scikit-learn scikit-image av2==0.2.1 kornia==0.6.12 easydict tensorboardX alive-progress onnx onnxruntime numpy==1.26.4'
 
 RUN /bin/bash -c 'cd; \
-        git clone -b v0.4.8 https://github.com/FindDefinition/cumm.git; \
+        git clone https://github.com/CSL-KU/Anytime-Lidar; \
+        git clone -b v0.4.11 https://github.com/FindDefinition/cumm.git; \
         cd cumm; \
+	git apply ../Anytime-Lidar/req_patches/cumm.patch; \
         MAX_JOBS=$(nproc) CUMM_CUDA_ARCH_LIST=$CUDA_ARCH CUMM_DISABLE_JIT="1" python setup.py bdist_wheel; \
         pip install dist/*'
 
@@ -27,20 +33,26 @@ RUN /bin/bash -c 'cd; \
         MAX_JOBS=$(nproc) TORCH_CUDA_ARCH_LIST=$CUDA_ARCH pip install -v .'
 
 RUN /bin/bash -c 'cd; \
-        git clone https://github.com/CSL-KU/Anytime-Lidar; \
+	echo "export PCDET_PATH=/root/Anytime-Lidar" >> ~/.bashrc; \
         cd Anytime-Lidar; \
         MAX_JOBS=$(nproc) TORCH_CUDA_ARCH_LIST=$CUDA_ARCH python setup.py develop'
 
 RUN /bin/bash -c 'cd; \
-	git clone -b v1.1.2 https://github.com/nutonomy/nuscenes-devkit.git; \
-	cd nuscenes-devkit; \
-	sed -i -z "s/opencv-python\n//g" setup/requirements/requirements_base.txt; \
-	pip install -r setup/requirements.txt; \
-	pip install motmetrics; \
-	echo "export PYTHONPATH=\${PYTHONPATH}:\$HOME/nuscenes-devkit/python-sdk" >> ~/.bashrc; \
-	echo "export LD_PRELOAD=\${LD_PRELOAD}:/usr/local/lib/python3.8/dist-packages/sklearn/__check_build/../../scikit_learn.libs/libgomp-d22c30c5.so.1.0.0" >> ~/.bashrc; \
-	source ~/.bashrc'
+	git clone -b release/8.6 https://github.com/NVIDIA/TensorRT.git'
 
-RUN /bin/bash -c 'apt purge opencv-python; \
-	pip install numpy==1.23.0; \
-	pip install kornia==0.6.12'
+RUN /bin/bash -c 'cd; \
+	git clone -b anytime_lidar https://github.com/ahmedius2/nuscenes-devkit.git; \
+	cd nuscenes-devkit; \
+	pip install -r setup/requirements.txt; \
+	pip install motmetrics==1.1.3 pyquaternion; \
+	echo 'export PYTHONPATH=${PYTHONPATH}:$HOME/nuscenes-devkit/python-sdk' >> ~/.bashrc; \
+	echo 'export PATH=${PATH}:/usr/src/tensorrt/bin' >> ~/.bashrc'
+
+RUN cat >> ~/.bashrc << 'EOF'
+if [ -e "/var/lib/nvpmodel/status" ]; then
+    export PMODE=$(cat "/var/lib/nvpmodel/status" | tr ':' '_')
+else
+    export PMODE="UNKNOWN_POWER_MODE"
+fi
+EOF
+
