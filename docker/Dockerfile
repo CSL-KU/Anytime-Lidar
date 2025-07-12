@@ -45,14 +45,15 @@ RUN /bin/bash -c 'cd; \
 	cd nuscenes-devkit; \
 	pip install -r setup/requirements.txt; \
 	pip install motmetrics==1.1.3 pyquaternion; \
-	echo 'export PYTHONPATH=${PYTHONPATH}:$HOME/nuscenes-devkit/python-sdk' >> ~/.bashrc; \
-	echo 'export PATH=${PATH}:/usr/src/tensorrt/bin' >> ~/.bashrc'
+	echo "export PYTHONPATH=\${PYTHONPATH}:\$HOME/nuscenes-devkit/python-sdk" >> ~/.bashrc; \
+	echo "export PATH=\${PATH}:/usr/src/tensorrt/bin" >> ~/.bashrc'
 
-RUN cat >> ~/.bashrc << 'EOF'
-if [ -e "/var/lib/nvpmodel/status" ]; then
-    export PMODE=$(cat "/var/lib/nvpmodel/status" | tr ':' '_')
-else
-    export PMODE="UNKNOWN_POWER_MODE"
-fi
-EOF
+RUN sed -i 's/from collections import OrderedDict, Iterable/from collections import OrderedDict\nfrom collections.abc import Iterable/' \
+	'/usr/local/lib/python3.10/dist-packages/motmetrics/metrics.py'
+
+RUN echo 'if [ -e "/var/lib/nvpmodel/status" ]; then' >> ~/.bashrc && \
+    echo '    export PMODE=$(cat "/var/lib/nvpmodel/status" | tr '"'"':'"'"' '"'"'_'"'"')' >> ~/.bashrc && \
+    echo 'else' >> ~/.bashrc && \
+    echo '    export PMODE="UNKNOWN_POWER_MODE"' >> ~/.bashrc && \
+    echo 'fi' >> ~/.bashrc
 
