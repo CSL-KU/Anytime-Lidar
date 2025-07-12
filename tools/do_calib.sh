@@ -4,7 +4,6 @@
 unset OMP_NUM_THREADS USE_ALV1 TASKSET CFG_FILE CKPT_FILE DEADLINE_RANGE_MS DATASET_RANGE
 export CALIBRATION=1
 export DATASET_PERIOD="250"
-#./nusc_dataset_prep.sh
 link_data 250
 
 ############CALIB START################
