@@ -58,7 +58,7 @@ class MURAL(Detector3DTemplate):
                     vsize_calc.interpolate_pillar_sizes(self.max_grid_l, rd, pc_range_l,
                     step=grid_slice_sz)
             #Additional resolution lower than lowest trained resolution
-            area_l_mm = int((pc_range_l[3] - pc_range_l[0]) * 1000)
+            area_l_mm = int((pc_range_l[3] - pc_range_l[0]) * 1000000)
             area_min_l_mm = area_l_mm - 1500000
             area_max_l_mm = area_l_mm + 1500000
             min_grid_len = all_grid_lens[-1]
@@ -137,7 +137,6 @@ class MURAL(Detector3DTemplate):
             'DenseOps':[],
             'CenterHead-GenBox': [],
         })
-
 
         if self.dettype == 'PillarNet':
             self.vfe, self.backbone_3d, self.backbone_2d, self.dense_head = self.module_list

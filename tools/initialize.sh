@@ -11,6 +11,7 @@ mkdir -p $PCDET_PATH/tools/deploy_files/onnx_files
 mkdir -p $PCDET_PATH/tools/deploy_files/trt_engines/$PMODE
 mkdir -p $PCDET_PATH/tools/calib_files
 mkdir -p $PCDET_PATH/tools/../../latest_exp_plots
+mkdir -p $PCDET_PATH/tools/../../calib_plots
 
 export DATASET_PERIOD="250"
 ./nusc_dataset_prep.sh
