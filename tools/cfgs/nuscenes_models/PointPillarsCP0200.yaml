@@ -21,6 +21,7 @@ DATA_CONFIG:
 
 MODEL:
     NAME: CenterPointOpt
+    NAME_POSTFIX: cp0200
 
     VFE:
         NAME: DynPillarVFE

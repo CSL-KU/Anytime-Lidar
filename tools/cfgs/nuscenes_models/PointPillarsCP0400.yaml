@@ -21,6 +21,7 @@ DATA_CONFIG:
 
 MODEL:
     NAME: CenterPointOpt
+    NAME_POSTFIX: cp0400
 
     VFE:
         NAME: DynPillarVFE
@@ -99,7 +100,7 @@ MODEL:
 
     DEADLINE_SEC: 10.0
     ONNX_PATH: deploy_files/onnx_files/pointpillar_cp_0400
-    METHOD: 0
+    METHOD: 2
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 4
