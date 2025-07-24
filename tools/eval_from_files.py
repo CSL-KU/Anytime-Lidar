@@ -56,7 +56,7 @@ def do_eval(ed_path):
 def main():
     inp_dir = sys.argv[1]
     eval_dict_paths = glob.glob(inp_dir + "/*.json")
-    num_procs=7
+    num_procs=2
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_procs) as executor:
         futs = [executor.submit(do_eval, ed_path) for ed_path in eval_dict_paths]
         for fut in futs:

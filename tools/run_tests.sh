@@ -14,6 +14,8 @@ export TASKSET=${TASKSET:-"taskset -c 2-7"}
 export USE_AMP=${USE_AMP:-"false"}
 export PMODE=${PMODE:-"UNKNOWN_POWER_MODE"}
 
+mkdir -p deploy_files/trt_engines/$PMODE
+
 if [ -z $CFG_FILE ] && [ -z $CKPT_FILE ]; then
     #CFG_FILE="./cfgs/nuscenes_models/mural_pillarnet_0100_4res.yaml"
     #CKPT_FILE="../models/mural_pillarnet_0100_4res_e20.pth"
