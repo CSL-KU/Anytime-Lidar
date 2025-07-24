@@ -2,9 +2,19 @@ cmake_minimum_required(VERSION 3.8 FATAL_ERROR)
 project(slice_and_batch_trt_plugin LANGUAGES CXX CUDA)
 set(TRT_ROOT "/root/TensorRT")
 set(TRT_INCLUDES "${TRT_ROOT}/include;${TRT_ROOT}/samples/common;${TRT_ROOT}/samples")
-set(TRT_LIBS "/usr/lib/aarch64-linux-gnu/")
 
-set(CMAKE_CUDA_ARCHITECTURES "61;87;")
+# Set TRT_LIBS based on architecture
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(TRT_LIBS "/usr/lib/aarch64-linux-gnu/")
+    message(STATUS "Detected ARM64 architecture, using: ${TRT_LIBS}")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    set(TRT_LIBS "/usr/lib/x86_64-linux-gnu/")
+    message(STATUS "Detected x86_64 architecture, using: ${TRT_LIBS}")
+else()
+    message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+set(CMAKE_CUDA_ARCHITECTURES "61;86;87;")
 
 add_library(slice_and_batch_lib SHARED
   src/sliceAndBatchKernel.cu  src/sliceAndBatchKernel.h  src/sliceAndBatchPlugin.cpp src/sliceAndBatchPlugin.h
